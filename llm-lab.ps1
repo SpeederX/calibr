@@ -69,7 +69,11 @@ param(
 
     # Used by report: how to group results when selecting winners
     [ValidateSet("family", "family+quant")]
-    [string]$GroupBy = "family"
+    [string]$GroupBy = "family",
+
+    # Used by report (and `all`): pick the highest-eval_tps config per group,
+    # ignoring WDDM-paging safety. Default off — safety wins ties.
+    [switch]$PreferSpeed
 )
 
 $ErrorActionPreference = "Stop"
@@ -453,6 +457,25 @@ function Get-ModelMetadata {
     }
 }
 
+function Invoke-DenseOverrideFilter {
+    # Post-hoc filter: clear is_moe if the family is on the user's
+    # dense_overrides list. The MoE regex inside Get-ModelMetadata stays
+    # untouched (real MoE families are still detected by default); the
+    # override is a small, exact-match escape hatch for false positives.
+    # Pure: mutates and returns $meta but has no side effects.
+    param($meta, $denseOverrides)
+    if ($null -eq $meta) { return $meta }
+    if ($null -eq $denseOverrides) { return $meta }
+    $list = @($denseOverrides)
+    # -ccontains keeps the comparison case-sensitive (per spec). -contains
+    # in PowerShell is case-insensitive by default; we do not want
+    # `qwen3.6-35b-a3b` to silently match `Qwen3.6-35B-A3B` and disable MoE.
+    if ($meta.is_moe -and ($list -ccontains $meta.family)) {
+        $meta.is_moe = $false
+    }
+    return $meta
+}
+
 function Invoke-Discover {
     $cfg = Get-Config
     Write-Host "=== discover ===" -ForegroundColor Cyan
@@ -472,6 +495,7 @@ function Invoke-Discover {
             }
             if ($skip) { continue }
             $meta = Get-ModelMetadata $f.FullName
+            $meta = Invoke-DenseOverrideFilter -meta $meta -denseOverrides $cfg.dense_overrides
             $catalog += $meta
             Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.family, $meta.size_mib, $meta.quant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
         }
@@ -855,6 +879,22 @@ function Invoke-Bench {
 # ============================================================================
 # SUBCOMMAND: report
 # ============================================================================
+function Test-IsBetterWinner {
+    # Decide whether $candidate should replace $current as the winner of its
+    # group. Default rule: a non-paging config always beats a paging one;
+    # among equally-safe configs, higher eval_tps wins. With -PreferSpeed:
+    # safety is ignored, raw eval_tps is the only criterion.
+    # Pure: no I/O, no globals, used by Invoke-Report and unit tests.
+    param($candidate, $current, [switch]$preferSpeed)
+    if (-not $current) { return $true }
+    if ($preferSpeed) { return ([double]$candidate.eval_tps -gt [double]$current.eval_tps) }
+    $cSafe   = ([int]$candidate.shared_peak_mib -le 0)
+    $curSafe = ([int]$current.shared_peak_mib   -le 0)
+    if ($cSafe -and -not $curSafe) { return $true }
+    if (-not $cSafe -and $curSafe) { return $false }
+    return ([double]$candidate.eval_tps -gt [double]$current.eval_tps)
+}
+
 function Get-ResultDerivedFields {
     # Compute the derived metrics the report's charts need from a raw result.
     # Pure: no I/O, no globals. Tested in tests/Helpers.Tests.ps1.
@@ -912,8 +952,8 @@ function Invoke-Report {
     }
 
     # Pick winner per grouping key (family, or family+quant if -GroupBy family+quant).
-    # Safety rule: a config without WDDM paging (shared_peak_mib <= 0) always beats one that pages,
-    # even if slower. Among equally-safe configs, highest eval_tps wins.
+    # Default safety rule: a config without WDDM paging always beats one that pages.
+    # With -PreferSpeed: ignore safety, pick the highest eval_tps.
     function Get-GroupKey {
         param($r, $mode)
         if ($mode -eq "family+quant") { return "$($r.family)_$($r.quant)" }
@@ -923,10 +963,7 @@ function Invoke-Report {
     $winners = @{}
     foreach ($r in ($results | Where-Object { $_.ok })) {
         $key = Get-GroupKey -r $r -mode $GroupBy
-        $cur = $winners[$key]
-        $safe = ($r.shared_peak_mib -le 0)
-        $curSafe = if ($cur) { $cur.shared_peak_mib -le 0 } else { $false }
-        if (-not $cur -or ($safe -and -not $curSafe) -or ($safe -eq $curSafe -and $r.eval_tps -gt $cur.eval_tps)) {
+        if (Test-IsBetterWinner -candidate $r -current $winners[$key] -preferSpeed:$PreferSpeed) {
             $winners[$key] = $r
         }
     }
@@ -1626,25 +1663,29 @@ function Invoke-Help {
             )
         }
         "report" = @{
-            Usage    = "llm-lab report [-GroupBy {family|family+quant}]"
+            Usage    = "llm-lab report [-GroupBy {family|family+quant}] [-PreferSpeed]"
             Flags    = @(
                 "-GroupBy family         (default) one winner per family"
                 "-GroupBy family+quant   one winner per (family,quant) pair"
+                "-PreferSpeed            Pick highest eval_tps regardless of WDDM paging"
+                "                        (default: prefer non-paging configs even if slower)"
             )
-            Examples = @( "llm-lab report", "llm-lab report -GroupBy family+quant" )
+            Examples = @( "llm-lab report", "llm-lab report -GroupBy family+quant", "llm-lab report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "llm-lab all [-DownloadSamples [-SampleId <id>] [-Family <regex>]] [-Force]"
+            Usage    = "llm-lab all [-DownloadSamples [-SampleId <id>] [-Family <regex>]] [-Force] [-PreferSpeed]"
             Flags    = @(
                 "-DownloadSamples         Run get-sample-models before the pipeline"
                 "-SampleId <id>           (with -DownloadSamples) only fetch the matching sample"
                 "-Family <regex>          Filter download AND bench by family"
                 "-Force                   Re-run all benchmarks (skip cache)"
+                "-PreferSpeed             Pick fastest config per family, ignore WDDM safety"
             )
             Examples = @(
                 "llm-lab all"
                 "llm-lab all -DownloadSamples"
                 "llm-lab all -DownloadSamples -SampleId qwen3.5-9b-q4km"
+                "llm-lab all -PreferSpeed"
             )
         }
         "config" = @{

@@ -23,19 +23,19 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] Reorder VRAM bar chart ascending (least = top, matching "less is better")
 - [x] 2D scatter chart: memory (Y) vs latency (X), GPU VRAM line with RAM tint above
 - [x] VRAM-headroom annotation per config (`+N MiB ≈ +M tokens` on CUDA; MiB only on Vulkan)
+- [x] Scatter chart log-scale X axis (orders of magnitude readable)
+- [x] `dense_overrides` exact-match list for MoE filename false positives
+- [x] `-PreferSpeed` flag (winner picker can opt out of safety preference)
 
 ## Open — code & UX
 
-- [ ] **Scatter chart log-scale X axis**: the linear time axis is dominated by
-      Tier C configs (~100 s+) and squishes Tier A (sub-second) into the
-      origin. Switch to log-10 scale so the dot spread reflects relative
-      latency across orders of magnitude. Keep all configs on one chart
-      (no tier-split).
+- [ ] **Picker safety threshold mismatch**: `Invoke-Report`'s picker treats any
+      `shared_peak_mib > 0` as "paging" while `wddm_flag_shared_pos` (used by
+      the watchlist) only flags `> shared_delta_confirm_mib` (default 500 MiB).
+      On a normal desktop the Chrome/Discord baseline (~200-250 MiB) is below
+      that threshold but trips the picker, masking the safety preference.
+      Picker should use the same confirmed threshold.
 - [ ] N-run with median for variance reduction (current ±5 % on `eval_tps`).
-- [ ] `dense_overrides` list to bypass MoE filename regex false positives.
-- [ ] `-PreferSpeed` flag to disable WDDM-safety preference in winner picker.
-- [ ] Speculative decoding: pair small drafter with big target; sweep `--draft-max`.
-- [ ] Quality scoring: small task suite per config (truthful-qa subset, HumanEval-mini).
 
 ## Open — portability
 

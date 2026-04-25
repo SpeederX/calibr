@@ -197,10 +197,16 @@ function renderScatter() {
     svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" class="scatter-tick">No ok runs to plot.</text>';
     return;
   }
-  const xMax = Math.max(0.001, Math.max(...pts.map(p => p.x))) * 1.1;
+  // X axis: log-10 so configs spanning sub-second (Tier A) to ~100 s
+  // (Tier C) all stay readable. xMin floor at 0.05 keeps log() defined
+  // when only one ok config exists, or when the fastest config is < 0.05 s.
+  const xMin    = Math.max(0.05, Math.min(...pts.map(p => p.x)) * 0.5);
+  const xMaxRaw = Math.max(...pts.map(p => p.x)) * 1.5;
+  const lxMin   = Math.log10(xMin);
+  const lxMax   = Math.log10(Math.max(xMaxRaw, xMin * 10));  // guard against degenerate single-point span
   const yMaxRaw = Math.max(Math.max(...pts.map(p => p.y)), cap + 4096);
-  const yMax = Math.ceil(yMaxRaw / 1024) * 1024;
-  const xs = v => M.l + (v / xMax) * innerW;
+  const yMax    = Math.ceil(yMaxRaw / 1024) * 1024;
+  const xs = v => M.l + ((Math.log10(Math.max(v, xMin)) - lxMin) / (lxMax - lxMin)) * innerW;
   const ys = v => M.t + innerH - (v / yMax) * innerH;
   const yGpu = ys(cap);
 
@@ -217,15 +223,17 @@ function renderScatter() {
     p.push('<line class="scatter-axis" x1="' + (M.l - 4) + '" y1="' + y + '" x2="' + M.l + '" y2="' + y + '"/>');
     p.push('<text class="scatter-tick" x="' + (M.l - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + Math.round(v) + '</text>');
   }
-  // X ticks (seconds)
+  // X ticks: 5 ticks spaced evenly in log space; render the linear value.
   for (let i = 0; i <= 5; i++) {
-    const v = (xMax * i / 5);
+    const lv = lxMin + (lxMax - lxMin) * i / 5;
+    const v = Math.pow(10, lv);
     const x = xs(v);
+    const label = v >= 10 ? Math.round(v).toString() : v.toFixed(v < 1 ? 2 : 1);
     p.push('<line class="scatter-axis" x1="' + x + '" y1="' + (M.t + innerH) + '" x2="' + x + '" y2="' + (M.t + innerH + 4) + '"/>');
-    p.push('<text class="scatter-tick" x="' + x + '" y="' + (M.t + innerH + 16) + '" text-anchor="middle">' + v.toFixed(1) + '</text>');
+    p.push('<text class="scatter-tick" x="' + x + '" y="' + (M.t + innerH + 16) + '" text-anchor="middle">' + label + '</text>');
   }
   // Axis labels
-  p.push('<text class="scatter-tick" x="' + (M.l + innerW/2) + '" y="' + (H - 6) + '" text-anchor="middle">Total time (s)</text>');
+  p.push('<text class="scatter-tick" x="' + (M.l + innerW/2) + '" y="' + (H - 6) + '" text-anchor="middle">Total time (s, log-10)</text>');
   p.push('<text class="scatter-tick" transform="translate(14,' + (M.t + innerH/2) + ') rotate(-90)" text-anchor="middle">Memory used (MiB)</text>');
   // GPU VRAM reference line + label
   p.push('<line class="scatter-line-gpu" x1="' + M.l + '" y1="' + yGpu + '" x2="' + (M.l + innerW) + '" y2="' + yGpu + '"/>');

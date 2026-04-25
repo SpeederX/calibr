@@ -25,6 +25,10 @@ Describe "report.template.html structure" {
         Assert-True ($tpl -match 'class="scatter-line-gpu"') "scatter-line-gpu CSS class missing"
         Assert-True ($tpl -match 'GPU VRAM \(')             "scatter chart should label the GPU VRAM reference line"
     }
+    It "uses log-10 scale on the scatter X axis" {
+        Assert-True ($tpl -match 'Math\.log10') "log-10 transform missing from renderScatter"
+        Assert-True ($tpl -match 'log-10')      "X axis label should mention log-10 scale"
+    }
     It "sorts the VRAM bar chart ascending" {
         Assert-True ($tpl -match "dir:\s*'asc'") "VRAM bars should be called with dir: 'asc'"
     }
