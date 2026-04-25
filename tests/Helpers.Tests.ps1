@@ -181,6 +181,49 @@ Describe "Invoke-DenseOverrideFilter" {
     }
 }
 
+Describe "Test-IsBetterWinner" {
+    # Shorthand for building a candidate.
+    function _r { param($eval, $shared) [PSCustomObject]@{ eval_tps = $eval; shared_peak_mib = $shared } }
+
+    It "accepts any candidate when current is null" {
+        Assert-True (Test-IsBetterWinner -candidate (_r 30 0) -current $null)
+    }
+    Describe "default (safety preference)" {
+        It "prefers a safe config over a paging one even if slower" {
+            $current   = _r 50 1000   # fast, paging
+            $candidate = _r 30 0      # slower, safe
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "rejects a paging candidate when current is safe" {
+            $current   = _r 30 0
+            $candidate = _r 50 1000
+            Assert-False (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "picks the higher eval_tps when both are safe" {
+            $current   = _r 30 0
+            $candidate = _r 40 0
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "picks the higher eval_tps when both are paging" {
+            $current   = _r 30 1000
+            $candidate = _r 40 1000
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+    }
+    Describe "-PreferSpeed (safety ignored)" {
+        It "picks the higher eval_tps even when paging" {
+            $current   = _r 30 0       # safe, slower
+            $candidate = _r 50 1000    # paging, faster
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current -preferSpeed)
+        }
+        It "rejects a slower candidate even if it's safer" {
+            $current   = _r 50 1000    # paging, faster
+            $candidate = _r 30 0       # safe, slower
+            Assert-False (Test-IsBetterWinner -candidate $candidate -current $current -preferSpeed)
+        }
+    }
+}
+
 Describe "Get-ResultDerivedFields" {
     It "computes time_total_sec from prompt + eval timings" {
         # 80 prompt tokens at 100 t/s = 0.8s; 128 eval tokens at 50 t/s = 2.56s; total = 3.36s
