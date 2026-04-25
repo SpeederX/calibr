@@ -15,6 +15,9 @@
     "*.partial"
   ],
 
+  "dense_overrides": [],
+  "_comment_dense": "Family names (exact, case-sensitive) that the MoE-detection regex (`A\\d+B`, `MoE`, `Mixtral`) matches but are actually dense. Add families here to force them to a Tier A or C plan sweep instead of the wasted Tier B `--n-cpu-moe` sweep. Example: [\"something-A100B-special\"].",
+
   "hardware": {
     "auto_detect": true,
     "vram_total_mib": null,
