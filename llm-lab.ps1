@@ -453,6 +453,25 @@ function Get-ModelMetadata {
     }
 }
 
+function Invoke-DenseOverrideFilter {
+    # Post-hoc filter: clear is_moe if the family is on the user's
+    # dense_overrides list. The MoE regex inside Get-ModelMetadata stays
+    # untouched (real MoE families are still detected by default); the
+    # override is a small, exact-match escape hatch for false positives.
+    # Pure: mutates and returns $meta but has no side effects.
+    param($meta, $denseOverrides)
+    if ($null -eq $meta) { return $meta }
+    if ($null -eq $denseOverrides) { return $meta }
+    $list = @($denseOverrides)
+    # -ccontains keeps the comparison case-sensitive (per spec). -contains
+    # in PowerShell is case-insensitive by default; we do not want
+    # `qwen3.6-35b-a3b` to silently match `Qwen3.6-35B-A3B` and disable MoE.
+    if ($meta.is_moe -and ($list -ccontains $meta.family)) {
+        $meta.is_moe = $false
+    }
+    return $meta
+}
+
 function Invoke-Discover {
     $cfg = Get-Config
     Write-Host "=== discover ===" -ForegroundColor Cyan
@@ -472,6 +491,7 @@ function Invoke-Discover {
             }
             if ($skip) { continue }
             $meta = Get-ModelMetadata $f.FullName
+            $meta = Invoke-DenseOverrideFilter -meta $meta -denseOverrides $cfg.dense_overrides
             $catalog += $meta
             Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.family, $meta.size_mib, $meta.quant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
         }
