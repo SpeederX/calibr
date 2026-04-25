@@ -25,6 +25,12 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] VRAM-headroom annotation per config (`+N MiB ≈ +M tokens` on CUDA; MiB only on Vulkan)
 
 ## Open — code & UX
+
+- [ ] **Scatter chart log-scale X axis**: the linear time axis is dominated by
+      Tier C configs (~100 s+) and squishes Tier A (sub-second) into the
+      origin. Switch to log-10 scale so the dot spread reflects relative
+      latency across orders of magnitude. Keep all configs on one chart
+      (no tier-split).
 - [ ] N-run with median for variance reduction (current ±5 % on `eval_tps`).
 - [ ] `dense_overrides` list to bypass MoE filename regex false positives.
 - [ ] `-PreferSpeed` flag to disable WDDM-safety preference in winner picker.
