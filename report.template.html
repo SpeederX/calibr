@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>llm-lab report</title>
+<style>
+  :root {
+    --c-bg:#0f1420; --c-card:#1a2030; --c-border:#2a3040; --c-text:#e8ecf0;
+    --c-muted:#8a96a8; --c-accent:#5fd4ff;
+    --c-a:#22c55e; --c-b:#f59e0b; --c-c:#ef4444;
+  }
+  * { box-sizing: border-box; }
+  body { font: 14px/1.5 -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
+         background: var(--c-bg); color: var(--c-text); margin: 0; padding: 20px; }
+  h1 { font-size: 22px; margin: 0 0 4px 0; color: var(--c-accent); }
+  h2 { font-size: 17px; margin: 28px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--c-border); }
+  h3 { font-size: 14px; margin: 12px 0 8px; }
+  .container { max-width: 1400px; margin: 0 auto; }
+  .meta { color: var(--c-muted); font-size: 12px; }
+  .hw { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12px; }
+  .hw code { background:#0b1020; padding: 1px 5px; border-radius: 3px; color: var(--c-accent); }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
+  th, td { padding: 6px 9px; text-align: left; border-bottom: 1px solid var(--c-border); }
+  th { background:#141a28; color: var(--c-accent); position: sticky; top: 0; }
+  tr:hover { background: rgba(95,212,255,0.04); }
+  td.num { text-align: right; font-family: Consolas, monospace; font-variant-numeric: tabular-nums; }
+  .tier-A, .fit-success  { color: var(--c-a); font-weight: 600; }
+  .tier-B, .fit-unknown  { color: var(--c-b); font-weight: 600; }
+  .tier-C, .fit-failed_but_running { color: var(--c-c); font-weight: 600; }
+  .wddm { color: var(--c-c); font-weight: 700; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap: 12px; }
+  .card { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 12px 14px; }
+  .card h3 { margin-top: 0; color: var(--c-accent); }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 10px 0; }
+  .stat-val { font-family: Consolas, monospace; color: #fff; font-size: 14px; font-weight: 600; }
+  .bat-link { display: inline-block; margin-top: 8px; padding: 3px 9px; background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; }
+  .bar-row { display: grid; grid-template-columns: 260px 1fr 90px; gap: 8px; align-items: center; margin: 2px 0; }
+  .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-row .track { background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
+  .bar-row .fill { height: 100%; background: linear-gradient(90deg,#5fd4ff,#4ade80); }
+  .bar-row .fill.tier-B { background: linear-gradient(90deg,#fbbf24,#f59e0b); }
+  .bar-row .fill.tier-C { background: linear-gradient(90deg,#ef4444,#b91c1c); }
+  .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
+  .tabs { display: flex; gap: 4px; margin: 14px 0 0; }
+  .tab { padding: 6px 12px; background: var(--c-card); border: 1px solid var(--c-border); border-bottom: none;
+         border-radius: 5px 5px 0 0; cursor: pointer; font-size: 12px; color: var(--c-muted); }
+  .tab.active { background:#141a28; color: var(--c-accent); border-bottom: 1px solid #141a28; }
+  .tab-content { background:#141a28; border: 1px solid var(--c-border); border-radius: 0 5px 5px 5px; padding: 12px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>llm-lab benchmark report</h1>
+  <div class="meta">Generated %%NOW%%</div>
+  <div class="hw" id="hw"></div>
+
+  <h2>Winners per family</h2>
+  <div class="grid" id="winners"></div>
+
+  <h2>Eval tokens/s</h2>
+  <div id="eval-bars"></div>
+
+  <h2>VRAM peak (MiB) vs safety budget</h2>
+  <div id="vram-bars"></div>
+
+  <h2>WDDM paging watchlist</h2>
+  <p class="meta">Rows where shared GPU memory grew during the run (confirmed paging) or VRAM peak exceeded the saturation threshold (suspected).</p>
+  <div id="wddm-list"></div>
+
+  <h2>All results</h2>
+  <div class="tabs" id="tier-tabs"></div>
+  <div class="tab-content">
+    <table id="all">
+      <thead><tr>
+        <th>ID</th><th>Tier</th><th>Family</th><th>Config</th>
+        <th class="num">Prompt t/s</th><th class="num">Eval t/s</th>
+        <th class="num">VRAM</th><th class="num">Shared</th>
+        <th>Layers</th><th>Fit</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+</div>
+<script>
+const DATA = %%DATA%%;
+const WINNERS = %%WINNERS%%;
+const CFG = %%CFG%%;
+
+// ---- Hardware box ----
+const hw = CFG.hardware || {};
+document.getElementById('hw').innerHTML =
+  '<b>Hardware:</b> ' + (hw.gpu_name || '(unknown GPU)') +
+  ' (<code>' + (hw.vram_total_mib || '?') + ' MiB</code>, compute ' + (hw.gpu_compute_cap || '?') + ')' +
+  ' | CPU ' + (hw.cpu_cores_physical || '?') + 'C/' + (hw.cpu_threads_logical || '?') + 'T' +
+  ' | VRAM safety budget: <code>' + (hw.vram_safety_budget_mib || '?') + ' MiB</code>' +
+  ' | llama-server: <code>' + (CFG.llama_server_exe || 'n/a') + '</code>';
+
+// ---- Winners grid ----
+const wGrid = document.getElementById('winners');
+WINNERS.forEach(w => {
+  const r = DATA.find(x => x.id === w.winner_id);
+  if (!r) return;
+  wGrid.insertAdjacentHTML('beforeend',
+    '<div class="card">' +
+      '<h3>' + w.family + ' <span class="tier-' + r.tier + '">[' + r.tier + ']</span></h3>' +
+      '<div class="stats">' +
+        '<div><div class="meta">Eval</div><div class="stat-val">' + r.eval_tps.toFixed(1) + ' t/s</div></div>' +
+        '<div><div class="meta">Prompt</div><div class="stat-val">' + r.prompt_tps.toFixed(0) + ' t/s</div></div>' +
+        '<div><div class="meta">VRAM peak</div><div class="stat-val">' + r.vram_peak_mib + ' MiB</div></div>' +
+        '<div><div class="meta">Load</div><div class="stat-val">' + r.load_sec.toFixed(1) + 's</div></div>' +
+      '</div>' +
+      '<div class="meta">' + r.extra_args + '</div>' +
+      '<a class="bat-link" href="bats/' + w.bat + '">bats/' + w.bat + '</a>' +
+    '</div>'
+  );
+});
+
+// ---- Bars ----
+function bars(id, field, maxv, unit) {
+  const el = document.getElementById(id);
+  const sorted = [...DATA].filter(d => d.ok).sort((a,b) => b[field] - a[field]);
+  sorted.forEach(d => {
+    const pct = Math.min(100, (d[field] / maxv) * 100);
+    const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM+' + d.shared_peak_mib + 'MiB]</span>' :
+                  d.wddm_flag_high_vram  ? ' <span class="wddm">[WDDM?' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
+    el.insertAdjacentHTML('beforeend',
+      '<div class="bar-row">' +
+        '<div class="name"><span class="tier-' + d.tier + '">[' + d.tier + ']</span> ' + d.label + badge + '</div>' +
+        '<div class="track"><div class="fill tier-' + d.tier + '" style="width:' + pct + '%"></div></div>' +
+        '<div class="val">' + d[field].toFixed(1) + ' ' + unit + '</div>' +
+      '</div>'
+    );
+  });
+}
+const maxEval = Math.max(...DATA.filter(d => d.ok).map(d => d.eval_tps), 1);
+bars('eval-bars', 'eval_tps', Math.ceil(maxEval*1.1), 't/s');
+bars('vram-bars', 'vram_peak_mib', CFG.hardware.vram_total_mib || 8192, 'MiB');
+
+// ---- WDDM watchlist ----
+const flagged = DATA.filter(d => d.ok && (d.wddm_flag_shared_pos || d.wddm_flag_high_vram));
+const wddmEl = document.getElementById('wddm-list');
+if (flagged.length === 0) {
+  wddmEl.innerHTML = '<p class="meta">None. No WDDM paging detected across all runs.</p>';
+} else {
+  let html = '<table><thead><tr><th>ID</th><th>Label</th><th class="num">VRAM</th><th class="num">Shared</th><th class="num">Sat.</th><th class="num">Eval t/s</th></tr></thead><tbody>';
+  flagged.forEach(d => {
+    html += '<tr><td><code>' + d.id + '</code></td><td>' + d.label + '</td>' +
+            '<td class="num">' + d.vram_peak_mib + '</td>' +
+            '<td class="num wddm">' + (d.shared_peak_mib > 0 ? '+' + d.shared_peak_mib : '-') + '</td>' +
+            '<td class="num">' + Math.round(d.wddm_vram_saturation*100) + '%</td>' +
+            '<td class="num">' + d.eval_tps.toFixed(1) + '</td></tr>';
+  });
+  wddmEl.innerHTML = html + '</tbody></table>';
+}
+
+// ---- Tabs for all results ----
+const tiers = ['all', ...new Set(DATA.map(d => d.tier))].filter((v, i, a) => a.indexOf(v) === i);
+const tabsEl = document.getElementById('tier-tabs');
+tiers.forEach((t, i) => {
+  tabsEl.insertAdjacentHTML('beforeend',
+    '<div class="tab' + (i === 0 ? ' active' : '') + '" data-tier="' + t + '">' + (t === 'all' ? 'All' : 'Tier ' + t) + ' (' + (t === 'all' ? DATA.length : DATA.filter(d => d.tier === t).length) + ')</div>'
+  );
+});
+function buildTable(filter) {
+  const tb = document.querySelector('#all tbody');
+  tb.innerHTML = '';
+  DATA.filter(d => filter === 'all' || d.tier === filter).forEach(d => {
+    const wddm = d.wddm_flag_shared_pos ? '<span class="wddm">+' + d.shared_peak_mib + '</span>' :
+                 (d.shared_peak_mib >= 0 ? d.shared_peak_mib : '-');
+    tb.insertAdjacentHTML('beforeend',
+      '<tr>' +
+        '<td><code>' + d.id + '</code></td>' +
+        '<td class="tier-' + d.tier + '">' + d.tier + '</td>' +
+        '<td>' + d.family + '</td>' +
+        '<td style="max-width:360px;font-size:11px;color:var(--c-muted)">' + d.extra_args + '</td>' +
+        '<td class="num">' + (d.prompt_tps ? d.prompt_tps.toFixed(1) : '-') + '</td>' +
+        '<td class="num"><b>' + (d.eval_tps ? d.eval_tps.toFixed(1) : '-') + '</b></td>' +
+        '<td class="num">' + d.vram_peak_mib + '</td>' +
+        '<td class="num">' + wddm + '</td>' +
+        '<td>' + (d.layers_offloaded || '-') + '</td>' +
+        '<td class="fit-' + d.fit_status + '">' + d.fit_status + '</td>' +
+      '</tr>'
+    );
+  });
+}
+buildTable('all');
+tabsEl.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    tabsEl.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    buildTable(tab.dataset.tier);
+  });
+});
+</script>
+</body>
+</html>

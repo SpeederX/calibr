@@ -1,0 +1,1771 @@
+﻿#Requires -Version 5.1
+<#
+.SYNOPSIS
+    llm-lab -- crawler/tester for GGUF models via llama.cpp
+
+.DESCRIPTION
+    Discovers GGUF models in configured paths, classifies each by tier based on
+    a VRAM safety budget, generates and runs a benchmark plan with WDDM-paging
+    detection on Windows, and emits an HTML report plus per-family .bat launchers.
+
+.EXAMPLE
+    llm-lab init                     # first-time setup: detect HW, write config.json
+    llm-lab discover                 # scan for .gguf files
+    llm-lab plan                     # generate test plan
+    llm-lab bench -Tier A            # run only Tier A benchmarks
+    llm-lab bench -Family Qwen3.5-9B # run only this family
+    llm-lab report                   # build HTML + .bat
+    llm-lab all                      # full pipeline (works on whatever .gguf are on disk)
+    llm-lab all -DownloadSamples     # fetch curated samples first, then run the pipeline
+    llm-lab all -DownloadSamples -SampleId qwen3.5-9b-q4km   # only one sample (~5 GB)
+
+    # One-shot without editing config.json (useful for CI / try-and-throw-away):
+    llm-lab discover -ScanPath "D:\models","E:\llm-cache"
+    llm-lab all -ScanPath "C:\foo" -LlamaServer "C:\bin\llama-server.exe"
+
+.NOTES
+    Project: https://github.com/<OWNER>/llm-lab  (update after publishing)
+#>
+
+[CmdletBinding()]
+param(
+    [Parameter(Position=0)]
+    [ValidateSet("init","discover","plan","bench","report","all","status","help","get-sample-models","config","install","uninstall","")]
+    [string]$Command = "help",
+
+    # Sub-action / target name. Meaning depends on $Command:
+    #   help <name>      -> command to describe
+    #   config <action>  -> list | get | set | unset
+    [Parameter(Position=1)]
+    [string]$Action = "",
+
+    # Dot-notation key path for `config get/set/unset`, e.g. "hardware.vram_total_mib"
+    [Parameter(Position=2)]
+    [string]$Key = "",
+
+    # Value string for `config set` (CSV for arrays). Type is inferred from the default schema.
+    [Parameter(Position=3)]
+    [string]$Value = "",
+
+    [string]$Config = "",
+    [string]$Family = "",
+    [ValidateSet("", "A", "B", "C")][string]$Tier = "",
+    [string]$Id = "",
+    [switch]$DryRun,
+    [switch]$Force,
+    [switch]$NonInteractive,
+
+    # CLI overrides for config fields. These take priority over config.json.
+    # Used by: discover (ScanPath, ExcludePattern), bench/report (LlamaServer), all (all of them), init (pre-fills instead of auto-detecting).
+    [string[]]$ScanPath = @(),
+    [string]$LlamaServer = "",
+    [string[]]$ExcludePattern = @(),
+
+    # Used by get-sample-models
+    [string]$SampleId = "",          # download only the matching sample id
+    [switch]$DownloadAll,            # download all samples (prompts for confirmation)
+    [switch]$DownloadSamples,        # `all` only: fetch curated samples before running the pipeline
+    [string]$Destination = "",       # override target root (default: scan_paths[0])
+
+    # Used by report: how to group results when selecting winners
+    [ValidateSet("family", "family+quant")]
+    [string]$GroupBy = "family"
+)
+
+$ErrorActionPreference = "Stop"
+
+# ============================================================================
+# PATHS
+# ============================================================================
+$script:LAB_ROOT = $PSScriptRoot
+$script:LAB_DEFAULT_CFG = Join-Path $LAB_ROOT "config.default.json"
+$script:LAB_LOCAL_CFG   = if ($Config) { $Config } else { Join-Path $LAB_ROOT "config.json" }
+$script:LAB_DATA_DIR    = Join-Path $LAB_ROOT "data"
+$script:LAB_CATALOG     = Join-Path $LAB_DATA_DIR "catalog.json"
+$script:LAB_PLAN        = Join-Path $LAB_DATA_DIR "plan.json"
+$script:LAB_RESULTS_DIR = Join-Path $LAB_DATA_DIR "results"
+$script:LAB_LOGS_DIR    = Join-Path $LAB_DATA_DIR "logs"
+$script:LAB_BATS_DIR    = Join-Path $LAB_DATA_DIR "bats"
+$script:LAB_REPORT      = Join-Path $LAB_DATA_DIR "report.html"
+
+foreach ($d in @($LAB_DATA_DIR, $LAB_RESULTS_DIR, $LAB_LOGS_DIR, $LAB_BATS_DIR)) {
+    if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
+}
+
+# ============================================================================
+# CONFIG LOADING (default <- local override, deep merge)
+# ============================================================================
+function Merge-Hashtables {
+    param($base, $over)
+    if ($null -eq $over) { return $base }
+    foreach ($k in $over.Keys) {
+        if ($base.ContainsKey($k) -and $base[$k] -is [hashtable] -and $over[$k] -is [hashtable]) {
+            $base[$k] = Merge-Hashtables $base[$k] $over[$k]
+        } else {
+            $base[$k] = $over[$k]
+        }
+    }
+    return $base
+}
+
+function ConvertTo-Hashtable {
+    param($obj)
+    if ($null -eq $obj) { return $null }
+    if ($obj -is [System.Management.Automation.PSCustomObject]) {
+        $h = @{}
+        foreach ($p in $obj.PSObject.Properties) {
+            $h[$p.Name] = ConvertTo-Hashtable $p.Value
+        }
+        return $h
+    }
+    if ($obj -is [array]) {
+        # The leading comma prevents PowerShell from unwrapping single-element
+        # arrays, which would turn ["path"] into the string "path" and break
+        # any subsequent [0] index.
+        $arr = @($obj | ForEach-Object { ConvertTo-Hashtable $_ })
+        return ,$arr
+    }
+    return $obj
+}
+
+function Get-Config {
+    if (-not (Test-Path $LAB_DEFAULT_CFG)) { throw "Missing config.default.json at $LAB_DEFAULT_CFG" }
+    $defRaw = Get-Content $LAB_DEFAULT_CFG -Raw | ConvertFrom-Json
+    $default = ConvertTo-Hashtable -obj $defRaw
+    if (Test-Path $LAB_LOCAL_CFG) {
+        $locRaw = Get-Content $LAB_LOCAL_CFG -Raw | ConvertFrom-Json
+        $local = ConvertTo-Hashtable -obj $locRaw
+        $default = Merge-Hashtables $default $local
+    }
+    # Strip _comment_* keys for cleanliness
+    $result = @{}
+    foreach ($k in $default.Keys) {
+        if ($k -notmatch '^_comment') { $result[$k] = $default[$k] }
+    }
+
+    # Apply CLI overrides (highest priority, never persisted to disk)
+    if ($script:ScanPath -and $script:ScanPath.Count -gt 0) {
+        $result.scan_paths = @($script:ScanPath)
+    }
+    if ($script:LlamaServer) {
+        $result.llama_server_exe = $script:LlamaServer
+    }
+    if ($script:ExcludePattern -and $script:ExcludePattern.Count -gt 0) {
+        $existing = if ($result.exclude_patterns) { @($result.exclude_patterns) } else { @() }
+        $result.exclude_patterns = @($existing + $script:ExcludePattern)
+    }
+
+    # Auto-detect hardware in-memory if the user hasn't supplied it via config.json.
+    # This makes the tool usable end-to-end with just CLI flags, no init / config.json required.
+    if ($result.hardware -and -not $result.hardware.vram_total_mib -and $result.hardware.auto_detect) {
+        $detected = Get-DetectedHardware
+        if ($detected.vram_total_mib) {
+            $result.hardware.vram_total_mib = $detected.vram_total_mib
+            $pct = if ($result.hardware.vram_safety_budget_pct) { $result.hardware.vram_safety_budget_pct } else { 0.95 }
+            $result.hardware.vram_safety_budget_mib = [int]($detected.vram_total_mib * $pct)
+            $result.hardware.gpu_name           = $detected.gpu_name
+            $result.hardware.gpu_compute_cap    = $detected.gpu_compute_cap
+            $result.hardware.cpu_cores_physical = $detected.cpu_cores_physical
+            $result.hardware.cpu_threads_logical= $detected.cpu_threads_logical
+        }
+    }
+
+    return $result
+}
+
+# ============================================================================
+# HARDWARE DETECTION (for `init`)
+# ============================================================================
+function Get-DetectedHardware {
+    $hw = @{
+        vram_total_mib       = $null
+        gpu_name             = $null
+        gpu_compute_cap      = $null
+        cpu_cores_physical   = $null
+        cpu_threads_logical  = $null
+    }
+    try {
+        $gpu = (nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits 2>$null | Select-Object -First 1)
+        if ($gpu) {
+            $parts = $gpu -split ',\s*'
+            $hw.gpu_name        = $parts[0].Trim()
+            $hw.vram_total_mib  = [int]$parts[1].Trim()
+            $hw.gpu_compute_cap = $parts[2].Trim()
+        }
+    } catch { }
+    try {
+        $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cpu) {
+            $hw.cpu_cores_physical  = [int]$cpu.NumberOfCores
+            $hw.cpu_threads_logical = [int]$cpu.NumberOfLogicalProcessors
+        }
+    } catch { }
+    return $hw
+}
+
+function Find-LlamaServerExe {
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $onPath = Get-Command llama-server.exe -ErrorAction SilentlyContinue
+    if ($onPath) { $candidates.Add($onPath.Path) }
+
+    # Look in parent folders of ROOT up to 3 levels
+    $p = $LAB_ROOT
+    for ($i=0; $i -lt 3; $i++) {
+        $p = Split-Path $p -Parent
+        if (-not $p) { break }
+        $found = @(Get-ChildItem $p -Filter "llama-server.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue)
+        foreach ($f in $found) { $candidates.Add($f.FullName) }
+    }
+    return @($candidates | Select-Object -Unique | Where-Object { Test-Path $_ })
+}
+
+# ============================================================================
+# BACKEND DETECTION (CUDA / Vulkan / Metal / HIP / SYCL / CPU)
+# ============================================================================
+function Get-LlamaBackends {
+    # Inspect ggml-*.dll siblings of llama-server.exe to learn which compute
+    # backends the build supports. Cheap (single dir listing), no process probe.
+    param([string]$exe)
+    $backends = @{ cuda=$false; vulkan=$false; metal=$false; hip=$false; sycl=$false; cpu=$false }
+    if (-not $exe -or -not (Test-Path $exe)) { return $backends }
+    $dir = Split-Path $exe -Parent
+    $dlls = @(Get-ChildItem $dir -Filter "ggml-*.dll" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    foreach ($d in $dlls) {
+        if ($d -match 'ggml-cuda')   { $backends.cuda   = $true }
+        if ($d -match 'ggml-vulkan') { $backends.vulkan = $true }
+        if ($d -match 'ggml-metal')  { $backends.metal  = $true }
+        if ($d -match 'ggml-hip')    { $backends.hip    = $true }
+        if ($d -match 'ggml-sycl')   { $backends.sycl   = $true }
+        if ($d -match 'ggml-cpu')    { $backends.cpu    = $true }
+    }
+    return $backends
+}
+
+function Test-BackendHealthy {
+    # Cross-check the detected GPU against the available llama.cpp backends.
+    # Returns an array of warning strings (empty if optimal).
+    param($cfg, $backends)
+    $warnings = @()
+    $gpu = $cfg.hardware.gpu_name
+    if ($gpu -and $gpu -match 'NVIDIA|GeForce|RTX|GTX|Quadro|Tesla') {
+        if (-not $backends.cuda) {
+            $msg = "NVIDIA GPU '$gpu' detected but llama.cpp build has NO CUDA backend. "
+            if ($backends.vulkan) {
+                $msg += "Vulkan will be used; expect ~10-15% slower inference. "
+            } else {
+                $msg += "Only CPU is available; inference will be very slow. "
+            }
+            $msg += "Get a CUDA build: https://github.com/ggml-org/llama.cpp/releases"
+            $warnings += $msg
+        }
+    } elseif ($gpu -and $gpu -match 'AMD|Radeon') {
+        if (-not ($backends.hip -or $backends.vulkan)) {
+            $warnings += "AMD GPU '$gpu' detected but no HIP/Vulkan backend available; CPU only."
+        }
+    } elseif ($gpu -and $gpu -match 'Intel|Arc') {
+        if (-not ($backends.sycl -or $backends.vulkan)) {
+            $warnings += "Intel GPU '$gpu' detected but no SYCL/Vulkan backend available; CPU only."
+        }
+    } else {
+        if (-not ($backends.cuda -or $backends.vulkan -or $backends.hip -or $backends.metal -or $backends.sycl)) {
+            $warnings += "No GPU backend available in llama.cpp build; CPU only."
+        }
+    }
+    return $warnings
+}
+
+function Find-ModelRoots {
+    # Suggest scan_paths: parent of ROOT, sibling folders that look like model storage
+    $p = Split-Path $LAB_ROOT -Parent
+    $parent = Split-Path $p -Parent
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    if ($parent -and (Test-Path $parent)) {
+        # look for folders containing any .gguf
+        Get-ChildItem $parent -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $gg = Get-ChildItem $_.FullName -Filter "*.gguf" -Recurse -Depth 3 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($gg) { $candidates.Add($_.FullName) }
+        }
+        # if any gguf directly in parent
+        if (Get-ChildItem $parent -Filter "*.gguf" -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1) {
+            $candidates.Add($parent)
+        }
+    }
+    return @($candidates | Select-Object -Unique)
+}
+
+# ============================================================================
+# SUBCOMMAND: init
+# ============================================================================
+function Invoke-Init {
+    Write-Host "=== llm-lab init ===" -ForegroundColor Cyan
+
+    $cfgRaw = Get-Content $LAB_DEFAULT_CFG -Raw | ConvertFrom-Json
+    $cfg = ConvertTo-Hashtable -obj $cfgRaw
+    $override = @{}
+
+    Write-Host "Detecting hardware..."
+    $hw = Get-DetectedHardware
+    if ($hw.gpu_name) {
+        Write-Host "  GPU: $($hw.gpu_name), $($hw.vram_total_mib) MiB VRAM, compute $($hw.gpu_compute_cap)" -ForegroundColor Green
+    } else {
+        Write-Warning "  nvidia-smi not available or no NVIDIA GPU detected. You'll need to set vram_total_mib manually."
+    }
+    if ($hw.cpu_cores_physical) {
+        Write-Host "  CPU: $($hw.cpu_cores_physical)C/$($hw.cpu_threads_logical)T" -ForegroundColor Green
+    }
+
+    if ($hw.vram_total_mib) {
+        $budget = [int]($hw.vram_total_mib * $cfg.hardware.vram_safety_budget_pct)
+        Write-Host "  VRAM safety budget: $budget MiB ($(($cfg.hardware.vram_safety_budget_pct * 100).ToString('F0'))% of total)"
+    }
+
+    $override.hardware = @{
+        vram_total_mib         = $hw.vram_total_mib
+        vram_safety_budget_mib = if ($hw.vram_total_mib) { [int]($hw.vram_total_mib * $cfg.hardware.vram_safety_budget_pct) } else { $null }
+        gpu_name               = $hw.gpu_name
+        gpu_compute_cap        = $hw.gpu_compute_cap
+        cpu_cores_physical     = $hw.cpu_cores_physical
+        cpu_threads_logical    = $hw.cpu_threads_logical
+    }
+
+    if ($LlamaServer) {
+        Write-Host "`nUsing -LlamaServer override: $LlamaServer" -ForegroundColor Cyan
+        $override.llama_server_exe = $LlamaServer
+    } else {
+        Write-Host "`nSearching for llama-server.exe..."
+        $exes = Find-LlamaServerExe
+        if ($exes.Count -eq 0) {
+            Write-Warning "  Not found. Edit config.json and set llama_server_exe manually."
+            $override.llama_server_exe = $null
+        } elseif ($exes.Count -eq 1) {
+            Write-Host "  Found: $($exes[0])" -ForegroundColor Green
+            $override.llama_server_exe = $exes[0]
+        } else {
+            Write-Host "  Multiple candidates:" -ForegroundColor Yellow
+            for ($i=0; $i -lt $exes.Count; $i++) { Write-Host "    [$i] $($exes[$i])" }
+            if ($NonInteractive) {
+                $override.llama_server_exe = $exes[0]
+                Write-Host "  Picked [0] (non-interactive). Re-run with -LlamaServer to pick a specific one."
+            } else {
+                $idx = Read-Host "  Pick index [0]"
+                if (-not $idx) { $idx = 0 }
+                $override.llama_server_exe = $exes[[int]$idx]
+            }
+        }
+    }
+
+    if ($ScanPath -and $ScanPath.Count -gt 0) {
+        Write-Host "`nUsing -ScanPath override: $($ScanPath -join ', ')" -ForegroundColor Cyan
+        $override.scan_paths = @($ScanPath)
+    } else {
+        Write-Host "`nSearching for .gguf folders..."
+        $roots = Find-ModelRoots
+        if ($roots.Count -eq 0) {
+            Write-Warning "  No folders with .gguf files found near this script."
+            if (-not $NonInteractive) {
+                $manual = Read-Host "  Enter scan path (or empty to skip)"
+                if ($manual) { $override.scan_paths = @($manual) } else { $override.scan_paths = @() }
+            } else {
+                $override.scan_paths = @()
+            }
+        } else {
+            Write-Host "  Found $($roots.Count) candidate root(s):" -ForegroundColor Green
+            $roots | ForEach-Object { Write-Host "    $_" }
+            $override.scan_paths = $roots
+        }
+    }
+
+    # Write config.json
+    $out = [ordered]@{}
+    if ($override.llama_server_exe) { $out.llama_server_exe = $override.llama_server_exe }
+    if ($override.scan_paths)       { $out.scan_paths = $override.scan_paths }
+    $out.hardware = @{
+        auto_detect            = $false
+        vram_total_mib         = $override.hardware.vram_total_mib
+        vram_safety_budget_mib = $override.hardware.vram_safety_budget_mib
+        gpu_name               = $override.hardware.gpu_name
+        gpu_compute_cap        = $override.hardware.gpu_compute_cap
+        cpu_cores_physical     = $override.hardware.cpu_cores_physical
+        cpu_threads_logical    = $override.hardware.cpu_threads_logical
+    }
+
+    if ((Test-Path $LAB_LOCAL_CFG) -and (-not $Force)) {
+        Write-Warning "`n$LAB_LOCAL_CFG already exists. Use -Force to overwrite."
+        return
+    }
+    $out | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $LAB_LOCAL_CFG
+    Write-Host "`nWrote $LAB_LOCAL_CFG" -ForegroundColor Green
+    Write-Host "Next: llm-lab discover" -ForegroundColor Cyan
+}
+
+# ============================================================================
+# SUBCOMMAND: discover
+# ============================================================================
+function Get-ModelMetadata {
+    param([string]$path)
+    $file = Get-Item -LiteralPath $path
+    $fname = $file.BaseName
+
+    $quant  = "unknown"
+    $family = $fname
+    $quantPatterns = @(
+        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_XL)$',
+        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_M)$',
+        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_S)$',
+        '^(?<fam>.+?)[\.\-](?<q>Q\d+_K_[A-Z]+)$',
+        '^(?<fam>.+?)[\.\-](?<q>Q\d+_\d+)$',
+        '^(?<fam>.+?)[\.\-](?<q>IQ\d+_[A-Z_]+)$',
+        '^(?<fam>.+?)[\.\-](?<q>BF16|F16|F32)$'
+    )
+    foreach ($p in $quantPatterns) {
+        if ($fname -match $p) { $family = $Matches.fam; $quant = $Matches.q; break }
+    }
+
+    # MoE heuristics: -A\d+B (active params) or explicit MoE/Mixtral
+    $is_moe = ($family -match 'A\d+B' -or $family -match 'MoE' -or $family -match 'Mixtral')
+
+    # Param count in billions (best-effort)
+    $params_b = 0
+    if ($family -match '(\d+\.?\d*)B') { $params_b = [double]$Matches[1] }
+
+    # Sibling mmproj (prefer F16 < BF16 < F32)
+    $mmproj = $null
+    $mmCand = Get-ChildItem $file.Directory.FullName -Filter "mmproj-*.gguf" -ErrorAction SilentlyContinue
+    if ($mmCand) {
+        $pref = $mmCand | Sort-Object {
+            switch -Regex ($_.Name) { 'F16'{0}; 'BF16'{1}; 'F32'{2}; default{3} }
+        } | Select-Object -First 1
+        $mmproj = $pref.FullName
+    }
+
+    return @{
+        role       = "model"
+        path       = $file.FullName
+        name       = $file.Name
+        size_bytes = $file.Length
+        size_mib   = [int]($file.Length / 1MB)
+        family     = $family
+        quant      = $quant
+        params_b   = $params_b
+        is_moe     = $is_moe
+        mmproj     = $mmproj
+        dir        = $file.Directory.FullName
+    }
+}
+
+function Invoke-Discover {
+    $cfg = Get-Config
+    Write-Host "=== discover ===" -ForegroundColor Cyan
+    if (-not $cfg.scan_paths -or $cfg.scan_paths.Count -eq 0) {
+        throw "scan_paths is empty. Run 'llm-lab init' or edit config.json."
+    }
+
+    $catalog = @()
+    foreach ($base in $cfg.scan_paths) {
+        if (-not (Test-Path $base)) { Write-Warning "scan path not found: $base"; continue }
+        Write-Host "Scanning $base"
+        $ggufs = Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue
+        foreach ($f in $ggufs) {
+            $skip = $false
+            foreach ($ex in $cfg.exclude_patterns) {
+                if ($f.Name -like $ex) { $skip = $true; break }
+            }
+            if ($skip) { continue }
+            $meta = Get-ModelMetadata $f.FullName
+            $catalog += $meta
+            Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.family, $meta.size_mib, $meta.quant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
+        }
+    }
+
+    $catalog | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $LAB_CATALOG
+    Write-Host ("Catalog: {0} models -> {1}" -f $catalog.Count, $LAB_CATALOG) -ForegroundColor Green
+}
+
+# ============================================================================
+# SUBCOMMAND: plan
+# ============================================================================
+function Get-Tier {
+    param($meta, $cfg)
+    if ($meta.is_moe) { return "B" }   # MoE always goes through --n-cpu-moe sweep
+    $budget = [int]$cfg.hardware.vram_safety_budget_mib
+    $overhead = [int]$cfg.tier_classification.overhead_mib
+    $mmprojMib = if ($meta.mmproj) { [int]((Get-Item $meta.mmproj).Length / 1MB) } else { 0 }
+    $needed = $meta.size_mib + $mmprojMib + $overhead
+    if ($needed -lt $budget) { return "A" }
+    return "C"
+}
+
+function New-PlanItem {
+    param($meta, $tier, $extraArgs, $label, $idx)
+    $sanitized = ($meta.family + "_" + $meta.quant) -replace '[^\w]', '_'
+    $id = "T{0:D3}_{1}_{2}" -f $idx, $sanitized.Substring(0, [Math]::Min(30, $sanitized.Length)), ($label -replace '[^\w]', '_').Substring(0, [Math]::Min(20, ($label -replace '[^\w]', '_').Length))
+    return @{
+        id          = $id
+        model_path  = $meta.path
+        mmproj_path = $meta.mmproj
+        family      = $meta.family
+        quant       = $meta.quant
+        tier        = $tier
+        label       = "$($meta.family) $($meta.quant) @ $label"
+        extra_args  = $extraArgs
+    }
+}
+
+function Invoke-Plan {
+    $cfg = Get-Config
+    Write-Host "=== plan ===" -ForegroundColor Cyan
+    if (-not (Test-Path $LAB_CATALOG)) { throw "catalog.json missing. Run: llm-lab discover" }
+    $catRaw = Get-Content $LAB_CATALOG -Raw | ConvertFrom-Json
+    $catalog = ConvertTo-Hashtable -obj $catRaw
+
+    $threadsArg = ""
+    if ($cfg.hardware.cpu_cores_physical) {
+        $threadsArg = " --threads $($cfg.hardware.cpu_cores_physical) --threads-batch $($cfg.hardware.cpu_threads_logical)"
+    }
+    $base = $cfg.base_args + $threadsArg
+
+    $plan = @()
+    $idx = 1
+    foreach ($m in $catalog) {
+        if ($Family -and $m.family -notmatch $Family) { continue }
+        $tier = Get-Tier -meta $m -cfg $cfg
+        if ($Tier -and $tier -ne $Tier) { continue }
+
+        switch ($tier) {
+            "A" {
+                foreach ($c in $cfg.tier_a_candidates) {
+                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base"
+                    $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
+                }
+            }
+            "B" {
+                foreach ($n in $cfg.tier_classification.moe_ncpumoe_sweep) {
+                    $argStr = "--ctx-size 16384 --gpu-layers 99 --n-cpu-moe $n --cache-type-k q8_0 --cache-type-v q8_0 $base"
+                    $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ncpumoe_$n" -idx $idx); $idx++
+                }
+            }
+            "C" {
+                foreach ($n in $cfg.tier_classification.c_ngl_sweep) {
+                    $argStr = "--ctx-size 16384 --gpu-layers $n --cache-type-k q8_0 --cache-type-v q8_0 $base"
+                    $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ngl_$n" -idx $idx); $idx++
+                }
+            }
+        }
+    }
+
+    $plan | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $LAB_PLAN
+    Write-Host ("Plan: {0} test configs -> {1}" -f $plan.Count, $LAB_PLAN) -ForegroundColor Green
+    if ($DryRun) {
+        $plan | ForEach-Object { Write-Host ("  [{0}] {1}" -f $_.tier, $_.label) }
+    }
+}
+
+# ============================================================================
+# WDDM SHARED-GPU MEMORY POLLER (Windows only)
+# ============================================================================
+function Get-SharedGPUMemoryMib {
+    try {
+        $c = Get-Counter "\GPU Adapter Memory(*)\Shared Usage" -ErrorAction SilentlyContinue -MaxSamples 1
+        if ($c) {
+            $total = ($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
+            return [int]($total / 1MB)
+        }
+    } catch { }
+    return -1  # unavailable
+}
+
+# ============================================================================
+# SUBCOMMAND: bench
+# ============================================================================
+function Invoke-OneBench {
+    param($item, $cfg)
+
+    $logFile  = Join-Path $LAB_LOGS_DIR    "$($item.id).log"
+    $jsonFile = Join-Path $LAB_RESULTS_DIR "$($item.id).json"
+
+    if ((Test-Path $jsonFile) -and (-not $Force)) {
+        Write-Host ("[{0}] cached (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
+        return Get-Content $jsonFile -Raw | ConvertFrom-Json
+    }
+
+    # Kill any leftover server
+    Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 400
+
+    $exe   = $cfg.llama_server_exe
+    $port  = [int]$cfg.bench.port
+    $nPred = [int]$cfg.bench.n_predict
+    $prompt= $cfg.bench.prompt
+
+    $argStr = "-m `"$($item.model_path)`""
+    if ($item.mmproj_path) { $argStr += " --mmproj `"$($item.mmproj_path)`"" }
+    $argStr += " $($item.extra_args) --port $port --host 127.0.0.1 --no-warmup --cache-ram 128"
+
+    $vramBefore = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
+    $sharedBaseline = if ($cfg.wddm_detection.enable_shared_mem_counter) { Get-SharedGPUMemoryMib } else { 0 }
+    if ($sharedBaseline -lt 0) { $sharedBaseline = 0 }
+
+    "[CMD] $exe $argStr" | Out-File -Encoding utf8 $logFile
+    "[VRAM before: $vramBefore MiB; shared baseline: $sharedBaseline MiB]" | Out-File -Encoding utf8 -Append $logFile
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $exe
+    $psi.Arguments = $argStr
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError  = $true
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow  = $true
+
+    $loadStart = Get-Date
+    $p = [System.Diagnostics.Process]::Start($psi)
+    $outTask = $p.StandardOutput.ReadToEndAsync()
+    $errTask = $p.StandardError.ReadToEndAsync()
+
+    $deadline = (Get-Date).AddSeconds([int]$cfg.bench.wait_sec_ready)
+    $ready = $false
+    $peakVram = $vramBefore
+    $peakShared = 0
+    $wc = New-Object System.Net.WebClient
+    while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
+        Start-Sleep -Milliseconds 500
+        $v = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
+        if ($v -gt $peakVram) { $peakVram = $v }
+        if ($cfg.wddm_detection.enable_shared_mem_counter) {
+            $s = Get-SharedGPUMemoryMib
+            if ($s -ge 0) {
+                $delta = $s - $sharedBaseline
+                if ($delta -gt $peakShared) { $peakShared = $delta }
+            }
+        }
+        try {
+            $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
+            if ($content.Length -gt 10) { $ready = $true; break }
+        } catch { }
+    }
+    $wc.Dispose()
+    $loadSec = [math]::Round(((Get-Date) - $loadStart).TotalSeconds, 2)
+
+    $result = [ordered]@{
+        id              = $item.id
+        label           = $item.label
+        family          = $item.family
+        quant           = $item.quant
+        tier            = $item.tier
+        timestamp       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
+        model_path      = $item.model_path
+        mmproj_path     = $item.mmproj_path
+        extra_args      = $item.extra_args
+        vram_before_mib = $vramBefore
+        vram_peak_mib   = $peakVram
+        shared_peak_mib = $peakShared
+        load_sec        = $loadSec
+        ready           = $ready
+        ok              = $false
+        error           = $null
+    }
+
+    if ($ready) {
+        # Warmup (compile CUDA graphs)
+        if ($cfg.bench.warmup) {
+            try {
+                $wBody = @{ prompt=$prompt; n_predict=8; temperature=0.0; cache_prompt=$true; stream=$false } | ConvertTo-Json -Compress
+                Invoke-RestMethod -Uri "http://127.0.0.1:$port/completion" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
+            } catch { }
+        }
+
+        # Real bench
+        $body = @{ prompt=$prompt; n_predict=$nPred; temperature=0.0; cache_prompt=$false; stream=$false } | ConvertTo-Json -Compress
+        try {
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/completion" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
+            $result.ok = $true
+            if ($resp.timings) {
+                $result.prompt_n   = $resp.timings.prompt_n
+                $result.prompt_tps = [math]::Round($resp.timings.prompt_per_second, 2)
+                $result.eval_n     = $resp.timings.predicted_n
+                $result.eval_tps   = [math]::Round($resp.timings.predicted_per_second, 2)
+            }
+        } catch { $result.error = $_.Exception.Message }
+
+        $v = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
+        if ($v -gt $peakVram) { $result.vram_peak_mib = $v }
+        if ($cfg.wddm_detection.enable_shared_mem_counter) {
+            $s = Get-SharedGPUMemoryMib
+            if ($s -ge 0) {
+                $delta = $s - $sharedBaseline
+                if ($delta -gt $result.shared_peak_mib) { $result.shared_peak_mib = $delta }
+            }
+        }
+    }
+
+    # Cleanup
+    if (-not $p.HasExited) { try { $p.Kill() } catch { } }
+    Start-Sleep -Milliseconds 700
+    try { $err = $errTask.GetAwaiter().GetResult() } catch { $err = "" }
+
+    "`n===== STDERR =====" | Out-File -Encoding utf8 -Append $logFile
+    $err | Out-File -Encoding utf8 -Append $logFile
+
+    # Parse memory fields from stderr
+    $patterns = @{
+        cpu_model_mib    = 'CPU model buffer size\s*=\s*([\d\.]+)'
+        cuda_model_mib   = 'CUDA0 model buffer size\s*=\s*([\d\.]+)'
+        kv_cache_mib     = 'CUDA0 KV buffer size\s*=\s*([\d\.]+)'
+        compute_cuda_mib = 'CUDA0 compute buffer size\s*=\s*([\d\.]+)'
+        compute_host_mib = 'CUDA_Host compute buffer size\s*=\s*([\d\.]+)'
+        layers_offloaded = 'offloaded (\d+)/(\d+) layers'
+    }
+    foreach ($k in $patterns.Keys) {
+        $m = [regex]::Match($err, $patterns[$k])
+        if ($m.Success) {
+            if ($k -eq 'layers_offloaded') { $result[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
+            else { $result[$k] = [double]$m.Groups[1].Value }
+        }
+    }
+    # Trap llama.cpp builds that don't recognize a model's architecture (e.g. an
+    # older build vs. a brand-new family). Surface the architecture name so the
+    # caller can short-circuit further tests on the same family.
+    $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
+    if ($mArch.Success) { $result.unsupported_architecture = $mArch.Groups[1].Value }
+    if ($err -match 'successfully fit params') { $result.fit_status = "success" }
+    elseif ($err -match 'failed to fit params') { $result.fit_status = "failed_but_running" }
+    else { $result.fit_status = "unknown" }
+
+    # WDDM detection flags
+    $satRatio = if ($cfg.hardware.vram_total_mib) { $result.vram_peak_mib / $cfg.hardware.vram_total_mib } else { 0 }
+    $result.wddm_vram_saturation = [math]::Round($satRatio, 3)
+    $result.wddm_flag_high_vram  = ($satRatio -gt $cfg.wddm_detection.vram_saturation_threshold)
+    $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
+    $result.wddm_flag_shared_pos = ($result.shared_peak_mib -gt $confirmThresh)
+
+    $result | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
+
+    $tag = if ($result.ok) { "[OK]  " } else { "[FAIL]" }
+    $tagColor = if ($result.ok) { 'Green' } else { 'Red' }
+    if ($result.ok) {
+        $detail = "prompt={0,6}t/s   eval={1,5}t/s   peak={2} MiB" -f $result.prompt_tps, $result.eval_tps, $result.vram_peak_mib
+        if ($result.wddm_flag_shared_pos)    { $detail += "   [WDDM: shared=+$($result.shared_peak_mib)MiB]" }
+        elseif ($result.wddm_flag_high_vram) { $detail += "   [WDDM: VRAM $([int]($result.wddm_vram_saturation*100))%]" }
+    } elseif ($result.unsupported_architecture) {
+        $detail = "(unsupported architecture: $($result.unsupported_architecture))"
+    } elseif (-not $result.ready) {
+        $detail = "(server didn't become ready)"
+    } else {
+        $detail = "(completion failed)"
+    }
+    Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
+
+    return $result
+}
+
+function Invoke-Bench {
+    $cfg = Get-Config
+    if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
+        throw "llama_server_exe missing or invalid. Run 'llm-lab init'."
+    }
+    if (-not (Test-Path $LAB_PLAN)) { throw "plan.json missing. Run 'llm-lab plan'." }
+    $planRaw = Get-Content $LAB_PLAN -Raw | ConvertFrom-Json
+    $plan = ConvertTo-Hashtable -obj $planRaw
+
+    Write-Host "=== bench ===" -ForegroundColor Cyan
+
+    # Backend cross-check: detect available llama.cpp backends and warn if the
+    # build doesn't match the GPU (e.g. NVIDIA card with a Vulkan-only build).
+    $backends = Get-LlamaBackends -exe $cfg.llama_server_exe
+    $availList = @($backends.GetEnumerator() | Where-Object { $_.Value } | ForEach-Object { $_.Key } | Sort-Object)
+    $availStr = if ($availList.Count -gt 0) { $availList -join ', ' } else { '(none)' }
+    Write-Host ("llama.cpp backends available: {0}" -f $availStr) -ForegroundColor DarkGray
+    foreach ($w in (Test-BackendHealthy -cfg $cfg -backends $backends)) {
+        Write-Host "WARNING: $w" -ForegroundColor Yellow
+    }
+
+    # @(...) ensures a single match still surfaces as a 1-element array; otherwise
+    # PowerShell unwraps to the bare hashtable and $filtered.Count returns the
+    # number of keys (8) instead of 1, which throws the [i/total] display off.
+    $filtered = @($plan | Where-Object {
+        (-not $Family -or $_.family -match $Family) -and
+        (-not $Tier   -or $_.tier  -eq $Tier) -and
+        (-not $Id     -or $_.id    -like $Id)
+    })
+    Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $plan.Count)
+
+    if ($DryRun) {
+        $filtered | ForEach-Object { Write-Host ("  [{0}] {1}" -f $_.tier, $_.label) }
+        return
+    }
+
+    $total      = $filtered.Count
+    $startTime  = Get-Date
+    $abandoned  = @{}
+    $okCount    = 0
+    $failCount  = 0
+    $skipCount  = 0
+    $i = 0
+
+    foreach ($item in $filtered) {
+        $i++
+
+        if ($abandoned.ContainsKey($item.family)) {
+            $reason = $abandoned[$item.family]
+            Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkYellow
+            $skipCount++
+            continue
+        }
+
+        $elapsed = (Get-Date) - $startTime
+        $etaStr = "?"
+        if ($i -gt 1) {
+            $etaSec = ($elapsed.TotalSeconds / ($i - 1)) * ($total - $i + 1)
+            $etaStr = "{0}m{1:D2}s" -f ([int]($etaSec / 60)), ([int]($etaSec % 60))
+        }
+        $pct = if ($total -gt 0) { (($i - 1) / $total) * 100 } else { 0 }
+
+        Write-Progress -Activity "llm-lab bench" `
+                       -Status   "[$i/$total] running - ETA $etaStr" `
+                       -CurrentOperation $item.label `
+                       -PercentComplete $pct
+
+        Write-Host ("`n[$i/$total] $($item.label)") -ForegroundColor Cyan
+        $r = Invoke-OneBench -item $item -cfg $cfg
+        if ($r.ok) { $okCount++ } else { $failCount++ }
+
+        if (-not $r.ok -and $r.unsupported_architecture) {
+            $abandoned[$item.family] = "unsupported architecture '$($r.unsupported_architecture)'"
+            Write-Host "  -> abandoning remaining tests for family '$($item.family)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
+        }
+    }
+
+    Write-Progress -Activity "llm-lab bench" -Completed
+
+    # Final summary
+    $duration = (Get-Date) - $startTime
+    $durStr = "{0}m{1:D2}s" -f ([int]$duration.TotalMinutes), ([int]($duration.TotalSeconds % 60))
+    $bar = ("=" * 63)
+    Write-Host ""
+    Write-Host $bar -ForegroundColor Cyan
+    Write-Host (" llm-lab bench - done in $durStr") -ForegroundColor Cyan
+    Write-Host ("   {0} ok . {1} fail . {2} skipped (out of {3})" -f $okCount, $failCount, $skipCount, $total)
+    if ($abandoned.Count -gt 0) {
+        Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
+        $reasons = @($abandoned.Values | Sort-Object -Unique)
+        Write-Host ("   reason: {0}" -f ($reasons -join '; ')) -ForegroundColor DarkYellow
+    }
+    Write-Host $bar -ForegroundColor Cyan
+}
+
+# ============================================================================
+# SUBCOMMAND: report
+# ============================================================================
+function Invoke-Report {
+    $cfg = Get-Config
+    Write-Host "=== report ===" -ForegroundColor Cyan
+
+    $results = @()
+    Get-ChildItem $LAB_RESULTS_DIR -Filter "*.json" | Sort-Object Name | ForEach-Object {
+        $r = Get-Content $_.FullName -Raw | ConvertFrom-Json
+        $results += $r
+    }
+    if ($results.Count -eq 0) { throw "No results. Run 'llm-lab bench' first." }
+
+    # Back-compat: older result JSONs may lack the 'quant' field. Backfill it from plan.json.
+    if (Test-Path $LAB_PLAN) {
+        $planIdx = @{}
+        $planRaw = Get-Content $LAB_PLAN -Raw | ConvertFrom-Json
+        foreach ($p in $planRaw) { $planIdx[$p.id] = $p.quant }
+        foreach ($r in $results) {
+            if (-not $r.quant -and $planIdx[$r.id]) {
+                $r | Add-Member -NotePropertyName quant -NotePropertyValue $planIdx[$r.id] -Force
+            }
+        }
+    }
+
+    # Pick winner per grouping key (family, or family+quant if -GroupBy family+quant).
+    # Safety rule: a config without WDDM paging (shared_peak_mib <= 0) always beats one that pages,
+    # even if slower. Among equally-safe configs, highest eval_tps wins.
+    function Get-GroupKey {
+        param($r, $mode)
+        if ($mode -eq "family+quant") { return "$($r.family)_$($r.quant)" }
+        return $r.family
+    }
+
+    $winners = @{}
+    foreach ($r in ($results | Where-Object { $_.ok })) {
+        $key = Get-GroupKey -r $r -mode $GroupBy
+        $cur = $winners[$key]
+        $safe = ($r.shared_peak_mib -le 0)
+        $curSafe = if ($cur) { $cur.shared_peak_mib -le 0 } else { $false }
+        if (-not $cur -or ($safe -and -not $curSafe) -or ($safe -eq $curSafe -and $r.eval_tps -gt $cur.eval_tps)) {
+            $winners[$key] = $r
+        }
+    }
+
+    Write-Host ("Grouping by '{0}'; produced {1} winner(s)" -f $GroupBy, $winners.Count)
+
+    # Generate .bat per winner
+    foreach ($fam in $winners.Keys) {
+        $w = $winners[$fam]
+        $batName = ($fam -replace '[^\w\.\-]', '_') + ".bat"
+        $batPath = Join-Path $LAB_BATS_DIR $batName
+        # Split extra_args into pairs "--flag value" or bare switches "--flag"
+        # Regex grabs a `--name` and optionally its following non-flag value.
+        $pairs = [regex]::Matches($w.extra_args, '(--\S+)(?:\s+("[^"]*"|[^-\s]\S*))?') |
+                 ForEach-Object { $_.Value.Trim() }
+        $lines = @(
+            "@echo off"
+            "REM Auto-generated by llm-lab on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+            "REM Family: $fam"
+            "REM Bench: prompt=$($w.prompt_tps) t/s, eval=$($w.eval_tps) t/s, VRAM peak=$($w.vram_peak_mib) MiB"
+            "REM Test ID: $($w.id)"
+            ""
+            "`"$($cfg.llama_server_exe)`" ^"
+            "    -m `"$($w.model_path)`" ^"
+        )
+        if ($w.mmproj_path) { $lines += "    --mmproj `"$($w.mmproj_path)`" ^" }
+        foreach ($pair in $pairs) { $lines += "    $pair ^" }
+        $lines += "    --metrics"
+        $lines -join "`r`n" | Out-File -Encoding ascii $batPath
+        Write-Host "  wrote $batName"
+    }
+
+    # Build HTML (compact, self-contained)
+    $cfgJson = $cfg | ConvertTo-Json -Depth 5 -Compress
+    $resJson = ($results | ForEach-Object {
+        [ordered]@{
+            id=$_.id; label=$_.label; family=$_.family; tier=$_.tier
+            prompt_tps=([double]$_.prompt_tps); eval_tps=([double]$_.eval_tps)
+            vram_peak_mib=([int]$_.vram_peak_mib); shared_peak_mib=([int]$_.shared_peak_mib)
+            load_sec=([double]$_.load_sec); layers_offloaded=$_.layers_offloaded
+            fit_status=$_.fit_status; wddm_vram_saturation=([double]$_.wddm_vram_saturation)
+            wddm_flag_high_vram=$_.wddm_flag_high_vram; wddm_flag_shared_pos=$_.wddm_flag_shared_pos
+            extra_args=$_.extra_args; ok=$_.ok
+        }
+    }) | ConvertTo-Json -Depth 5 -Compress
+    $winJson = ($winners.GetEnumerator() | ForEach-Object {
+        [ordered]@{ family=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + ".bat") }
+    }) | ConvertTo-Json -Depth 5 -Compress
+
+    $now = (Get-Date).ToString("yyyy-MM-dd HH:mm")
+    $templatePath = Join-Path $LAB_ROOT "report.template.html"
+    if (-not (Test-Path $templatePath)) { throw "Missing report.template.html" }
+    $html = Get-Content $templatePath -Raw
+    $html = $html.Replace("%%NOW%%", $now).Replace("%%DATA%%", $resJson).Replace("%%WINNERS%%", $winJson).Replace("%%CFG%%", $cfgJson)
+    $html | Out-File -Encoding utf8 $LAB_REPORT
+    Write-Host "Report: $LAB_REPORT" -ForegroundColor Green
+}
+
+# ============================================================================
+# SUBCOMMAND: get-sample-models
+# ============================================================================
+function Get-SampleList {
+    $samplesFile = Join-Path $LAB_ROOT "samples.json"
+    if (-not (Test-Path $samplesFile)) { throw "samples.json missing at $samplesFile" }
+    $raw = Get-Content $samplesFile -Raw | ConvertFrom-Json
+    return $raw.samples
+}
+
+function Format-HumanSize {
+    param([long]$bytes)
+    if ($bytes -ge 1GB) { return "{0:N2} GB" -f ($bytes / 1GB) }
+    if ($bytes -ge 1MB) { return "{0:N1} MB" -f ($bytes / 1MB) }
+    return "$bytes bytes"
+}
+
+function Get-SampleDestination {
+    param($sample, $cfg)
+    # Priority: -Destination flag > scan_paths[0] > ./downloaded-models
+    $root = if ($Destination) { $Destination }
+            elseif ($cfg.scan_paths -and $cfg.scan_paths.Count -gt 0) { $cfg.scan_paths[0] }
+            else { Join-Path $LAB_ROOT "downloaded-models" }
+    return (Join-Path $root $sample.target_dir)
+}
+
+function Invoke-HFDownload {
+    # Downloads a single file from HuggingFace via Invoke-WebRequest.
+    # Returns $true on success/skip, $false on failure.
+    param(
+        [string]$Repo,
+        [string]$File,
+        [string]$DestPath,
+        [long]$ExpectedBytes = 0
+    )
+    $url = "https://huggingface.co/$Repo/resolve/main/$File"
+    $destDir = Split-Path $DestPath -Parent
+    if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+
+    if ((Test-Path $DestPath) -and (-not $Force)) {
+        $actual = (Get-Item $DestPath).Length
+        if ($ExpectedBytes -gt 0 -and $actual -eq $ExpectedBytes) {
+            Write-Host ("  [skip] already present: $DestPath ({0})" -f (Format-HumanSize $actual)) -ForegroundColor DarkGray
+            return $true
+        }
+        if ($ExpectedBytes -eq 0) {
+            Write-Host ("  [skip] already present: $DestPath ({0})" -f (Format-HumanSize $actual)) -ForegroundColor DarkGray
+            return $true
+        }
+        Write-Host ("  [resume] partial file at $DestPath ({0}/{1}); -Force to restart" -f (Format-HumanSize $actual), (Format-HumanSize $ExpectedBytes)) -ForegroundColor Yellow
+    }
+
+    Write-Host "  [download] $url" -ForegroundColor Cyan
+    Write-Host "             -> $DestPath"
+    try {
+        # Use BITS if available (resumable, foreground), else fall back to Invoke-WebRequest
+        $progressPref = $ProgressPreference
+        $ProgressPreference = 'SilentlyContinue'  # WebRequest progress is painfully slow in PS 5.1
+        Invoke-WebRequest -Uri $url -OutFile $DestPath -ErrorAction Stop -UseBasicParsing
+        $ProgressPreference = $progressPref
+
+        $got = (Get-Item $DestPath).Length
+        Write-Host ("  [done]  {0}" -f (Format-HumanSize $got)) -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host ("  [FAIL]  {0}" -f $_.Exception.Message) -ForegroundColor Red
+        # Clean up partial file if completely empty
+        if ((Test-Path $DestPath) -and (Get-Item $DestPath).Length -eq 0) {
+            Remove-Item $DestPath -Force -ErrorAction SilentlyContinue
+        }
+        return $false
+    }
+}
+
+function Invoke-GetSampleModels {
+    $cfg = Get-Config
+    $samples = Get-SampleList
+
+    # Filter by -Family or -SampleId if provided
+    $filtered = $samples
+    if ($SampleId)  { $filtered = $filtered | Where-Object { $_.id -like $SampleId } }
+    if ($Family)    { $filtered = $filtered | Where-Object { $_.family -match $Family } }
+
+    Write-Host "=== get-sample-models ===" -ForegroundColor Cyan
+    Write-Host ("Samples catalog: {0} entries" -f $samples.Count)
+    if ($Family -or $SampleId) {
+        Write-Host ("Filtered: {0} matching" -f @($filtered).Count)
+    }
+    Write-Host ""
+
+    # Always print the table first
+    $fmt = "  {0,-2} {1,-24} {2,-30} {3,-14} {4,10}  {5}"
+    Write-Host ($fmt -f "", "ID", "Family", "Quant", "Size", "HF repo") -ForegroundColor White
+    Write-Host ($fmt -f "", ("-"*24), ("-"*30), ("-"*14), ("-"*10), ("-"*40)) -ForegroundColor DarkGray
+    foreach ($s in $filtered) {
+        $dest = Get-SampleDestination -sample $s -cfg $cfg
+        $finalPath = Join-Path $dest $s.hf_file
+        $status = if (Test-Path $finalPath) { "OK" } else { " " }
+        $color = if ($status -eq "OK") { 'Green' } else { 'Gray' }
+        $sizeStr = Format-HumanSize ([long]$s.size_bytes)
+        Write-Host ($fmt -f $status, $s.id, $s.family, $s.variant, $sizeStr, $s.hf_repo) -ForegroundColor $color
+    }
+
+    # Decide what to actually do
+    $toDownload = @()
+    if ($DownloadAll) {
+        $toDownload = @($filtered)
+    } elseif ($SampleId -or $Family) {
+        $toDownload = @($filtered)
+    } else {
+        Write-Host "`nNo -SampleId, -Family or -DownloadAll passed: nothing to download. This was a dry listing." -ForegroundColor Yellow
+        Write-Host "Examples:" -ForegroundColor Yellow
+        Write-Host "  llm-lab get-sample-models -SampleId qwen3.5-9b-q4km"
+        Write-Host "  llm-lab get-sample-models -Family 'Qwen3.5'"
+        Write-Host "  llm-lab get-sample-models -DownloadAll   # requires confirmation"
+        return
+    }
+
+    if ($toDownload.Count -eq 0) {
+        Write-Host "`nNothing matches filters." -ForegroundColor Yellow
+        return
+    }
+
+    # Total size warning
+    $totalBytes = ($toDownload | Measure-Object -Property size_bytes -Sum).Sum
+    $destRoot = if ($Destination) { $Destination }
+                elseif ($cfg.scan_paths -and $cfg.scan_paths.Count -gt 0) { $cfg.scan_paths[0] }
+                else { Join-Path $LAB_ROOT "downloaded-models" }
+    Write-Host ("`nAbout to download {0} file(s), total ~{1}." -f $toDownload.Count, (Format-HumanSize $totalBytes)) -ForegroundColor Yellow
+    Write-Host "Destination root: $destRoot"
+
+    if ($DryRun) {
+        Write-Host "`n[dry-run] not downloading." -ForegroundColor Yellow
+        return
+    }
+
+    if ($DownloadAll -and -not $NonInteractive) {
+        $ok = Read-Host "Proceed? (y/N)"
+        if ($ok -notmatch '^[yY]') { Write-Host "Cancelled."; return }
+    }
+
+    # Download
+    $okCount = 0; $failCount = 0
+    foreach ($s in $toDownload) {
+        Write-Host ("`n[{0}] {1} ({2})" -f $s.id, $s.family, (Format-HumanSize ([long]$s.size_bytes))) -ForegroundColor Cyan
+        $dest = Get-SampleDestination -sample $s -cfg $cfg
+        $modelPath = Join-Path $dest $s.hf_file
+        $ok = Invoke-HFDownload -Repo $s.hf_repo -File $s.hf_file -DestPath $modelPath -ExpectedBytes ([long]$s.size_bytes)
+        if ($ok) { $okCount++ } else { $failCount++ }
+
+        # mmproj if present
+        if ($ok -and $s.mmproj_file) {
+            $mmPath = Join-Path $dest $s.mmproj_file
+            Invoke-HFDownload -Repo $s.hf_repo -File $s.mmproj_file -DestPath $mmPath -ExpectedBytes 0 | Out-Null
+        }
+    }
+
+    Write-Host ""
+    if ($failCount -eq 0) {
+        Write-Host "[$okCount OK / $failCount FAIL] Done. Run 'llm-lab discover' to include them." -ForegroundColor Green
+    } else {
+        Write-Host "[$okCount OK / $failCount FAIL] Some downloads failed. Possible causes:" -ForegroundColor Yellow
+        Write-Host "  - Repo moved or file renamed on HuggingFace -> edit samples.json"
+        Write-Host "  - Model requires accepting a license (Gemma) -> log into HF and accept, then retry"
+        Write-Host "  - Network issue -> retry, or use 'huggingface-cli download' manually"
+    }
+}
+
+# ============================================================================
+# SUBCOMMAND: status
+# ============================================================================
+function Invoke-Status {
+    $cfg = Get-Config
+    Write-Host "=== status ===" -ForegroundColor Cyan
+    Write-Host "Config:"
+    Write-Host "  llama_server_exe = $($cfg.llama_server_exe)"
+    Write-Host "  scan_paths       = $($cfg.scan_paths -join ', ')"
+    Write-Host "  vram_budget      = $($cfg.hardware.vram_safety_budget_mib) / $($cfg.hardware.vram_total_mib) MiB"
+    $catN = if (Test-Path $LAB_CATALOG) { (Get-Content $LAB_CATALOG -Raw | ConvertFrom-Json).Count } else { 0 }
+    $planN = if (Test-Path $LAB_PLAN) { (Get-Content $LAB_PLAN -Raw | ConvertFrom-Json).Count } else { 0 }
+    $resN = (Get-ChildItem $LAB_RESULTS_DIR -Filter "*.json" -ErrorAction SilentlyContinue).Count
+    Write-Host "State:"
+    Write-Host "  catalog: $catN models"
+    Write-Host "  plan:    $planN configs"
+    Write-Host "  results: $resN completed"
+    Write-Host "  report:  $(if (Test-Path $LAB_REPORT) { 'yes' } else { 'no' })"
+    Write-Host "Install:"
+    $installed = (Test-LlmLabInstalled)
+    Write-Host "  global PATH: $(if ($installed) { 'yes (User scope)' } else { 'no  (run: llm-lab install)' })"
+}
+
+# ============================================================================
+# SUBCOMMAND: install / uninstall (manage User PATH so `llm-lab` works globally)
+# ============================================================================
+function Test-LlmLabInstalled {
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    if (-not $userPath) { return $false }
+    $entries = $userPath -split ';' | Where-Object { $_ }
+    return ($entries -contains $LAB_ROOT)
+}
+
+function Invoke-Install {
+    Write-Host "=== install ===" -ForegroundColor Cyan
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $entries = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
+
+    if ($entries -contains $LAB_ROOT) {
+        Write-Host "Already installed: '$LAB_ROOT' is on User PATH." -ForegroundColor DarkGray
+        return
+    }
+
+    $newEntries = $entries + $LAB_ROOT
+    [Environment]::SetEnvironmentVariable("PATH", ($newEntries -join ';'), "User")
+    Write-Host "Added '$LAB_ROOT' to User PATH." -ForegroundColor Green
+
+    # Update the current shell session too, so the user can immediately type `llm-lab`.
+    if (-not (($env:PATH -split ';') -contains $LAB_ROOT)) {
+        $env:PATH = "$env:PATH;$LAB_ROOT"
+        Write-Host "(also patched this session's PATH; new terminals will pick it up automatically.)" -ForegroundColor DarkGray
+    }
+    Write-Host ""
+    Write-Host "You can now run 'llm-lab <command>' from any directory." -ForegroundColor Cyan
+    Write-Host "Try:  llm-lab status"
+}
+
+function Invoke-Uninstall {
+    Write-Host "=== uninstall ===" -ForegroundColor Cyan
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $entries = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
+
+    if ($entries -notcontains $LAB_ROOT) {
+        Write-Host "Not installed: '$LAB_ROOT' is not on User PATH." -ForegroundColor DarkGray
+        return
+    }
+
+    $newEntries = @($entries | Where-Object { $_ -ne $LAB_ROOT })
+    [Environment]::SetEnvironmentVariable("PATH", ($newEntries -join ';'), "User")
+    Write-Host "Removed '$LAB_ROOT' from User PATH." -ForegroundColor Green
+
+    if (($env:PATH -split ';') -contains $LAB_ROOT) {
+        $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -ne $LAB_ROOT }) -join ';'
+        Write-Host "(also patched this session's PATH.)" -ForegroundColor DarkGray
+    }
+    Write-Host ""
+    Write-Host "Open a new terminal for the change to apply globally." -ForegroundColor DarkGray
+    Write-Host "From the project directory you can still use: .\llm-lab.ps1 <command>"
+}
+
+# ============================================================================
+# SUBCOMMAND: config (list / get / set / unset)
+# ============================================================================
+function Get-NestedValue {
+    # Walk a hashtable along a dot-path. Returns @{ found=$bool; value=$any }.
+    param($obj, [string]$path)
+    $parts = $path -split '\.'
+    $cur = $obj
+    foreach ($p in $parts) {
+        if ($cur -is [hashtable] -and $cur.ContainsKey($p)) { $cur = $cur[$p] }
+        else { return @{ found=$false; value=$null } }
+    }
+    return @{ found=$true; value=$cur }
+}
+
+function Set-NestedValue {
+    # Set a value at a dot-path, creating intermediate hashtables as needed.
+    param($obj, [string]$path, $value)
+    $parts = $path -split '\.'
+    $cur = $obj
+    for ($i=0; $i -lt $parts.Count - 1; $i++) {
+        if (-not ($cur -is [hashtable])) { throw "cannot descend into non-object at '$($parts[0..$i] -join '.')'" }
+        if (-not $cur.ContainsKey($parts[$i])) { $cur[$parts[$i]] = @{} }
+        $cur = $cur[$parts[$i]]
+    }
+    if (-not ($cur -is [hashtable])) { throw "cannot set leaf on non-object" }
+    $cur[$parts[-1]] = $value
+}
+
+function Remove-NestedValue {
+    # Remove a key at a dot-path. Returns $true if removed, $false if not present.
+    # After removing the leaf, walks back up the chain and prunes any parent
+    # hashtable that became empty as a result, stopping as soon as we find a
+    # parent that still has siblings. Avoids leaving carcasses like `bench:{}`
+    # in config.json after an unset.
+    param($obj, [string]$path)
+    $parts = $path -split '\.'
+
+    $stack = @()
+    $cur = $obj
+    for ($i=0; $i -lt $parts.Count - 1; $i++) {
+        if (-not ($cur -is [hashtable]) -or -not $cur.ContainsKey($parts[$i])) { return $false }
+        $stack += ,@($cur, $parts[$i])
+        $cur = $cur[$parts[$i]]
+    }
+    if (-not ($cur -is [hashtable]) -or -not $cur.ContainsKey($parts[-1])) { return $false }
+    $cur.Remove($parts[-1])
+
+    for ($i = $stack.Count - 1; $i -ge 0; $i--) {
+        $parent = $stack[$i][0]
+        $key    = $stack[$i][1]
+        if ($parent[$key] -is [hashtable] -and $parent[$key].Count -eq 0) {
+            $parent.Remove($key)
+        } else {
+            break
+        }
+    }
+    return $true
+}
+
+function Get-FlatConfig {
+    # Emit (Key, Value) rows with dot-notation paths, skipping _comment_* keys.
+    # Stream-style: each PSCustomObject flows to the pipeline directly so callers
+    # can either pipe them through ForEach-Object or collect with @(...).
+    param($obj, [string]$prefix = "")
+    foreach ($k in ($obj.Keys | Sort-Object)) {
+        if ($k -match '^_comment') { continue }
+        $key = if ($prefix) { "$prefix.$k" } else { $k }
+        $v = $obj[$k]
+        if ($v -is [hashtable]) {
+            Get-FlatConfig -obj $v -prefix $key
+        } else {
+            [PSCustomObject]@{ Key=$key; Value=$v }
+        }
+    }
+}
+
+function Get-RuntimeType {
+    # Type of the actual value (used for display in list/get).
+    param($v)
+    if ($null -eq $v)                                          { return "null"   }
+    if ($v -is [bool])                                         { return "bool"   }
+    if ($v -is [int] -or $v -is [long])                        { return "int"    }
+    if ($v -is [double] -or $v -is [single] -or $v -is [decimal]) { return "float" }
+    if ($v -is [array])                                        { return "array"  }
+    if ($v -is [hashtable])                                    { return "object" }
+    return "string"
+}
+
+function Get-ConfigValueType {
+    # Type from the default schema (used by set to know how to parse the input).
+    # Returns "null" when the schema has a null placeholder; "unknown" if the key
+    # doesn't exist in the schema at all.
+    param($defaultCfg, [string]$path)
+    $r = Get-NestedValue -obj $defaultCfg -path $path
+    if (-not $r.found) { return "unknown" }
+    return Get-RuntimeType -v $r.value
+}
+
+function Convert-ConfigValueString {
+    # Parse a CLI string into the right type for writing into config.json.
+    # When the schema type is "null" (placeholder in default), guess from the value shape.
+    param([string]$valueStr, [string]$type)
+    switch ($type) {
+        "bool" {
+            if ($valueStr -match '^(true|1|yes|on)$')  { return $true }
+            if ($valueStr -match '^(false|0|no|off)$') { return $false }
+            throw "expected bool (true/false/1/0/yes/no/on/off); got '$valueStr'"
+        }
+        "int"   { return [int]$valueStr }
+        "float" { return [double]$valueStr }
+        "array" { return @($valueStr -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+        "object" { throw "cannot set an entire object; set its leaf keys individually" }
+        "null" {
+            if ($valueStr -match '^(true|false)$')   { return [bool]::Parse($valueStr) }
+            if ($valueStr -match '^-?\d+$')          { return [int]$valueStr }
+            if ($valueStr -match '^-?\d+\.\d+$')     { return [double]$valueStr }
+            return $valueStr
+        }
+        default { return $valueStr }
+    }
+}
+
+function Format-ConfigValue {
+    param($v)
+    if ($null -eq $v)   { return "(null)" }
+    if ($v -is [bool])  { return $v.ToString().ToLower() }
+    if ($v -is [array]) {
+        if ($v.Count -eq 0) { return "[]" }
+        $items = @($v | ForEach-Object {
+            if ($_ -is [hashtable]) { "{...}" }
+            elseif ($_ -is [string]) { '"' + $_ + '"' }
+            elseif ($_ -is [bool]) { $_.ToString().ToLower() }
+            else { [string]$_ }
+        })
+        return "[" + ($items -join ', ') + "]"
+    }
+    if ($v -is [hashtable]) { return "{...}" }
+    return [string]$v
+}
+
+function Show-ConfigUsage {
+    Write-Host "Usage: llm-lab config <action> [<key>] [<value>]"
+    Write-Host ""
+    Write-Host "Actions:" -ForegroundColor White
+    Write-Host "  list                 Print all keys with type + source ([default] / [local])"
+    Write-Host "  get <key>            Print one value (or sub-keys for an object)"
+    Write-Host "  set <key> <value>    Write a leaf value to config.json (override default)"
+    Write-Host "  unset <key>          Remove the local override (default applies again)"
+    Write-Host "  detect [<key>]       Auto-detect a value (interactive picker for ambiguous matches)"
+    Write-Host "                       Supported keys: llama_server_exe, hardware, all (default: all)"
+    Write-Host ""
+    Write-Host "Run 'llm-lab help config' for examples and details."
+}
+
+function Invoke-ConfigDetect {
+    # Re-runs the same detection logic as `init` but writes only the requested key
+    # to the local config. Returns $true on a successful write, $false otherwise.
+    param([string]$keyName, $localCfg, $defaultCfg)
+
+    switch ($keyName) {
+        "llama_server_exe" {
+            Write-Host "Searching for llama-server.exe..." -ForegroundColor Cyan
+            $exes = @(Find-LlamaServerExe)
+            if ($exes.Count -eq 0) {
+                Write-Host "  No candidates found. Set manually with: llm-lab config set llama_server_exe `"<path>`"" -ForegroundColor Yellow
+                return $false
+            }
+            $picked = $null
+            if ($exes.Count -eq 1) {
+                $picked = $exes[0]
+                Write-Host "  Found single candidate: $picked" -ForegroundColor Green
+            } else {
+                Write-Host "  Multiple candidates:" -ForegroundColor Yellow
+                for ($i=0; $i -lt $exes.Count; $i++) { Write-Host "    [$i] $($exes[$i])" }
+                if ($NonInteractive) {
+                    $picked = $exes[0]
+                    Write-Host "  Picked [0] (non-interactive). Re-run with -NonInteractive:`$false to choose."
+                } else {
+                    $idx = Read-Host "  Pick index [0]"
+                    if (-not $idx) { $idx = 0 }
+                    $picked = $exes[[int]$idx]
+                }
+            }
+            $localCfg["llama_server_exe"] = $picked
+            Write-Host "  Set llama_server_exe = $picked" -ForegroundColor Green
+            return $true
+        }
+        "hardware" {
+            Write-Host "Detecting hardware..." -ForegroundColor Cyan
+            $hw = Get-DetectedHardware
+            if ($hw.gpu_name) {
+                Write-Host "  GPU: $($hw.gpu_name), $($hw.vram_total_mib) MiB VRAM, compute $($hw.gpu_compute_cap)" -ForegroundColor Green
+            } else {
+                Write-Host "  nvidia-smi not available or no NVIDIA GPU detected. Set hardware.* keys manually." -ForegroundColor Yellow
+                return $false
+            }
+            if ($hw.cpu_cores_physical) {
+                Write-Host "  CPU: $($hw.cpu_cores_physical)C/$($hw.cpu_threads_logical)T" -ForegroundColor Green
+            }
+
+            $pct = if ($defaultCfg.hardware.vram_safety_budget_pct) { $defaultCfg.hardware.vram_safety_budget_pct } else { 0.95 }
+            if (-not ($localCfg["hardware"] -is [hashtable])) { $localCfg["hardware"] = @{} }
+            $h = $localCfg["hardware"]
+            $h["auto_detect"] = $false
+            if ($hw.vram_total_mib) {
+                $h["vram_total_mib"]         = $hw.vram_total_mib
+                $h["vram_safety_budget_mib"] = [int]($hw.vram_total_mib * $pct)
+            }
+            if ($hw.gpu_name)            { $h["gpu_name"]            = $hw.gpu_name }
+            if ($hw.gpu_compute_cap)     { $h["gpu_compute_cap"]     = $hw.gpu_compute_cap }
+            if ($hw.cpu_cores_physical)  { $h["cpu_cores_physical"]  = $hw.cpu_cores_physical }
+            if ($hw.cpu_threads_logical) { $h["cpu_threads_logical"] = $hw.cpu_threads_logical }
+            return $true
+        }
+        default {
+            Write-Host "Unknown detect key '$keyName'. Supported: llama_server_exe, hardware, all" -ForegroundColor Yellow
+            return $false
+        }
+    }
+}
+
+function Invoke-Config {
+    if (-not $Action) { Show-ConfigUsage; return }
+    $act = $Action.ToLower()
+
+    $defRaw = Get-Content $LAB_DEFAULT_CFG -Raw | ConvertFrom-Json
+    $defaultCfg = ConvertTo-Hashtable -obj $defRaw
+    $effective  = Get-Config
+
+    $localCfg = @{}
+    if (Test-Path $LAB_LOCAL_CFG) {
+        $locRaw = Get-Content $LAB_LOCAL_CFG -Raw | ConvertFrom-Json
+        $localCfg = ConvertTo-Hashtable -obj $locRaw
+    }
+
+    switch ($act) {
+        "list" {
+            $rows = @(Get-FlatConfig -obj $effective)
+            $maxKey = ($rows | ForEach-Object { $_.Key.Length } | Measure-Object -Maximum).Maximum
+            $localLabel = if (Test-Path $LAB_LOCAL_CFG) { Split-Path $LAB_LOCAL_CFG -Leaf } else { "(no local override)" }
+            Write-Host ("=== config (effective: default <- {0}) ===" -f $localLabel) -ForegroundColor Cyan
+            foreach ($r in $rows) {
+                $type   = Get-RuntimeType -v $r.Value
+                $localR = Get-NestedValue -obj $localCfg -path $r.Key
+                $marker = if ($localR.found) { "[local]" } else { "[default]" }
+                $color  = if ($localR.found) { 'Green' } else { 'Gray' }
+                $line   = "  {0,-$maxKey}  {1,-8}  {2,-9}  {3}" -f $r.Key, "($type)", $marker, (Format-ConfigValue $r.Value)
+                Write-Host $line -ForegroundColor $color
+            }
+        }
+        "get" {
+            if (-not $Key) { throw "config get requires a key. Try 'llm-lab config list'." }
+            $r = Get-NestedValue -obj $effective -path $Key
+            if (-not $r.found) { Write-Host "key '$Key' not found." -ForegroundColor Yellow; return }
+            $type   = Get-RuntimeType -v $r.value
+            $localR = Get-NestedValue -obj $localCfg -path $Key
+            $source = if ($localR.found) { "[local]" } else { "[default]" }
+            if ($r.value -is [hashtable]) {
+                Write-Host "$Key (object) $source" -ForegroundColor Cyan
+                Get-FlatConfig -obj $r.value -prefix $Key | ForEach-Object {
+                    $t = Get-RuntimeType -v $_.Value
+                    Write-Host ("  {0}  ({1})  = {2}" -f $_.Key, $t, (Format-ConfigValue $_.Value))
+                }
+            } else {
+                Write-Host ("{0} = {1}  ({2}) {3}" -f $Key, (Format-ConfigValue $r.value), $type, $source) -ForegroundColor Cyan
+            }
+        }
+        "set" {
+            if (-not $Key)        { throw "config set requires a key. e.g. config set hardware.vram_total_mib 8192" }
+            if ($null -eq $Value) { throw "config set requires a value." }
+            $type = Get-ConfigValueType -defaultCfg $defaultCfg -path $Key
+            if ($type -eq "unknown") { throw "key '$Key' is not in config.default.json. Edit the file directly to add new keys." }
+            if ($type -eq "object")  { throw "'$Key' is an object; set its leaf keys individually." }
+            $converted = Convert-ConfigValueString -valueStr $Value -type $type
+            Set-NestedValue -obj $localCfg -path $Key -value $converted
+            $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $LAB_LOCAL_CFG
+            Write-Host ("set {0} = {1}  ({2}) -> {3}" -f $Key, (Format-ConfigValue $converted), $type, (Split-Path $LAB_LOCAL_CFG -Leaf)) -ForegroundColor Green
+        }
+        "unset" {
+            if (-not $Key) { throw "config unset requires a key." }
+            if (-not (Test-Path $LAB_LOCAL_CFG)) {
+                Write-Host "no local config.json present; nothing to unset." -ForegroundColor Yellow
+                return
+            }
+            $removed = Remove-NestedValue -obj $localCfg -path $Key
+            if ($removed) {
+                $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $LAB_LOCAL_CFG
+                Write-Host "unset $Key  (default value applies on next run)" -ForegroundColor Green
+            } else {
+                Write-Host "key '$Key' was not in $(Split-Path $LAB_LOCAL_CFG -Leaf); nothing to do." -ForegroundColor Yellow
+            }
+        }
+        "detect" {
+            $target = if ($Key) { $Key.ToLower() } else { "all" }
+            $any = $false
+            if ($target -eq "all") {
+                $r1 = Invoke-ConfigDetect -keyName "llama_server_exe" -localCfg $localCfg -defaultCfg $defaultCfg
+                Write-Host ""
+                $r2 = Invoke-ConfigDetect -keyName "hardware" -localCfg $localCfg -defaultCfg $defaultCfg
+                $any = ($r1 -or $r2)
+            } else {
+                $any = Invoke-ConfigDetect -keyName $target -localCfg $localCfg -defaultCfg $defaultCfg
+            }
+            if ($any) {
+                $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $LAB_LOCAL_CFG
+                Write-Host ""
+                Write-Host "Saved -> $(Split-Path $LAB_LOCAL_CFG -Leaf)" -ForegroundColor Green
+            } else {
+                Write-Host ""
+                Write-Host "Nothing detected; config.json unchanged." -ForegroundColor DarkGray
+            }
+        }
+        default {
+            Write-Host "Unknown config action '$Action'." -ForegroundColor Yellow
+            Write-Host ""
+            Show-ConfigUsage
+        }
+    }
+}
+
+# ============================================================================
+# SUBCOMMAND: help
+# ============================================================================
+function Invoke-Help {
+    $cmds = [ordered]@{
+        "init"              = "Detect HW + write config.json (interactive or -NonInteractive)."
+        "discover"          = "Scan scan_paths for .gguf, write data/catalog.json."
+        "plan"              = "Expand the catalog into a sweep of test configs (data/plan.json)."
+        "bench"             = "Run pending tests against llama-server, save data/results/*.json."
+        "report"            = "Build data/report.html and data/bats/{family}.bat per winner."
+        "all"               = "discover + plan + bench + report (optionally + download samples)."
+        "status"            = "Show config + counts (catalog/plan/results) + global-install state."
+        "config"            = "Get / set / list / unset config values from CLI."
+        "get-sample-models" = "List or download curated reference GGUFs from HuggingFace."
+        "install"           = "Add this directory to user PATH so 'llm-lab' works globally."
+        "uninstall"         = "Remove this directory from user PATH."
+        "help"              = "This screen, or 'help <command>' for details."
+    }
+
+    $details = @{
+        "init" = @{
+            Usage    = "llm-lab init [-LlamaServer <path>] [-ScanPath <paths>] [-Force] [-NonInteractive]"
+            Flags    = @(
+                "-LlamaServer <path>   Pre-fill llama_server_exe instead of auto-detecting"
+                "-ScanPath <paths>     Pre-fill scan_paths (comma-separated or repeated)"
+                "-Force                Overwrite an existing config.json"
+                "-NonInteractive       Pick the first auto-detected option, no prompts"
+            )
+            Examples = @( "llm-lab init", "llm-lab init -ScanPath D:\models -Force" )
+        }
+        "discover" = @{
+            Usage    = "llm-lab discover [-ScanPath <paths>] [-ExcludePattern <patterns>]"
+            Flags    = @(
+                "-ScanPath <paths>           Scan these instead of config.scan_paths"
+                "-ExcludePattern <patterns>  Skip files matching these wildcards (added to defaults)"
+            )
+            Examples = @( "llm-lab discover", "llm-lab discover -ScanPath D:\models" )
+        }
+        "plan" = @{
+            Usage    = "llm-lab plan [-Family <regex>] [-Tier {A,B,C}] [-DryRun]"
+            Flags    = @(
+                "-Family <regex>   Only plan models whose family name matches"
+                "-Tier {A|B|C}     Only plan tests for the selected tier"
+                "-DryRun           Print what would be planned, don't write plan.json"
+            )
+            Examples = @( "llm-lab plan", "llm-lab plan -Family Qwen3.5 -DryRun" )
+        }
+        "bench" = @{
+            Usage    = "llm-lab bench [-Family <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun]"
+            Flags    = @(
+                "-Family <regex>   Only run configs whose family name matches"
+                "-Tier {A|B|C}     Only run configs for this tier"
+                "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
+                "-Force            Re-run tests whose JSON results already exist"
+                "-DryRun           List configs that would run, don't execute"
+            )
+            Examples = @(
+                "llm-lab bench"
+                "llm-lab bench -Family Qwen3.5-9B"
+                "llm-lab bench -Tier A -Force"
+            )
+        }
+        "report" = @{
+            Usage    = "llm-lab report [-GroupBy {family|family+quant}]"
+            Flags    = @(
+                "-GroupBy family         (default) one winner per family"
+                "-GroupBy family+quant   one winner per (family,quant) pair"
+            )
+            Examples = @( "llm-lab report", "llm-lab report -GroupBy family+quant" )
+        }
+        "all" = @{
+            Usage    = "llm-lab all [-DownloadSamples [-SampleId <id>] [-Family <regex>]] [-Force]"
+            Flags    = @(
+                "-DownloadSamples         Run get-sample-models before the pipeline"
+                "-SampleId <id>           (with -DownloadSamples) only fetch the matching sample"
+                "-Family <regex>          Filter download AND bench by family"
+                "-Force                   Re-run all benchmarks (skip cache)"
+            )
+            Examples = @(
+                "llm-lab all"
+                "llm-lab all -DownloadSamples"
+                "llm-lab all -DownloadSamples -SampleId qwen3.5-9b-q4km"
+            )
+        }
+        "config" = @{
+            Usage    = "llm-lab config <list|get|set|unset|detect> [<key>] [<value>]"
+            Flags    = @(
+                "list                       Print all keys with type + source ([default] / [local])"
+                "get <key>                  Print one value. Object keys list their sub-keys."
+                "set <key> <value>          Write a leaf value to config.json (override)."
+                "                           Type is inferred from config.default.json schema."
+                "                           Arrays accept CSV: 'D:\models,E:\cache'"
+                "                           Bools accept: true/false/1/0/yes/no/on/off"
+                "unset <key>                Remove the local override (default applies again)."
+                "detect [<key>]             Auto-detect a value (interactive picker if ambiguous)."
+                "                           Supported: llama_server_exe, hardware, all (default)."
+                "                           Same logic as 'init' but writes only the requested key."
+            )
+            Examples = @(
+                "llm-lab config list"
+                "llm-lab config get hardware.vram_total_mib"
+                "llm-lab config set hardware.vram_safety_budget_pct 0.92"
+                "llm-lab config set scan_paths 'D:\models,E:\cache'"
+                "llm-lab config unset llama_server_exe"
+                "llm-lab config detect llama_server_exe"
+                "llm-lab config detect hardware"
+                "llm-lab config detect"
+            )
+        }
+        "status" = @{
+            Usage    = "llm-lab status"
+            Flags    = @()
+            Examples = @( "llm-lab status" )
+        }
+        "get-sample-models" = @{
+            Usage    = "llm-lab get-sample-models [-DownloadAll | -SampleId <id> | -Family <regex>] [-Destination <path>] [-DryRun]"
+            Flags    = @(
+                "(no flag)                  Print catalog as a dry listing"
+                "-DownloadAll               Download every sample (asks confirmation, ~100 GB)"
+                "-SampleId <id>             Download only the matching sample id"
+                "-Family <regex>            Filter samples by family"
+                "-Destination <path>        Override target root (default: scan_paths[0])"
+                "-DryRun                    Show what would be downloaded without doing it"
+            )
+            Examples = @(
+                "llm-lab get-sample-models"
+                "llm-lab get-sample-models -SampleId qwen3.5-9b-q4km"
+                "llm-lab get-sample-models -DownloadAll"
+            )
+        }
+        "install" = @{
+            Usage    = "llm-lab install"
+            Flags    = @(
+                "(no flags)                 Adds this directory to the User-scope PATH."
+                "                           Idempotent. Also patches the current shell session."
+                "                           After this, 'llm-lab <cmd>' works from any directory."
+                "                           No admin rights needed (writes only User PATH, not Machine)."
+            )
+            Examples = @( "llm-lab install" )
+        }
+        "uninstall" = @{
+            Usage    = "llm-lab uninstall"
+            Flags    = @(
+                "(no flags)                 Removes this directory from the User-scope PATH."
+                "                           Files in the project remain untouched."
+            )
+            Examples = @( "llm-lab uninstall" )
+        }
+        "help" = @{
+            Usage    = "llm-lab help [<command>]"
+            Flags    = @()
+            Examples = @( "llm-lab help", "llm-lab help bench", "llm-lab help config" )
+        }
+    }
+
+    if (-not $Action) {
+        Write-Host "llm-lab - benchmark crawler/tester for llama.cpp on local GGUFs" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Usage: llm-lab <command> [options]"
+        Write-Host ""
+        Write-Host "Commands:" -ForegroundColor White
+        $w = ($cmds.Keys | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
+        foreach ($k in $cmds.Keys) { Write-Host ("  {0,-$w}  {1}" -f $k, $cmds[$k]) }
+        Write-Host ""
+        Write-Host "Run 'llm-lab help <command>' for usage details and examples."
+        if (-not (Test-LlmLabInstalled)) {
+            Write-Host ""
+            Write-Host "Note: 'llm-lab' is not on your PATH yet. Run '.\llm-lab.ps1 install'" -ForegroundColor DarkYellow
+            Write-Host "      once to enable global invocation; until then use '.\llm-lab.ps1 <cmd>'" -ForegroundColor DarkYellow
+            Write-Host "      or '.\llm-lab.cmd <cmd>' from this directory." -ForegroundColor DarkYellow
+        }
+        return
+    }
+
+    $tgt = $Action.ToLower()
+    if (-not $details.ContainsKey($tgt)) {
+        Write-Host "Unknown command '$Action'. Run 'llm-lab help' for the list." -ForegroundColor Yellow
+        return
+    }
+
+    $d = $details[$tgt]
+    Write-Host ("=== {0} ===" -f $tgt) -ForegroundColor Cyan
+    Write-Host $cmds[$tgt]
+    Write-Host ""
+    Write-Host "Usage:" -ForegroundColor White
+    Write-Host "  $($d.Usage)"
+    if ($d.Flags.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Flags:" -ForegroundColor White
+        foreach ($f in $d.Flags) { Write-Host "  $f" }
+    }
+    if ($d.Examples.Count -gt 0) {
+        Write-Host ""
+        Write-Host "Examples:" -ForegroundColor White
+        foreach ($e in $d.Examples) { Write-Host "  $e" }
+    }
+}
+
+# ============================================================================
+# DISPATCH
+# ============================================================================
+# When this script is dot-sourced (e.g. by tests), $MyInvocation.InvocationName
+# is the literal '.'. In that case we want all the function definitions above
+# to be exported into the caller's scope, but we do NOT want the dispatch
+# below to fire — otherwise just dot-sourcing for tests would print the help
+# banner (or worse, run an actual subcommand).
+if ($MyInvocation.InvocationName -eq '.') { return }
+
+switch ($Command) {
+    "init"               { Invoke-Init }
+    "discover"           { Invoke-Discover }
+    "plan"               { Invoke-Plan }
+    "bench"              { Invoke-Bench }
+    "report"             { Invoke-Report }
+    "status"             { Invoke-Status }
+    "config"             { Invoke-Config }
+    "help"               { Invoke-Help }
+    "install"            { Invoke-Install }
+    "uninstall"          { Invoke-Uninstall }
+    "get-sample-models"  { Invoke-GetSampleModels }
+    "all"                {
+        if ($DownloadSamples) {
+            # Without an explicit filter (-SampleId / -Family / -DownloadAll), default to "all samples".
+            if (-not ($DownloadAll -or $SampleId -or $Family)) { $script:DownloadAll = $true }
+            Invoke-GetSampleModels
+
+            # If neither config.json nor -ScanPath set scan_paths, point discover at the
+            # directory the samples just landed in, otherwise it'd throw "scan_paths is empty".
+            $cfgAfter = Get-Config
+            $scanEmpty = (-not $cfgAfter.scan_paths -or $cfgAfter.scan_paths.Count -eq 0)
+            $cliEmpty  = (-not $script:ScanPath  -or $script:ScanPath.Count  -eq 0)
+            if ($scanEmpty -and $cliEmpty) {
+                $defaultDl = if ($Destination) { $Destination } else { Join-Path $LAB_ROOT "downloaded-models" }
+                $script:ScanPath = @($defaultDl)
+                Write-Host "[all] No scan_paths configured. Will scan $defaultDl (where samples landed)." -ForegroundColor Cyan
+            }
+        }
+        Invoke-Discover; Invoke-Plan; Invoke-Bench; Invoke-Report
+    }
+    default              { Invoke-Help }
+}
+
+# Some native commands we shell out to (notably nvidia-smi on certain driver
+# builds) leave $LASTEXITCODE non-zero even on success, which then propagates
+# to the caller as a misleading non-zero exit. If we made it here without an
+# uncaught exception, the user-visible task succeeded — exit clean.
+$global:LASTEXITCODE = 0
+exit 0

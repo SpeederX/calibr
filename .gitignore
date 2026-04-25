@@ -1,0 +1,41 @@
+# User-specific local override (contains absolute paths to user's machine)
+config.json
+
+# Runtime outputs (catalog, plan, results, report, logs, .bat launchers)
+data/
+
+# Logs anywhere
+*.log
+
+# Sample download destination when no scan_paths is configured
+downloaded-models/
+
+# GGUF / model weight files at any depth — never commit these
+*.gguf
+*.bin
+*.safetensors
+*.partial
+
+# Common model-directory patterns the project / samples.json create at the root
+# when scan_paths is "." or similar. Ignored to keep the repo lean (each model
+# is multiple GB).
+Gemma*/
+Qwen*/
+gemma*/
+qwen*/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Python (some contributors might use scripts)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Test artifacts (temp config files use system temp; this is just a safety net)
+tests/tmp/
+tests/*.tmp.json

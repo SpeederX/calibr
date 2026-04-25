@@ -1,0 +1,68 @@
+{
+  "$schema_version": 1,
+  "_comment": "llm-lab default config. DO NOT EDIT: create ./config.json with your overrides and run '.\\llm-lab.ps1 init' to populate hardware detection.",
+
+  "llama_server_exe": null,
+  "_comment_exe": "Absolute path to llama-server.exe (CUDA build recommended). If null, the tool will try to auto-detect in PATH and in sibling folders of scan_paths.",
+
+  "scan_paths": [],
+  "_comment_scan": "List of absolute paths to recursively scan for .gguf files. Example: ['C:/models', 'D:/llm']. Configured via 'init' or manually.",
+
+  "exclude_patterns": [
+    "mmproj-*.gguf",
+    "ggml-vocab-*.gguf",
+    "*draft*.gguf",
+    "*.partial"
+  ],
+
+  "hardware": {
+    "auto_detect": true,
+    "vram_total_mib": null,
+    "vram_safety_budget_mib": null,
+    "vram_safety_budget_pct": 0.95,
+    "_comment_budget": "Fraction of VRAM considered safe from WDDM paging (Windows-specific). Empirical: 0.95 on a desktop with browser open.",
+    "gpu_name": null,
+    "gpu_compute_cap": null,
+    "cpu_cores_physical": null,
+    "cpu_threads_logical": null
+  },
+
+  "bench": {
+    "prompt": "Write a Python function that computes the Fibonacci sequence recursively with memoization. Include an explanatory docstring and a usage example.",
+    "n_predict": 128,
+    "port": 18080,
+    "wait_sec_ready": 180,
+    "warmup": true,
+    "_comment_warmup": "Run one small completion with identical prompt and cache_prompt=true before the real bench, to compile CUDA graphs for all batch sizes in use. Without this the first run has a 10-20s compile penalty that pollutes prompt_per_second."
+  },
+
+  "base_args": "--flash-attn auto --parallel 1 --batch-size 2048 --ubatch-size 512 --no-mmap --prio 2",
+  "_comment_base": "Flags applied to every benchmark. --flash-attn auto is safer than 'on' (falls back on builds that don't support it). Thread counts are injected dynamically from hardware.cpu_cores_*.",
+
+  "tier_classification": {
+    "overhead_mib": 1200,
+    "_comment_overhead": "Approximate fixed VRAM overhead beyond model weights: compute buffers (~500), recurrent/SSM state (~50-200), mmproj (~900 if present), graph+misc (~100). Used to decide A vs C.",
+    "moe_ncpumoe_sweep": [28, 30, 32, 34, 36],
+    "c_ngl_sweep": [20, 24, 28, 32, 36]
+  },
+
+  "tier_a_candidates": [
+    { "ctx": 16384,  "kv": "q8_0" },
+    { "ctx": 32768,  "kv": "q8_0" },
+    { "ctx": 65536,  "kv": "q8_0" },
+    { "ctx": 98304,  "kv": "q8_0" },
+    { "ctx": 131072, "kv": "q4_0" },
+    { "ctx": 163840, "kv": "q4_0" }
+  ],
+  "_comment_candidates": "Context / KV-quant combos to try for Tier A models. q8_0 -> near-lossless, q4_0 -> unlocks ~2x more ctx at minor quality hit.",
+
+  "wddm_detection": {
+    "vram_saturation_threshold": 0.92,
+    "_comment_sat": "If peak_vram / total_vram exceeds this, config is flagged as 'WDDM risk'.",
+    "eval_drop_threshold": 0.5,
+    "_comment_drop": "Within a family, if eval_tps < drop_threshold * max_eval_tps_in_family, flag as 'WDDM paging suspected'.",
+    "enable_shared_mem_counter": true,
+    "shared_delta_confirm_mib": 500,
+    "_comment_counter": "Poll Windows Perf Counter '\\GPU Adapter Memory(*)\\Shared Usage' during bench. Only a delta (above baseline) greater than shared_delta_confirm_mib is considered a confirmed WDDM paging event -- smaller drifts are background noise from other GPU consumers (browser, Discord)."
+  }
+}

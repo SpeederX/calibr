@@ -1,0 +1,154 @@
+{
+  "$schema_version": 1,
+  "_notes": [
+    "Curated list of reference GGUF models for llm-lab. Purpose: give users a common dataset so benchmark numbers are comparable across different hardware.",
+    "Sizes span 0.8B to 31B so every VRAM budget has something to test.",
+    "target_dir is relative to scan_paths[0] in config.json. Files land at {scan_paths[0]}/{target_dir}/{hf_file}.",
+    "hf_file matches an existing path inside the hf_repo. If a repo is taken down or renamed, edit this file and submit a PR.",
+    "Some Gemma family models require accepting a license on HuggingFace; download may fail with 401 until you do.",
+    "size_bytes is informational (used for skip-if-complete); it is not verified against the server."
+  ],
+
+  "samples": [
+    {
+      "id": "qwen3.5-0.8b-q8",
+      "family": "Qwen3.5-0.8B",
+      "variant": "Q8_0",
+      "tier_hint": "A",
+      "hf_repo": "unsloth/Qwen3.5-0.8B-GGUF",
+      "hf_file": "Qwen3.5-0.8B-Q8_0.gguf",
+      "target_dir": "Qwen3.5-0.8B",
+      "size_bytes": 811843840,
+      "notes": "Smallest Qwen3.5 variant. 8-bit, near-lossless. Good warm-up model."
+    },
+    {
+      "id": "qwen3.5-0.8b-q4xl",
+      "family": "Qwen3.5-0.8B",
+      "variant": "UD-Q4_K_XL",
+      "tier_hint": "A",
+      "hf_repo": "unsloth/Qwen3.5-0.8B-GGUF",
+      "hf_file": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+      "target_dir": "Qwen3.5-0.8B",
+      "size_bytes": 558772480,
+      "notes": "Unsloth Dynamic 4-bit. Fastest small model in benchmarks."
+    },
+    {
+      "id": "qwen3.5-2b-q4xl",
+      "family": "Qwen3.5-2B",
+      "variant": "UD-Q4_K_XL",
+      "tier_hint": "A",
+      "hf_repo": "unsloth/Qwen3.5-2B-GGUF",
+      "hf_file": "Qwen3.5-2B-UD-Q4_K_XL.gguf",
+      "target_dir": "Qwen3.5-2B",
+      "mmproj_file": "mmproj-F16.gguf",
+      "size_bytes": 1339752704,
+      "notes": "Multimodal (vision). Pair with mmproj-F16."
+    },
+    {
+      "id": "qwen3.5-2b-bf16",
+      "family": "Qwen3.5-2B",
+      "variant": "BF16",
+      "tier_hint": "A",
+      "hf_repo": "unsloth/Qwen3.5-2B-GGUF",
+      "hf_file": "Qwen3.5-2B-BF16.gguf",
+      "target_dir": "Qwen3.5-2B",
+      "mmproj_file": "mmproj-F16.gguf",
+      "size_bytes": 3775709216,
+      "notes": "Full precision 2B. Quality reference for the family."
+    },
+    {
+      "id": "qwen3.5-4b-q4km",
+      "family": "Qwen3.5-4B",
+      "variant": "Q4_K_M",
+      "tier_hint": "A",
+      "hf_repo": "unsloth/Qwen3.5-4B-GGUF",
+      "hf_file": "Qwen3.5-4B-Q4_K_M.gguf",
+      "target_dir": "Qwen3.5-4B",
+      "size_bytes": 2740937888,
+      "notes": "Mid-size dense. No mmproj in this release."
+    },
+    {
+      "id": "qwen3.5-9b-q4km",
+      "family": "Qwen3.5-9B",
+      "variant": "Q4_K_M",
+      "tier_hint": "A",
+      "hf_repo": "unsloth/Qwen3.5-9B-GGUF",
+      "hf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+      "target_dir": "Qwen3.5-9B",
+      "mmproj_file": "mmproj-F16.gguf",
+      "size_bytes": 5627040640,
+      "notes": "The 8GB-VRAM sweet spot. Hybrid SSM+attention, 32 layers, only 8 with KV cache."
+    },
+    {
+      "id": "qwen3.5-27b-q4ks",
+      "family": "Qwen3.5-27B",
+      "variant": "Q4_K_S",
+      "tier_hint": "C",
+      "hf_repo": "unsloth/Qwen3.5-27B-GGUF",
+      "hf_file": "Qwen3.5-27B-Q4_K_S.gguf",
+      "target_dir": "Qwen3.5-27B",
+      "mmproj_file": "mmproj-F16.gguf",
+      "size_bytes": 15769159584,
+      "notes": "Smallest 27B quant. Partial GPU offload required on <= 16GB VRAM."
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "family": "Qwen3.6-35B-A3B",
+      "variant": "UD-Q4_K_M",
+      "tier_hint": "B",
+      "hf_repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+      "hf_file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "target_dir": "Qwen3.6-35B-A3B",
+      "size_bytes": 22134528992,
+      "notes": "MoE with ~3B active params. Runs in 8GB VRAM with --n-cpu-moe 34."
+    },
+
+    {
+      "id": "gemma-4-e2b",
+      "family": "Gemma-4-E2B",
+      "variant": "Q4_K_M",
+      "tier_hint": "A",
+      "hf_repo": "unsloth/gemma-4-E2B-it-GGUF",
+      "hf_file": "gemma-4-E2B-it-Q4_K_M.gguf",
+      "target_dir": "Gemma 4",
+      "mmproj_file": "mmproj-F16.gguf",
+      "size_bytes": 2500000000,
+      "notes": "Smaller Gemma 4 Effective 2B. Multimodal (vision + audio)."
+    },
+    {
+      "id": "gemma-4-e4b",
+      "family": "Gemma-4-E4B",
+      "variant": "Q4_K_M",
+      "tier_hint": "A",
+      "hf_repo": "unsloth/gemma-4-E4B-it-GGUF",
+      "hf_file": "gemma-4-E4B-it-Q4_K_M.gguf",
+      "target_dir": "Gemma 4",
+      "mmproj_file": "mmproj-F16.gguf",
+      "size_bytes": 4977169088,
+      "notes": "Effective 4B. Vision + audio encoders; 43 layers fully on GPU in 8GB."
+    },
+    {
+      "id": "gemma-4-26b-a4b",
+      "family": "Gemma-4-26B-A4B",
+      "variant": "UD-Q4_K_M",
+      "tier_hint": "B",
+      "hf_repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
+      "hf_file": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+      "target_dir": "Gemma 4-26B-A4B",
+      "size_bytes": 16000000000,
+      "notes": "MoE ~4B active. Comparable to Qwen3.6-35B-A3B routing strategy."
+    },
+    {
+      "id": "gemma-4-31b-q4km",
+      "family": "Gemma-4-31B",
+      "variant": "Q4_K_M",
+      "tier_hint": "C",
+      "hf_repo": "unsloth/gemma-4-31B-it-GGUF",
+      "hf_file": "gemma-4-31B-it-Q4_K_M.gguf",
+      "target_dir": "Gemma 4-31B",
+      "mmproj_file": "mmproj-F16.gguf",
+      "size_bytes": 18500000000,
+      "notes": "Dense 31B. Requires partial offload on < 20GB VRAM."
+    }
+  ]
+}
