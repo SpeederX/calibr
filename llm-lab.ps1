@@ -855,6 +855,39 @@ function Invoke-Bench {
 # ============================================================================
 # SUBCOMMAND: report
 # ============================================================================
+function Get-ResultDerivedFields {
+    # Compute the derived metrics the report's charts need from a raw result.
+    # Pure: no I/O, no globals. Tested in tests/Helpers.Tests.ps1.
+    #   time_total_sec = prompt_n / prompt_tps + eval_n / eval_tps
+    #   headroom_mib   = max(0, vram_total_mib - vram_peak_mib)
+    #   ctx_size       = parsed from `--ctx-size N` in extra_args (else $null)
+    param($result, [int]$vramTotal)
+
+    $promptN  = if ($null -ne $result.prompt_n) { [int]$result.prompt_n } else { 0 }
+    $evalN    = if ($null -ne $result.eval_n)   { [int]$result.eval_n }   else { 0 }
+    $promptTs = if ($null -ne $result.prompt_tps) { [double]$result.prompt_tps } else { 0 }
+    $evalTs   = if ($null -ne $result.eval_tps)   { [double]$result.eval_tps }   else { 0 }
+
+    $timeTotal = $null
+    if ($promptN -gt 0 -and $evalN -gt 0 -and $promptTs -gt 0 -and $evalTs -gt 0) {
+        $timeTotal = [math]::Round(($promptN / $promptTs) + ($evalN / $evalTs), 2)
+    }
+
+    $vramPeak = if ($null -ne $result.vram_peak_mib) { [int]$result.vram_peak_mib } else { 0 }
+    $headroom = [Math]::Max(0, $vramTotal - $vramPeak)
+
+    $ctxSize = $null
+    if ($result.extra_args -and ($result.extra_args -match '--ctx-size\s+(\d+)')) {
+        $ctxSize = [int]$Matches[1]
+    }
+
+    return @{
+        time_total_sec = $timeTotal
+        headroom_mib   = $headroom
+        ctx_size       = $ctxSize
+    }
+}
+
 function Invoke-Report {
     $cfg = Get-Config
     Write-Host "=== report ===" -ForegroundColor Cyan
@@ -928,15 +961,24 @@ function Invoke-Report {
 
     # Build HTML (compact, self-contained)
     $cfgJson = $cfg | ConvertTo-Json -Depth 5 -Compress
+    $vramTotal = if ($cfg.hardware -and $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
     $resJson = ($results | ForEach-Object {
+        $r = $_
+        $derived = Get-ResultDerivedFields -result $r -vramTotal $vramTotal
+        $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
         [ordered]@{
-            id=$_.id; label=$_.label; family=$_.family; tier=$_.tier
-            prompt_tps=([double]$_.prompt_tps); eval_tps=([double]$_.eval_tps)
-            vram_peak_mib=([int]$_.vram_peak_mib); shared_peak_mib=([int]$_.shared_peak_mib)
-            load_sec=([double]$_.load_sec); layers_offloaded=$_.layers_offloaded
-            fit_status=$_.fit_status; wddm_vram_saturation=([double]$_.wddm_vram_saturation)
-            wddm_flag_high_vram=$_.wddm_flag_high_vram; wddm_flag_shared_pos=$_.wddm_flag_shared_pos
-            extra_args=$_.extra_args; ok=$_.ok
+            id=$r.id; label=$r.label; family=$r.family; tier=$r.tier
+            prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
+            vram_peak_mib=([int]$r.vram_peak_mib); shared_peak_mib=([int]$r.shared_peak_mib)
+            load_sec=([double]$r.load_sec); layers_offloaded=$r.layers_offloaded
+            fit_status=$r.fit_status; wddm_vram_saturation=([double]$r.wddm_vram_saturation)
+            wddm_flag_high_vram=$r.wddm_flag_high_vram; wddm_flag_shared_pos=$r.wddm_flag_shared_pos
+            extra_args=$r.extra_args; ok=$r.ok
+            # Derived for the new charts and the headroom annotation:
+            time_total_sec=$derived.time_total_sec
+            headroom_mib=$derived.headroom_mib
+            ctx_size=$derived.ctx_size
+            kv_cache_mib=$kvCache
         }
     }) | ConvertTo-Json -Depth 5 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {
