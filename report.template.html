@@ -35,12 +35,20 @@
   .stat-val { font-family: Consolas, monospace; color: #fff; font-size: 14px; font-weight: 600; }
   .bat-link { display: inline-block; margin-top: 8px; padding: 3px 9px; background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; }
   .bar-row { display: grid; grid-template-columns: 260px 1fr 90px; gap: 8px; align-items: center; margin: 2px 0; }
+  .bar-row.bar-row-ann { grid-template-columns: 260px 1fr 90px 150px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-row .track { background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
   .bar-row .fill { height: 100%; background: linear-gradient(90deg,#5fd4ff,#4ade80); }
   .bar-row .fill.tier-B { background: linear-gradient(90deg,#fbbf24,#f59e0b); }
   .bar-row .fill.tier-C { background: linear-gradient(90deg,#ef4444,#b91c1c); }
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
+  .bar-row .ann { font-family: Consolas, monospace; font-size: 11px; text-align: right; color: var(--c-muted); }
+  .scatter-bg-ram   { fill: rgba(255,255,255,0.025); }
+  .scatter-line-gpu { stroke: var(--c-c); stroke-dasharray: 4 4; stroke-width: 1.2; opacity: 0.7; }
+  .scatter-axis     { stroke: var(--c-border); stroke-width: 1; }
+  .scatter-tick     { fill: var(--c-muted); font-size: 10px; font-family: Consolas, monospace; }
+  .scatter-dot      { stroke-width: 2; cursor: default; }
+  .scatter-dot:hover { stroke: var(--c-accent); stroke-width: 2.5; }
   .tabs { display: flex; gap: 4px; margin: 14px 0 0; }
   .tab { padding: 6px 12px; background: var(--c-card); border: 1px solid var(--c-border); border-bottom: none;
          border-radius: 5px 5px 0 0; cursor: pointer; font-size: 12px; color: var(--c-muted); }
@@ -60,7 +68,12 @@
   <h2>Eval tokens/s</h2>
   <div id="eval-bars"></div>
 
+  <h2>Memory vs latency</h2>
+  <p class="meta">One dot per ok config. <b>Y</b> = VRAM peak + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). Hover for details.</p>
+  <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
+
   <h2>VRAM peak (MiB) vs safety budget</h2>
+  <p class="meta">Sorted ascending: less VRAM at top = better. The headroom column estimates how many extra context tokens fit in the unused VRAM at this run's KV-cache cost (CUDA builds only).</p>
   <div id="vram-bars"></div>
 
   <h2>WDDM paging watchlist</h2>
@@ -117,25 +130,120 @@ WINNERS.forEach(w => {
 });
 
 // ---- Bars ----
-function bars(id, field, maxv, unit) {
+function bars(id, field, maxv, unit, opts) {
+  opts = opts || {};
+  const dir = opts.dir || 'desc';
+  const annotate = opts.annotate || null;
   const el = document.getElementById(id);
-  const sorted = [...DATA].filter(d => d.ok).sort((a,b) => b[field] - a[field]);
+  const sorted = [...DATA].filter(d => d.ok).sort((a,b) =>
+    dir === 'asc' ? a[field] - b[field] : b[field] - a[field]
+  );
   sorted.forEach(d => {
     const pct = Math.min(100, (d[field] / maxv) * 100);
     const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM+' + d.shared_peak_mib + 'MiB]</span>' :
                   d.wddm_flag_high_vram  ? ' <span class="wddm">[WDDM?' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
+    const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
     el.insertAdjacentHTML('beforeend',
-      '<div class="bar-row">' +
+      '<div class="bar-row' + (annotate ? ' bar-row-ann' : '') + '">' +
         '<div class="name"><span class="tier-' + d.tier + '">[' + d.tier + ']</span> ' + d.label + badge + '</div>' +
         '<div class="track"><div class="fill tier-' + d.tier + '" style="width:' + pct + '%"></div></div>' +
         '<div class="val">' + d[field].toFixed(1) + ' ' + unit + '</div>' +
+        annHtml +
       '</div>'
     );
   });
 }
+
+// VRAM-headroom annotation. Uses the bench's measured kv_cache_mib (CUDA only)
+// to project the spare VRAM into a rough extra-context token count. Squiggle
+// is intentional: KV grows monotonically with ctx but compute buffers grow too.
+function vramHeadroom(d) {
+  const cap = CFG.hardware && CFG.hardware.vram_total_mib ? CFG.hardware.vram_total_mib : 0;
+  if (cap > 0 && d.vram_peak_mib >= cap) return '<span class="meta">saturated</span>';
+  const left = d.headroom_mib != null ? d.headroom_mib : 0;
+  if (d.kv_cache_mib && d.ctx_size && d.kv_cache_mib > 0) {
+    const tokens = Math.round(left / (d.kv_cache_mib / d.ctx_size));
+    return '+' + left + ' MiB ≈ +' + tokens + ' tok';
+  }
+  return '+' + left + ' MiB';
+}
+
 const maxEval = Math.max(...DATA.filter(d => d.ok).map(d => d.eval_tps), 1);
 bars('eval-bars', 'eval_tps', Math.ceil(maxEval*1.1), 't/s');
-bars('vram-bars', 'vram_peak_mib', CFG.hardware.vram_total_mib || 8192, 'MiB');
+bars('vram-bars', 'vram_peak_mib', CFG.hardware.vram_total_mib || 8192, 'MiB',
+     { dir: 'asc', annotate: vramHeadroom });
+
+// ---- Scatter: memory vs latency ----
+// Deterministic family -> hue. Same family always lands on the same color;
+// different families spread around the wheel. Sat/lightness fixed for legibility.
+function familyColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
+  const hue = ((h % 360) + 360) % 360;
+  return 'hsl(' + hue + ', 70%, 65%)';
+}
+
+function renderScatter() {
+  const svg = document.getElementById('scatter');
+  const W = 1000, H = 380, M = { l: 60, r: 16, t: 24, b: 36 };
+  const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
+  const cap = (CFG.hardware && CFG.hardware.vram_total_mib) ? CFG.hardware.vram_total_mib : 8192;
+  const pts = DATA.filter(d => d.ok && d.time_total_sec != null).map(d => ({
+    d: d,
+    x: d.time_total_sec,
+    y: d.vram_peak_mib + Math.max(0, d.shared_peak_mib || 0)
+  }));
+  if (pts.length === 0) {
+    svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" class="scatter-tick">No ok runs to plot.</text>';
+    return;
+  }
+  const xMax = Math.max(0.001, Math.max(...pts.map(p => p.x))) * 1.1;
+  const yMaxRaw = Math.max(Math.max(...pts.map(p => p.y)), cap + 4096);
+  const yMax = Math.ceil(yMaxRaw / 1024) * 1024;
+  const xs = v => M.l + (v / xMax) * innerW;
+  const ys = v => M.t + innerH - (v / yMax) * innerH;
+  const yGpu = ys(cap);
+
+  let p = [];
+  // RAM region tint (above the GPU line)
+  p.push('<rect class="scatter-bg-ram" x="' + M.l + '" y="' + M.t + '" width="' + innerW + '" height="' + (yGpu - M.t) + '"/>');
+  // Axes
+  p.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + M.t + '" x2="' + M.l + '" y2="' + (M.t + innerH) + '"/>');
+  p.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + (M.t + innerH) + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
+  // Y ticks (memory in MiB)
+  for (let i = 0; i <= 5; i++) {
+    const v = (yMax * i / 5);
+    const y = ys(v);
+    p.push('<line class="scatter-axis" x1="' + (M.l - 4) + '" y1="' + y + '" x2="' + M.l + '" y2="' + y + '"/>');
+    p.push('<text class="scatter-tick" x="' + (M.l - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + Math.round(v) + '</text>');
+  }
+  // X ticks (seconds)
+  for (let i = 0; i <= 5; i++) {
+    const v = (xMax * i / 5);
+    const x = xs(v);
+    p.push('<line class="scatter-axis" x1="' + x + '" y1="' + (M.t + innerH) + '" x2="' + x + '" y2="' + (M.t + innerH + 4) + '"/>');
+    p.push('<text class="scatter-tick" x="' + x + '" y="' + (M.t + innerH + 16) + '" text-anchor="middle">' + v.toFixed(1) + '</text>');
+  }
+  // Axis labels
+  p.push('<text class="scatter-tick" x="' + (M.l + innerW/2) + '" y="' + (H - 6) + '" text-anchor="middle">Total time (s)</text>');
+  p.push('<text class="scatter-tick" transform="translate(14,' + (M.t + innerH/2) + ') rotate(-90)" text-anchor="middle">Memory used (MiB)</text>');
+  // GPU VRAM reference line + label
+  p.push('<line class="scatter-line-gpu" x1="' + M.l + '" y1="' + yGpu + '" x2="' + (M.l + innerW) + '" y2="' + yGpu + '"/>');
+  p.push('<text class="scatter-tick" x="' + (M.l + innerW - 6) + '" y="' + (yGpu - 4) + '" text-anchor="end">GPU VRAM (' + cap + ' MiB)</text>');
+  // Dots
+  pts.forEach(pt => {
+    const d = pt.d;
+    const cx = xs(pt.x);
+    const cy = ys(Math.min(pt.y, yMax));
+    const fill = familyColor(d.family);
+    const stroke = d.tier === 'A' ? 'var(--c-a)' : d.tier === 'B' ? 'var(--c-b)' : 'var(--c-c)';
+    const tip = d.label + ' · vram peak ' + d.vram_peak_mib + ' · shared +' + (d.shared_peak_mib || 0) +
+                ' · time ' + pt.x + 's · eval ' + d.eval_tps.toFixed(1) + ' t/s';
+    p.push('<circle class="scatter-dot" cx="' + cx + '" cy="' + cy + '" r="5" fill="' + fill + '" stroke="' + stroke + '"><title>' + tip + '</title></circle>');
+  });
+  svg.innerHTML = p.join('');
+}
+renderScatter();
 
 // ---- WDDM watchlist ----
 const flagged = DATA.filter(d => d.ok && (d.wddm_flag_shared_pos || d.wddm_flag_high_vram));
