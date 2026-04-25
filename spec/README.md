@@ -18,3 +18,6 @@ gets a plan in `../plans/`. See `../architecture/README.md`.
 - [report-vram-bar-ascending.md](report-vram-bar-ascending.md) — VRAM bar chart sort order
 - [report-2d-scatter.md](report-2d-scatter.md) — 2D scatter plot, memory vs latency
 - [report-vram-headroom.md](report-vram-headroom.md) — per-config VRAM headroom indicator
+- [scatter-log-scale.md](scatter-log-scale.md) — log-10 X axis for the latency-vs-memory scatter
+- [winner-picker-prefer-speed.md](winner-picker-prefer-speed.md) — `-PreferSpeed` flag, opt-out of safety preference
+- [dense-overrides.md](dense-overrides.md) — explicit list to override MoE filename false positives
