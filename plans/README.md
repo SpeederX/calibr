@@ -11,3 +11,4 @@ plan is bigger. See `../architecture/README.md` for the distinction.
 ## Index
 
 - [2026-04-25 — bench UX hardening (backend check, progress bar, family-skip)](2026-04-25-bench-ux-hardening.md)
+- [2026-04-25 — chart improvements (sort, scatter, headroom)](2026-04-25-chart-improvements.md)
