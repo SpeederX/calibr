@@ -222,6 +222,27 @@ Describe "Test-IsBetterWinner" {
             Assert-False (Test-IsBetterWinner -candidate $candidate -current $current -preferSpeed)
         }
     }
+    Describe "shared_delta_confirm_mib threshold" {
+        It "treats baseline drift below the default threshold as safe" {
+            # Real desktop case: Chrome+Discord baseline ~250 MiB. Picker should
+            # NOT call this paging (default threshold = 500).
+            $current   = _r 30 250     # background drift, formerly considered paging
+            $candidate = _r 40 280     # higher eval, also drift
+            # Both safe under threshold=500 -> pick by eval_tps.
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "still treats clear paging (above threshold) as unsafe" {
+            $current   = _r 30 100     # safe drift
+            $candidate = _r 50 1000    # paging
+            Assert-False (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "respects a custom -sharedConfirmMib parameter" {
+            $current   = _r 30 100     # safe under 500, BUT unsafe under 50
+            $candidate = _r 50 30      # safe under 50 too
+            # With strict threshold 50, current is "paging" and candidate is safe -> safety wins.
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current -sharedConfirmMib 50)
+        }
+    }
 }
 
 Describe "Get-ResultDerivedFields" {
