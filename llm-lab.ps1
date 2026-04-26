@@ -884,12 +884,18 @@ function Test-IsBetterWinner {
     # group. Default rule: a non-paging config always beats a paging one;
     # among equally-safe configs, higher eval_tps wins. With -PreferSpeed:
     # safety is ignored, raw eval_tps is the only criterion.
+    #
+    # "Paging" means shared_peak_mib > $sharedConfirmMib. The default 500 MiB
+    # matches wddm_detection.shared_delta_confirm_mib so the picker and the
+    # report watchlist agree: small drift from background apps (Chrome, Discord)
+    # at ~200-300 MiB is NOT counted as paging.
+    #
     # Pure: no I/O, no globals, used by Invoke-Report and unit tests.
-    param($candidate, $current, [switch]$preferSpeed)
+    param($candidate, $current, [switch]$preferSpeed, [int]$sharedConfirmMib = 500)
     if (-not $current) { return $true }
     if ($preferSpeed) { return ([double]$candidate.eval_tps -gt [double]$current.eval_tps) }
-    $cSafe   = ([int]$candidate.shared_peak_mib -le 0)
-    $curSafe = ([int]$current.shared_peak_mib   -le 0)
+    $cSafe   = ([int]$candidate.shared_peak_mib -le $sharedConfirmMib)
+    $curSafe = ([int]$current.shared_peak_mib   -le $sharedConfirmMib)
     if ($cSafe -and -not $curSafe) { return $true }
     if (-not $cSafe -and $curSafe) { return $false }
     return ([double]$candidate.eval_tps -gt [double]$current.eval_tps)
@@ -960,10 +966,13 @@ function Invoke-Report {
         return $r.family
     }
 
+    $confirmMib = if ($cfg.wddm_detection -and $cfg.wddm_detection.shared_delta_confirm_mib) {
+        [int]$cfg.wddm_detection.shared_delta_confirm_mib
+    } else { 500 }
     $winners = @{}
     foreach ($r in ($results | Where-Object { $_.ok })) {
         $key = Get-GroupKey -r $r -mode $GroupBy
-        if (Test-IsBetterWinner -candidate $r -current $winners[$key] -preferSpeed:$PreferSpeed) {
+        if (Test-IsBetterWinner -candidate $r -current $winners[$key] -preferSpeed:$PreferSpeed -sharedConfirmMib $confirmMib) {
             $winners[$key] = $r
         }
     }
