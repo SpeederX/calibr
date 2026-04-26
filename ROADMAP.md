@@ -26,15 +26,12 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] Scatter chart log-scale X axis (orders of magnitude readable)
 - [x] `dense_overrides` exact-match list for MoE filename false positives
 - [x] `-PreferSpeed` flag (winner picker can opt out of safety preference)
+- [x] Picker uses `wddm_detection.shared_delta_confirm_mib` as the paging
+      threshold (was a too-strict `> 0`). Default + `-PreferSpeed` now diverge
+      meaningfully on real desktops with Chrome/Discord baselines.
 
 ## Open — code & UX
 
-- [ ] **Picker safety threshold mismatch**: `Invoke-Report`'s picker treats any
-      `shared_peak_mib > 0` as "paging" while `wddm_flag_shared_pos` (used by
-      the watchlist) only flags `> shared_delta_confirm_mib` (default 500 MiB).
-      On a normal desktop the Chrome/Discord baseline (~200-250 MiB) is below
-      that threshold but trips the picker, masking the safety preference.
-      Picker should use the same confirmed threshold.
 - [ ] N-run with median for variance reduction (current ±5 % on `eval_tps`).
 
 ## Open — portability
