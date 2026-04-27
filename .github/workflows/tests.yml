@@ -24,12 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse llm-lab.ps1
+      - name: Parse calibr.ps1
         shell: pwsh
         run: |
           $errs = $null
           [System.Management.Automation.Language.Parser]::ParseFile(
-            "$PWD/llm-lab.ps1", [ref]$null, [ref]$errs
+            "$PWD/calibr.ps1", [ref]$null, [ref]$errs
           ) | Out-Null
           if ($errs) {
             $errs | ForEach-Object { Write-Error $_ }

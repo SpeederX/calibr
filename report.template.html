@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>llm-lab report</title>
+<title>calibr report</title>
 <style>
   :root {
     --c-bg:#0f1420; --c-card:#1a2030; --c-border:#2a3040; --c-text:#e8ecf0;
@@ -58,11 +58,11 @@
 </head>
 <body>
 <div class="container">
-  <h1>llm-lab benchmark report</h1>
+  <h1>calibr benchmark report</h1>
   <div class="meta">Generated %%NOW%%</div>
   <div class="hw" id="hw"></div>
 
-  <h2>Winners per family</h2>
+  <h2>Winners per model</h2>
   <div class="grid" id="winners"></div>
 
   <h2>Eval tokens/s</h2>
@@ -85,7 +85,7 @@
   <div class="tab-content">
     <table id="all">
       <thead><tr>
-        <th>ID</th><th>Tier</th><th>Family</th><th>Config</th>
+        <th>ID</th><th>Tier</th><th>Model</th><th>Config</th>
         <th class="num">Prompt t/s</th><th class="num">Eval t/s</th>
         <th class="num">VRAM</th><th class="num">Shared</th>
         <th>Layers</th><th>Fit</th>
@@ -116,7 +116,7 @@ WINNERS.forEach(w => {
   if (!r) return;
   wGrid.insertAdjacentHTML('beforeend',
     '<div class="card">' +
-      '<h3>' + w.family + ' <span class="tier-' + r.tier + '">[' + r.tier + ']</span></h3>' +
+      '<h3>' + w.model + ' <span class="tier-' + r.tier + '">[' + r.tier + ']</span></h3>' +
       '<div class="stats">' +
         '<div><div class="meta">Eval</div><div class="stat-val">' + r.eval_tps.toFixed(1) + ' t/s</div></div>' +
         '<div><div class="meta">Prompt</div><div class="stat-val">' + r.prompt_tps.toFixed(0) + ' t/s</div></div>' +
@@ -174,9 +174,9 @@ bars('vram-bars', 'vram_peak_mib', CFG.hardware.vram_total_mib || 8192, 'MiB',
      { dir: 'asc', annotate: vramHeadroom });
 
 // ---- Scatter: memory vs latency ----
-// Deterministic family -> hue. Same family always lands on the same color;
-// different families spread around the wheel. Sat/lightness fixed for legibility.
-function familyColor(name) {
+// Deterministic model -> hue. Same model always lands on the same color;
+// different models spread around the wheel. Sat/lightness fixed for legibility.
+function modelColor(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
   const hue = ((h % 360) + 360) % 360;
@@ -243,7 +243,7 @@ function renderScatter() {
     const d = pt.d;
     const cx = xs(pt.x);
     const cy = ys(Math.min(pt.y, yMax));
-    const fill = familyColor(d.family);
+    const fill = modelColor(d.model);
     const stroke = d.tier === 'A' ? 'var(--c-a)' : d.tier === 'B' ? 'var(--c-b)' : 'var(--c-c)';
     const tip = d.label + ' · vram peak ' + d.vram_peak_mib + ' · shared +' + (d.shared_peak_mib || 0) +
                 ' · time ' + pt.x + 's · eval ' + d.eval_tps.toFixed(1) + ' t/s';
@@ -288,7 +288,7 @@ function buildTable(filter) {
       '<tr>' +
         '<td><code>' + d.id + '</code></td>' +
         '<td class="tier-' + d.tier + '">' + d.tier + '</td>' +
-        '<td>' + d.family + '</td>' +
+        '<td>' + d.model + '</td>' +
         '<td style="max-width:360px;font-size:11px;color:var(--c-muted)">' + d.extra_args + '</td>' +
         '<td class="num">' + (d.prompt_tps ? d.prompt_tps.toFixed(1) : '-') + '</td>' +
         '<td class="num"><b>' + (d.eval_tps ? d.eval_tps.toFixed(1) : '-') + '</b></td>' +

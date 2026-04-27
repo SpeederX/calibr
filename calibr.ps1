@@ -1,30 +1,30 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    llm-lab -- crawler/tester for GGUF models via llama.cpp
+    calibr -- crawler/tester for GGUF models via llama.cpp
 
 .DESCRIPTION
     Discovers GGUF models in configured paths, classifies each by tier based on
     a VRAM safety budget, generates and runs a benchmark plan with WDDM-paging
-    detection on Windows, and emits an HTML report plus per-family .bat launchers.
+    detection on Windows, and emits an HTML report plus per-model .bat launchers.
 
 .EXAMPLE
-    llm-lab init                     # first-time setup: detect HW, write config.json
-    llm-lab discover                 # scan for .gguf files
-    llm-lab plan                     # generate test plan
-    llm-lab bench -Tier A            # run only Tier A benchmarks
-    llm-lab bench -Family Qwen3.5-9B # run only this family
-    llm-lab report                   # build HTML + .bat
-    llm-lab all                      # full pipeline (works on whatever .gguf are on disk)
-    llm-lab all -DownloadSamples     # fetch curated samples first, then run the pipeline
-    llm-lab all -DownloadSamples -SampleId qwen3.5-9b-q4km   # only one sample (~5 GB)
+    calibr init                     # first-time setup: detect HW, write config.json
+    calibr discover                 # scan for .gguf files
+    calibr plan                     # generate test plan
+    calibr bench -Tier A            # run only Tier A benchmarks
+    calibr bench -Model Qwen3.5-9B  # run only this model
+    calibr report                   # build HTML + .bat
+    calibr all                      # full pipeline (works on whatever .gguf are on disk)
+    calibr all -DownloadSamples     # fetch curated samples first, then run the pipeline
+    calibr all -DownloadSamples -SampleId qwen3.5-9b-q4km   # only one sample (~5 GB)
 
     # One-shot without editing config.json (useful for CI / try-and-throw-away):
-    llm-lab discover -ScanPath "D:\models","E:\llm-cache"
-    llm-lab all -ScanPath "C:\foo" -LlamaServer "C:\bin\llama-server.exe"
+    calibr discover -ScanPath "D:\models","E:\llm-cache"
+    calibr all -ScanPath "C:\foo" -LlamaServer "C:\bin\llama-server.exe"
 
 .NOTES
-    Project: https://github.com/<OWNER>/llm-lab  (update after publishing)
+    Project: https://github.com/<OWNER>/calibr  (update after publishing)
 #>
 
 [CmdletBinding()]
@@ -48,7 +48,7 @@ param(
     [string]$Value = "",
 
     [string]$Config = "",
-    [string]$Family = "",
+    [string]$Model = "",
     [ValidateSet("", "A", "B", "C")][string]$Tier = "",
     [string]$Id = "",
     [switch]$DryRun,
@@ -68,8 +68,8 @@ param(
     [string]$Destination = "",       # override target root (default: scan_paths[0])
 
     # Used by report: how to group results when selecting winners
-    [ValidateSet("family", "family+quant")]
-    [string]$GroupBy = "family",
+    [ValidateSet("model", "model+variant")]
+    [string]$GroupBy = "model",
 
     # Used by report (and `all`): pick the highest-eval_tps config per group,
     # ignoring WDDM-paging safety. Default off — safety wins ties.
@@ -81,18 +81,18 @@ $ErrorActionPreference = "Stop"
 # ============================================================================
 # PATHS
 # ============================================================================
-$script:LAB_ROOT = $PSScriptRoot
-$script:LAB_DEFAULT_CFG = Join-Path $LAB_ROOT "config.default.json"
-$script:LAB_LOCAL_CFG   = if ($Config) { $Config } else { Join-Path $LAB_ROOT "config.json" }
-$script:LAB_DATA_DIR    = Join-Path $LAB_ROOT "data"
-$script:LAB_CATALOG     = Join-Path $LAB_DATA_DIR "catalog.json"
-$script:LAB_PLAN        = Join-Path $LAB_DATA_DIR "plan.json"
-$script:LAB_RESULTS_DIR = Join-Path $LAB_DATA_DIR "results"
-$script:LAB_LOGS_DIR    = Join-Path $LAB_DATA_DIR "logs"
-$script:LAB_BATS_DIR    = Join-Path $LAB_DATA_DIR "bats"
-$script:LAB_REPORT      = Join-Path $LAB_DATA_DIR "report.html"
+$script:CALIBR_ROOT = $PSScriptRoot
+$script:CALIBR_DEFAULT_CFG = Join-Path $CALIBR_ROOT "config.default.json"
+$script:CALIBR_LOCAL_CFG   = if ($Config) { $Config } else { Join-Path $CALIBR_ROOT "config.json" }
+$script:CALIBR_DATA_DIR    = Join-Path $CALIBR_ROOT "data"
+$script:CALIBR_CATALOG     = Join-Path $CALIBR_DATA_DIR "catalog.json"
+$script:CALIBR_PLAN        = Join-Path $CALIBR_DATA_DIR "plan.json"
+$script:CALIBR_RESULTS_DIR = Join-Path $CALIBR_DATA_DIR "results"
+$script:CALIBR_LOGS_DIR    = Join-Path $CALIBR_DATA_DIR "logs"
+$script:CALIBR_BATS_DIR    = Join-Path $CALIBR_DATA_DIR "bats"
+$script:CALIBR_REPORT      = Join-Path $CALIBR_DATA_DIR "report.html"
 
-foreach ($d in @($LAB_DATA_DIR, $LAB_RESULTS_DIR, $LAB_LOGS_DIR, $LAB_BATS_DIR)) {
+foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
 
@@ -133,11 +133,11 @@ function ConvertTo-Hashtable {
 }
 
 function Get-Config {
-    if (-not (Test-Path $LAB_DEFAULT_CFG)) { throw "Missing config.default.json at $LAB_DEFAULT_CFG" }
-    $defRaw = Get-Content $LAB_DEFAULT_CFG -Raw | ConvertFrom-Json
+    if (-not (Test-Path $CALIBR_DEFAULT_CFG)) { throw "Missing config.default.json at $CALIBR_DEFAULT_CFG" }
+    $defRaw = Get-Content $CALIBR_DEFAULT_CFG -Raw | ConvertFrom-Json
     $default = ConvertTo-Hashtable -obj $defRaw
-    if (Test-Path $LAB_LOCAL_CFG) {
-        $locRaw = Get-Content $LAB_LOCAL_CFG -Raw | ConvertFrom-Json
+    if (Test-Path $CALIBR_LOCAL_CFG) {
+        $locRaw = Get-Content $CALIBR_LOCAL_CFG -Raw | ConvertFrom-Json
         $local = ConvertTo-Hashtable -obj $locRaw
         $default = Merge-Hashtables $default $local
     }
@@ -213,7 +213,7 @@ function Find-LlamaServerExe {
     if ($onPath) { $candidates.Add($onPath.Path) }
 
     # Look in parent folders of ROOT up to 3 levels
-    $p = $LAB_ROOT
+    $p = $CALIBR_ROOT
     for ($i=0; $i -lt 3; $i++) {
         $p = Split-Path $p -Parent
         if (-not $p) { break }
@@ -280,7 +280,7 @@ function Test-BackendHealthy {
 
 function Find-ModelRoots {
     # Suggest scan_paths: parent of ROOT, sibling folders that look like model storage
-    $p = Split-Path $LAB_ROOT -Parent
+    $p = Split-Path $CALIBR_ROOT -Parent
     $parent = Split-Path $p -Parent
     $candidates = [System.Collections.Generic.List[string]]::new()
     if ($parent -and (Test-Path $parent)) {
@@ -301,9 +301,9 @@ function Find-ModelRoots {
 # SUBCOMMAND: init
 # ============================================================================
 function Invoke-Init {
-    Write-Host "=== llm-lab init ===" -ForegroundColor Cyan
+    Write-Host "=== calibr init ===" -ForegroundColor Cyan
 
-    $cfgRaw = Get-Content $LAB_DEFAULT_CFG -Raw | ConvertFrom-Json
+    $cfgRaw = Get-Content $CALIBR_DEFAULT_CFG -Raw | ConvertFrom-Json
     $cfg = ConvertTo-Hashtable -obj $cfgRaw
     $override = @{}
 
@@ -393,13 +393,13 @@ function Invoke-Init {
         cpu_threads_logical    = $override.hardware.cpu_threads_logical
     }
 
-    if ((Test-Path $LAB_LOCAL_CFG) -and (-not $Force)) {
-        Write-Warning "`n$LAB_LOCAL_CFG already exists. Use -Force to overwrite."
+    if ((Test-Path $CALIBR_LOCAL_CFG) -and (-not $Force)) {
+        Write-Warning "`n$CALIBR_LOCAL_CFG already exists. Use -Force to overwrite."
         return
     }
-    $out | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $LAB_LOCAL_CFG
-    Write-Host "`nWrote $LAB_LOCAL_CFG" -ForegroundColor Green
-    Write-Host "Next: llm-lab discover" -ForegroundColor Cyan
+    $out | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_LOCAL_CFG
+    Write-Host "`nWrote $CALIBR_LOCAL_CFG" -ForegroundColor Green
+    Write-Host "Next: calibr discover" -ForegroundColor Cyan
 }
 
 # ============================================================================
@@ -410,27 +410,36 @@ function Get-ModelMetadata {
     $file = Get-Item -LiteralPath $path
     $fname = $file.BaseName
 
-    $quant  = "unknown"
-    $family = $fname
-    $quantPatterns = @(
-        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_XL)$',
-        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_M)$',
-        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_S)$',
-        '^(?<fam>.+?)[\.\-](?<q>Q\d+_K_[A-Z]+)$',
-        '^(?<fam>.+?)[\.\-](?<q>Q\d+_\d+)$',
-        '^(?<fam>.+?)[\.\-](?<q>IQ\d+_[A-Z_]+)$',
-        '^(?<fam>.+?)[\.\-](?<q>BF16|F16|F32)$'
+    $variant = "unknown"
+    $model   = $fname
+    $variantPatterns = @(
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_XL)$',
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_M)$',
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_S)$',
+        '^(?<m>.+?)[\.\-](?<v>Q\d+_K_[A-Z]+)$',
+        '^(?<m>.+?)[\.\-](?<v>Q\d+_\d+)$',
+        '^(?<m>.+?)[\.\-](?<v>IQ\d+_[A-Z_]+)$',
+        '^(?<m>.+?)[\.\-](?<v>BF16|F16|F32)$'
     )
-    foreach ($p in $quantPatterns) {
-        if ($fname -match $p) { $family = $Matches.fam; $quant = $Matches.q; break }
+    foreach ($p in $variantPatterns) {
+        if ($fname -match $p) { $model = $Matches.m; $variant = $Matches.v; break }
+    }
+
+    # Series: parsed from model. Strip the trailing size+suffix token group
+    # (e.g. "Qwen3.5-9B" -> "Qwen3.5", "Gemma-4-E2B-it" -> "Gemma-4",
+    # "Qwen3.6-35B-A3B" -> "Qwen3.6"). Falls back to the model itself if
+    # nothing matches.
+    $series = $model
+    if ($model -match '^(.+?)-[A-Z]?\d+(\.\d+)?B(-A\d+B)?(-it|-Instruct)?$') {
+        $series = $Matches[1]
     }
 
     # MoE heuristics: -A\d+B (active params) or explicit MoE/Mixtral
-    $is_moe = ($family -match 'A\d+B' -or $family -match 'MoE' -or $family -match 'Mixtral')
+    $is_moe = ($model -match 'A\d+B' -or $model -match 'MoE' -or $model -match 'Mixtral')
 
     # Param count in billions (best-effort)
     $params_b = 0
-    if ($family -match '(\d+\.?\d*)B') { $params_b = [double]$Matches[1] }
+    if ($model -match '(\d+\.?\d*)B') { $params_b = [double]$Matches[1] }
 
     # Sibling mmproj (prefer F16 < BF16 < F32)
     $mmproj = $null
@@ -448,8 +457,9 @@ function Get-ModelMetadata {
         name       = $file.Name
         size_bytes = $file.Length
         size_mib   = [int]($file.Length / 1MB)
-        family     = $family
-        quant      = $quant
+        model      = $model
+        series     = $series
+        variant    = $variant
         params_b   = $params_b
         is_moe     = $is_moe
         mmproj     = $mmproj
@@ -458,7 +468,7 @@ function Get-ModelMetadata {
 }
 
 function Invoke-DenseOverrideFilter {
-    # Post-hoc filter: clear is_moe if the family is on the user's
+    # Post-hoc filter: clear is_moe if the model is on the user's
     # dense_overrides list. The MoE regex inside Get-ModelMetadata stays
     # untouched (real MoE families are still detected by default); the
     # override is a small, exact-match escape hatch for false positives.
@@ -470,7 +480,7 @@ function Invoke-DenseOverrideFilter {
     # -ccontains keeps the comparison case-sensitive (per spec). -contains
     # in PowerShell is case-insensitive by default; we do not want
     # `qwen3.6-35b-a3b` to silently match `Qwen3.6-35B-A3B` and disable MoE.
-    if ($meta.is_moe -and ($list -ccontains $meta.family)) {
+    if ($meta.is_moe -and ($list -ccontains $meta.model)) {
         $meta.is_moe = $false
     }
     return $meta
@@ -480,7 +490,7 @@ function Invoke-Discover {
     $cfg = Get-Config
     Write-Host "=== discover ===" -ForegroundColor Cyan
     if (-not $cfg.scan_paths -or $cfg.scan_paths.Count -eq 0) {
-        throw "scan_paths is empty. Run 'llm-lab init' or edit config.json."
+        throw "scan_paths is empty. Run 'calibr init' or edit config.json."
     }
 
     $catalog = @()
@@ -497,12 +507,12 @@ function Invoke-Discover {
             $meta = Get-ModelMetadata $f.FullName
             $meta = Invoke-DenseOverrideFilter -meta $meta -denseOverrides $cfg.dense_overrides
             $catalog += $meta
-            Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.family, $meta.size_mib, $meta.quant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
+            Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.model, $meta.size_mib, $meta.variant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
         }
     }
 
-    $catalog | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $LAB_CATALOG
-    Write-Host ("Catalog: {0} models -> {1}" -f $catalog.Count, $LAB_CATALOG) -ForegroundColor Green
+    $catalog | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_CATALOG
+    Write-Host ("Catalog: {0} models -> {1}" -f $catalog.Count, $CALIBR_CATALOG) -ForegroundColor Green
 }
 
 # ============================================================================
@@ -521,16 +531,17 @@ function Get-Tier {
 
 function New-PlanItem {
     param($meta, $tier, $extraArgs, $label, $idx)
-    $sanitized = ($meta.family + "_" + $meta.quant) -replace '[^\w]', '_'
+    $sanitized = ($meta.model + "_" + $meta.variant) -replace '[^\w]', '_'
     $id = "T{0:D3}_{1}_{2}" -f $idx, $sanitized.Substring(0, [Math]::Min(30, $sanitized.Length)), ($label -replace '[^\w]', '_').Substring(0, [Math]::Min(20, ($label -replace '[^\w]', '_').Length))
     return @{
         id          = $id
         model_path  = $meta.path
         mmproj_path = $meta.mmproj
-        family      = $meta.family
-        quant       = $meta.quant
+        model       = $meta.model
+        variant     = $meta.variant
+        series      = $meta.series
         tier        = $tier
-        label       = "$($meta.family) $($meta.quant) @ $label"
+        label       = "$($meta.model) $($meta.variant) @ $label"
         extra_args  = $extraArgs
     }
 }
@@ -538,8 +549,8 @@ function New-PlanItem {
 function Invoke-Plan {
     $cfg = Get-Config
     Write-Host "=== plan ===" -ForegroundColor Cyan
-    if (-not (Test-Path $LAB_CATALOG)) { throw "catalog.json missing. Run: llm-lab discover" }
-    $catRaw = Get-Content $LAB_CATALOG -Raw | ConvertFrom-Json
+    if (-not (Test-Path $CALIBR_CATALOG)) { throw "catalog.json missing. Run: calibr discover" }
+    $catRaw = Get-Content $CALIBR_CATALOG -Raw | ConvertFrom-Json
     $catalog = ConvertTo-Hashtable -obj $catRaw
 
     $threadsArg = ""
@@ -551,7 +562,7 @@ function Invoke-Plan {
     $plan = @()
     $idx = 1
     foreach ($m in $catalog) {
-        if ($Family -and $m.family -notmatch $Family) { continue }
+        if ($Model -and $m.model -notmatch $Model) { continue }
         $tier = Get-Tier -meta $m -cfg $cfg
         if ($Tier -and $tier -ne $Tier) { continue }
 
@@ -577,8 +588,8 @@ function Invoke-Plan {
         }
     }
 
-    $plan | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $LAB_PLAN
-    Write-Host ("Plan: {0} test configs -> {1}" -f $plan.Count, $LAB_PLAN) -ForegroundColor Green
+    $plan | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_PLAN
+    Write-Host ("Plan: {0} test configs -> {1}" -f $plan.Count, $CALIBR_PLAN) -ForegroundColor Green
     if ($DryRun) {
         $plan | ForEach-Object { Write-Host ("  [{0}] {1}" -f $_.tier, $_.label) }
     }
@@ -604,8 +615,8 @@ function Get-SharedGPUMemoryMib {
 function Invoke-OneBench {
     param($item, $cfg)
 
-    $logFile  = Join-Path $LAB_LOGS_DIR    "$($item.id).log"
-    $jsonFile = Join-Path $LAB_RESULTS_DIR "$($item.id).json"
+    $logFile  = Join-Path $CALIBR_LOGS_DIR    "$($item.id).log"
+    $jsonFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
 
     if ((Test-Path $jsonFile) -and (-not $Force)) {
         Write-Host ("[{0}] cached (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
@@ -672,8 +683,9 @@ function Invoke-OneBench {
     $result = [ordered]@{
         id              = $item.id
         label           = $item.label
-        family          = $item.family
-        quant           = $item.quant
+        model           = $item.model
+        variant         = $item.variant
+        series          = $item.series
         tier            = $item.tier
         timestamp       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
         model_path      = $item.model_path
@@ -745,9 +757,9 @@ function Invoke-OneBench {
             else { $result[$k] = [double]$m.Groups[1].Value }
         }
     }
-    # Trap llama.cpp builds that don't recognize a model's architecture (e.g. an
-    # older build vs. a brand-new family). Surface the architecture name so the
-    # caller can short-circuit further tests on the same family.
+    # Trap llama.cpp builds that don't recognize a model's architecture (e.g.
+    # an older build vs. a brand-new lineage). Surface the architecture name
+    # so the caller can short-circuit further tests on the same model.
     $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
     if ($mArch.Success) { $result.unsupported_architecture = $mArch.Groups[1].Value }
     if ($err -match 'successfully fit params') { $result.fit_status = "success" }
@@ -784,10 +796,10 @@ function Invoke-OneBench {
 function Invoke-Bench {
     $cfg = Get-Config
     if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
-        throw "llama_server_exe missing or invalid. Run 'llm-lab init'."
+        throw "llama_server_exe missing or invalid. Run 'calibr init'."
     }
-    if (-not (Test-Path $LAB_PLAN)) { throw "plan.json missing. Run 'llm-lab plan'." }
-    $planRaw = Get-Content $LAB_PLAN -Raw | ConvertFrom-Json
+    if (-not (Test-Path $CALIBR_PLAN)) { throw "plan.json missing. Run 'calibr plan'." }
+    $planRaw = Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json
     $plan = ConvertTo-Hashtable -obj $planRaw
 
     Write-Host "=== bench ===" -ForegroundColor Cyan
@@ -806,7 +818,7 @@ function Invoke-Bench {
     # PowerShell unwraps to the bare hashtable and $filtered.Count returns the
     # number of keys (8) instead of 1, which throws the [i/total] display off.
     $filtered = @($plan | Where-Object {
-        (-not $Family -or $_.family -match $Family) -and
+        (-not $Model -or $_.model -match $Model) -and
         (-not $Tier   -or $_.tier  -eq $Tier) -and
         (-not $Id     -or $_.id    -like $Id)
     })
@@ -828,8 +840,8 @@ function Invoke-Bench {
     foreach ($item in $filtered) {
         $i++
 
-        if ($abandoned.ContainsKey($item.family)) {
-            $reason = $abandoned[$item.family]
+        if ($abandoned.ContainsKey($item.model)) {
+            $reason = $abandoned[$item.model]
             Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkYellow
             $skipCount++
             continue
@@ -843,7 +855,7 @@ function Invoke-Bench {
         }
         $pct = if ($total -gt 0) { (($i - 1) / $total) * 100 } else { 0 }
 
-        Write-Progress -Activity "llm-lab bench" `
+        Write-Progress -Activity "calibr bench" `
                        -Status   "[$i/$total] running - ETA $etaStr" `
                        -CurrentOperation $item.label `
                        -PercentComplete $pct
@@ -853,12 +865,12 @@ function Invoke-Bench {
         if ($r.ok) { $okCount++ } else { $failCount++ }
 
         if (-not $r.ok -and $r.unsupported_architecture) {
-            $abandoned[$item.family] = "unsupported architecture '$($r.unsupported_architecture)'"
-            Write-Host "  -> abandoning remaining tests for family '$($item.family)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
+            $abandoned[$item.model] = "unsupported architecture '$($r.unsupported_architecture)'"
+            Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
         }
     }
 
-    Write-Progress -Activity "llm-lab bench" -Completed
+    Write-Progress -Activity "calibr bench" -Completed
 
     # Final summary
     $duration = (Get-Date) - $startTime
@@ -866,7 +878,7 @@ function Invoke-Bench {
     $bar = ("=" * 63)
     Write-Host ""
     Write-Host $bar -ForegroundColor Cyan
-    Write-Host (" llm-lab bench - done in $durStr") -ForegroundColor Cyan
+    Write-Host (" calibr bench - done in $durStr") -ForegroundColor Cyan
     Write-Host ("   {0} ok . {1} fail . {2} skipped (out of {3})" -f $okCount, $failCount, $skipCount, $total)
     if ($abandoned.Count -gt 0) {
         Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
@@ -939,31 +951,56 @@ function Invoke-Report {
     Write-Host "=== report ===" -ForegroundColor Cyan
 
     $results = @()
-    Get-ChildItem $LAB_RESULTS_DIR -Filter "*.json" | Sort-Object Name | ForEach-Object {
+    Get-ChildItem $CALIBR_RESULTS_DIR -Filter "*.json" | Sort-Object Name | ForEach-Object {
         $r = Get-Content $_.FullName -Raw | ConvertFrom-Json
         $results += $r
     }
-    if ($results.Count -eq 0) { throw "No results. Run 'llm-lab bench' first." }
+    if ($results.Count -eq 0) { throw "No results. Run 'calibr bench' first." }
 
-    # Back-compat: older result JSONs may lack the 'quant' field. Backfill it from plan.json.
-    if (Test-Path $LAB_PLAN) {
-        $planIdx = @{}
-        $planRaw = Get-Content $LAB_PLAN -Raw | ConvertFrom-Json
-        foreach ($p in $planRaw) { $planIdx[$p.id] = $p.quant }
-        foreach ($r in $results) {
-            if (-not $r.quant -and $planIdx[$r.id]) {
-                $r | Add-Member -NotePropertyName quant -NotePropertyValue $planIdx[$r.id] -Force
-            }
+    # v1.0 migration: pre-v1 result JSONs used `family` and `quant`. Detect
+    # any in the loaded set, backfill model/variant/series, and rewrite the
+    # file so subsequent runs are clean. Idempotent.
+    $migrated = 0
+    foreach ($jsonFile in (Get-ChildItem $CALIBR_RESULTS_DIR -Filter "*.json" -ErrorAction SilentlyContinue)) {
+        $r = Get-Content $jsonFile.FullName -Raw | ConvertFrom-Json
+        $touched = $false
+        if ($null -eq $r.model -and $r.PSObject.Properties.Name -contains 'family') {
+            $r | Add-Member -NotePropertyName model -NotePropertyValue $r.family -Force
+            $touched = $true
+        }
+        if ($null -eq $r.variant -and $r.PSObject.Properties.Name -contains 'quant') {
+            $r | Add-Member -NotePropertyName variant -NotePropertyValue $r.quant -Force
+            $touched = $true
+        }
+        if ($null -eq $r.series -and $r.model) {
+            $s = $r.model
+            if ($s -match '^(.+?)-[A-Z]?\d+(\.\d+)?B(-A\d+B)?(-it|-Instruct)?$') { $s = $Matches[1] }
+            $r | Add-Member -NotePropertyName series -NotePropertyValue $s -Force
+            $touched = $true
+        }
+        if ($touched) {
+            $r.PSObject.Properties.Remove('family') | Out-Null
+            $r.PSObject.Properties.Remove('quant')  | Out-Null
+            $r | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile.FullName
+            $migrated++
+        }
+    }
+    if ($migrated -gt 0) {
+        Write-Host ("migrated {0} result file(s) to v1 schema" -f $migrated) -ForegroundColor DarkGray
+        # Reload the now-migrated results so the rest of the function sees the new shape.
+        $results = @()
+        Get-ChildItem $CALIBR_RESULTS_DIR -Filter "*.json" | Sort-Object Name | ForEach-Object {
+            $results += (Get-Content $_.FullName -Raw | ConvertFrom-Json)
         }
     }
 
-    # Pick winner per grouping key (family, or family+quant if -GroupBy family+quant).
+    # Pick winner per grouping key (model, or model+variant if -GroupBy model+variant).
     # Default safety rule: a config without WDDM paging always beats one that pages.
     # With -PreferSpeed: ignore safety, pick the highest eval_tps.
     function Get-GroupKey {
         param($r, $mode)
-        if ($mode -eq "family+quant") { return "$($r.family)_$($r.quant)" }
-        return $r.family
+        if ($mode -eq "model+variant") { return "$($r.model)_$($r.variant)" }
+        return $r.model
     }
 
     $confirmMib = if ($cfg.wddm_detection -and $cfg.wddm_detection.shared_delta_confirm_mib) {
@@ -980,18 +1017,18 @@ function Invoke-Report {
     Write-Host ("Grouping by '{0}'; produced {1} winner(s)" -f $GroupBy, $winners.Count)
 
     # Generate .bat per winner
-    foreach ($fam in $winners.Keys) {
-        $w = $winners[$fam]
-        $batName = ($fam -replace '[^\w\.\-]', '_') + ".bat"
-        $batPath = Join-Path $LAB_BATS_DIR $batName
+    foreach ($key in $winners.Keys) {
+        $w = $winners[$key]
+        $batName = ($key -replace '[^\w\.\-]', '_') + ".bat"
+        $batPath = Join-Path $CALIBR_BATS_DIR $batName
         # Split extra_args into pairs "--flag value" or bare switches "--flag"
         # Regex grabs a `--name` and optionally its following non-flag value.
         $pairs = [regex]::Matches($w.extra_args, '(--\S+)(?:\s+("[^"]*"|[^-\s]\S*))?') |
                  ForEach-Object { $_.Value.Trim() }
         $lines = @(
             "@echo off"
-            "REM Auto-generated by llm-lab on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-            "REM Family: $fam"
+            "REM Auto-generated by calibr on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+            "REM Model: $key"
             "REM Bench: prompt=$($w.prompt_tps) t/s, eval=$($w.eval_tps) t/s, VRAM peak=$($w.vram_peak_mib) MiB"
             "REM Test ID: $($w.id)"
             ""
@@ -1013,7 +1050,7 @@ function Invoke-Report {
         $derived = Get-ResultDerivedFields -result $r -vramTotal $vramTotal
         $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
         [ordered]@{
-            id=$r.id; label=$r.label; family=$r.family; tier=$r.tier
+            id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; tier=$r.tier
             prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
             vram_peak_mib=([int]$r.vram_peak_mib); shared_peak_mib=([int]$r.shared_peak_mib)
             load_sec=([double]$r.load_sec); layers_offloaded=$r.layers_offloaded
@@ -1028,23 +1065,23 @@ function Invoke-Report {
         }
     }) | ConvertTo-Json -Depth 5 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {
-        [ordered]@{ family=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + ".bat") }
+        [ordered]@{ model=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + ".bat") }
     }) | ConvertTo-Json -Depth 5 -Compress
 
     $now = (Get-Date).ToString("yyyy-MM-dd HH:mm")
-    $templatePath = Join-Path $LAB_ROOT "report.template.html"
+    $templatePath = Join-Path $CALIBR_ROOT "report.template.html"
     if (-not (Test-Path $templatePath)) { throw "Missing report.template.html" }
     $html = Get-Content $templatePath -Raw
     $html = $html.Replace("%%NOW%%", $now).Replace("%%DATA%%", $resJson).Replace("%%WINNERS%%", $winJson).Replace("%%CFG%%", $cfgJson)
-    $html | Out-File -Encoding utf8 $LAB_REPORT
-    Write-Host "Report: $LAB_REPORT" -ForegroundColor Green
+    $html | Out-File -Encoding utf8 $CALIBR_REPORT
+    Write-Host "Report: $CALIBR_REPORT" -ForegroundColor Green
 }
 
 # ============================================================================
 # SUBCOMMAND: get-sample-models
 # ============================================================================
 function Get-SampleList {
-    $samplesFile = Join-Path $LAB_ROOT "samples.json"
+    $samplesFile = Join-Path $CALIBR_ROOT "samples.json"
     if (-not (Test-Path $samplesFile)) { throw "samples.json missing at $samplesFile" }
     $raw = Get-Content $samplesFile -Raw | ConvertFrom-Json
     return $raw.samples
@@ -1062,7 +1099,7 @@ function Get-SampleDestination {
     # Priority: -Destination flag > scan_paths[0] > ./downloaded-models
     $root = if ($Destination) { $Destination }
             elseif ($cfg.scan_paths -and $cfg.scan_paths.Count -gt 0) { $cfg.scan_paths[0] }
-            else { Join-Path $LAB_ROOT "downloaded-models" }
+            else { Join-Path $CALIBR_ROOT "downloaded-models" }
     return (Join-Path $root $sample.target_dir)
 }
 
@@ -1118,21 +1155,21 @@ function Invoke-GetSampleModels {
     $cfg = Get-Config
     $samples = Get-SampleList
 
-    # Filter by -Family or -SampleId if provided
+    # Filter by -Model or -SampleId if provided
     $filtered = $samples
     if ($SampleId)  { $filtered = $filtered | Where-Object { $_.id -like $SampleId } }
-    if ($Family)    { $filtered = $filtered | Where-Object { $_.family -match $Family } }
+    if ($Model)    { $filtered = $filtered | Where-Object { $_.model -match $Model } }
 
     Write-Host "=== get-sample-models ===" -ForegroundColor Cyan
     Write-Host ("Samples catalog: {0} entries" -f $samples.Count)
-    if ($Family -or $SampleId) {
+    if ($Model -or $SampleId) {
         Write-Host ("Filtered: {0} matching" -f @($filtered).Count)
     }
     Write-Host ""
 
     # Always print the table first
     $fmt = "  {0,-2} {1,-24} {2,-30} {3,-14} {4,10}  {5}"
-    Write-Host ($fmt -f "", "ID", "Family", "Quant", "Size", "HF repo") -ForegroundColor White
+    Write-Host ($fmt -f "", "ID", "Model", "Variant", "Size", "HF repo") -ForegroundColor White
     Write-Host ($fmt -f "", ("-"*24), ("-"*30), ("-"*14), ("-"*10), ("-"*40)) -ForegroundColor DarkGray
     foreach ($s in $filtered) {
         $dest = Get-SampleDestination -sample $s -cfg $cfg
@@ -1140,21 +1177,21 @@ function Invoke-GetSampleModels {
         $status = if (Test-Path $finalPath) { "OK" } else { " " }
         $color = if ($status -eq "OK") { 'Green' } else { 'Gray' }
         $sizeStr = Format-HumanSize ([long]$s.size_bytes)
-        Write-Host ($fmt -f $status, $s.id, $s.family, $s.variant, $sizeStr, $s.hf_repo) -ForegroundColor $color
+        Write-Host ($fmt -f $status, $s.id, $s.model, $s.variant, $sizeStr, $s.hf_repo) -ForegroundColor $color
     }
 
     # Decide what to actually do
     $toDownload = @()
     if ($DownloadAll) {
         $toDownload = @($filtered)
-    } elseif ($SampleId -or $Family) {
+    } elseif ($SampleId -or $Model) {
         $toDownload = @($filtered)
     } else {
-        Write-Host "`nNo -SampleId, -Family or -DownloadAll passed: nothing to download. This was a dry listing." -ForegroundColor Yellow
+        Write-Host "`nNo -SampleId, -Model or -DownloadAll passed: nothing to download. This was a dry listing." -ForegroundColor Yellow
         Write-Host "Examples:" -ForegroundColor Yellow
-        Write-Host "  llm-lab get-sample-models -SampleId qwen3.5-9b-q4km"
-        Write-Host "  llm-lab get-sample-models -Family 'Qwen3.5'"
-        Write-Host "  llm-lab get-sample-models -DownloadAll   # requires confirmation"
+        Write-Host "  calibr get-sample-models -SampleId qwen3.5-9b-q4km"
+        Write-Host "  calibr get-sample-models -Model 'Qwen3.5'"
+        Write-Host "  calibr get-sample-models -DownloadAll   # requires confirmation"
         return
     }
 
@@ -1167,7 +1204,7 @@ function Invoke-GetSampleModels {
     $totalBytes = ($toDownload | Measure-Object -Property size_bytes -Sum).Sum
     $destRoot = if ($Destination) { $Destination }
                 elseif ($cfg.scan_paths -and $cfg.scan_paths.Count -gt 0) { $cfg.scan_paths[0] }
-                else { Join-Path $LAB_ROOT "downloaded-models" }
+                else { Join-Path $CALIBR_ROOT "downloaded-models" }
     Write-Host ("`nAbout to download {0} file(s), total ~{1}." -f $toDownload.Count, (Format-HumanSize $totalBytes)) -ForegroundColor Yellow
     Write-Host "Destination root: $destRoot"
 
@@ -1184,7 +1221,7 @@ function Invoke-GetSampleModels {
     # Download
     $okCount = 0; $failCount = 0
     foreach ($s in $toDownload) {
-        Write-Host ("`n[{0}] {1} ({2})" -f $s.id, $s.family, (Format-HumanSize ([long]$s.size_bytes))) -ForegroundColor Cyan
+        Write-Host ("`n[{0}] {1} ({2})" -f $s.id, $s.model, (Format-HumanSize ([long]$s.size_bytes))) -ForegroundColor Cyan
         $dest = Get-SampleDestination -sample $s -cfg $cfg
         $modelPath = Join-Path $dest $s.hf_file
         $ok = Invoke-HFDownload -Repo $s.hf_repo -File $s.hf_file -DestPath $modelPath -ExpectedBytes ([long]$s.size_bytes)
@@ -1199,7 +1236,7 @@ function Invoke-GetSampleModels {
 
     Write-Host ""
     if ($failCount -eq 0) {
-        Write-Host "[$okCount OK / $failCount FAIL] Done. Run 'llm-lab discover' to include them." -ForegroundColor Green
+        Write-Host "[$okCount OK / $failCount FAIL] Done. Run 'calibr discover' to include them." -ForegroundColor Green
     } else {
         Write-Host "[$okCount OK / $failCount FAIL] Some downloads failed. Possible causes:" -ForegroundColor Yellow
         Write-Host "  - Repo moved or file renamed on HuggingFace -> edit samples.json"
@@ -1218,27 +1255,27 @@ function Invoke-Status {
     Write-Host "  llama_server_exe = $($cfg.llama_server_exe)"
     Write-Host "  scan_paths       = $($cfg.scan_paths -join ', ')"
     Write-Host "  vram_budget      = $($cfg.hardware.vram_safety_budget_mib) / $($cfg.hardware.vram_total_mib) MiB"
-    $catN = if (Test-Path $LAB_CATALOG) { (Get-Content $LAB_CATALOG -Raw | ConvertFrom-Json).Count } else { 0 }
-    $planN = if (Test-Path $LAB_PLAN) { (Get-Content $LAB_PLAN -Raw | ConvertFrom-Json).Count } else { 0 }
-    $resN = (Get-ChildItem $LAB_RESULTS_DIR -Filter "*.json" -ErrorAction SilentlyContinue).Count
+    $catN = if (Test-Path $CALIBR_CATALOG) { (Get-Content $CALIBR_CATALOG -Raw | ConvertFrom-Json).Count } else { 0 }
+    $planN = if (Test-Path $CALIBR_PLAN) { (Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json).Count } else { 0 }
+    $resN = (Get-ChildItem $CALIBR_RESULTS_DIR -Filter "*.json" -ErrorAction SilentlyContinue).Count
     Write-Host "State:"
     Write-Host "  catalog: $catN models"
     Write-Host "  plan:    $planN configs"
     Write-Host "  results: $resN completed"
-    Write-Host "  report:  $(if (Test-Path $LAB_REPORT) { 'yes' } else { 'no' })"
+    Write-Host "  report:  $(if (Test-Path $CALIBR_REPORT) { 'yes' } else { 'no' })"
     Write-Host "Install:"
     $installed = (Test-LlmLabInstalled)
-    Write-Host "  global PATH: $(if ($installed) { 'yes (User scope)' } else { 'no  (run: llm-lab install)' })"
+    Write-Host "  global PATH: $(if ($installed) { 'yes (User scope)' } else { 'no  (run: calibr install)' })"
 }
 
 # ============================================================================
-# SUBCOMMAND: install / uninstall (manage User PATH so `llm-lab` works globally)
+# SUBCOMMAND: install / uninstall (manage User PATH so `calibr` works globally)
 # ============================================================================
 function Test-LlmLabInstalled {
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     if (-not $userPath) { return $false }
     $entries = $userPath -split ';' | Where-Object { $_ }
-    return ($entries -contains $LAB_ROOT)
+    return ($entries -contains $CALIBR_ROOT)
 }
 
 function Invoke-Install {
@@ -1246,23 +1283,23 @@ function Invoke-Install {
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     $entries = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
 
-    if ($entries -contains $LAB_ROOT) {
-        Write-Host "Already installed: '$LAB_ROOT' is on User PATH." -ForegroundColor DarkGray
+    if ($entries -contains $CALIBR_ROOT) {
+        Write-Host "Already installed: '$CALIBR_ROOT' is on User PATH." -ForegroundColor DarkGray
         return
     }
 
-    $newEntries = $entries + $LAB_ROOT
+    $newEntries = $entries + $CALIBR_ROOT
     [Environment]::SetEnvironmentVariable("PATH", ($newEntries -join ';'), "User")
-    Write-Host "Added '$LAB_ROOT' to User PATH." -ForegroundColor Green
+    Write-Host "Added '$CALIBR_ROOT' to User PATH." -ForegroundColor Green
 
-    # Update the current shell session too, so the user can immediately type `llm-lab`.
-    if (-not (($env:PATH -split ';') -contains $LAB_ROOT)) {
-        $env:PATH = "$env:PATH;$LAB_ROOT"
+    # Update the current shell session too, so the user can immediately type `calibr`.
+    if (-not (($env:PATH -split ';') -contains $CALIBR_ROOT)) {
+        $env:PATH = "$env:PATH;$CALIBR_ROOT"
         Write-Host "(also patched this session's PATH; new terminals will pick it up automatically.)" -ForegroundColor DarkGray
     }
     Write-Host ""
-    Write-Host "You can now run 'llm-lab <command>' from any directory." -ForegroundColor Cyan
-    Write-Host "Try:  llm-lab status"
+    Write-Host "You can now run 'calibr <command>' from any directory." -ForegroundColor Cyan
+    Write-Host "Try:  calibr status"
 }
 
 function Invoke-Uninstall {
@@ -1270,22 +1307,22 @@ function Invoke-Uninstall {
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     $entries = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
 
-    if ($entries -notcontains $LAB_ROOT) {
-        Write-Host "Not installed: '$LAB_ROOT' is not on User PATH." -ForegroundColor DarkGray
+    if ($entries -notcontains $CALIBR_ROOT) {
+        Write-Host "Not installed: '$CALIBR_ROOT' is not on User PATH." -ForegroundColor DarkGray
         return
     }
 
-    $newEntries = @($entries | Where-Object { $_ -ne $LAB_ROOT })
+    $newEntries = @($entries | Where-Object { $_ -ne $CALIBR_ROOT })
     [Environment]::SetEnvironmentVariable("PATH", ($newEntries -join ';'), "User")
-    Write-Host "Removed '$LAB_ROOT' from User PATH." -ForegroundColor Green
+    Write-Host "Removed '$CALIBR_ROOT' from User PATH." -ForegroundColor Green
 
-    if (($env:PATH -split ';') -contains $LAB_ROOT) {
-        $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -ne $LAB_ROOT }) -join ';'
+    if (($env:PATH -split ';') -contains $CALIBR_ROOT) {
+        $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -ne $CALIBR_ROOT }) -join ';'
         Write-Host "(also patched this session's PATH.)" -ForegroundColor DarkGray
     }
     Write-Host ""
     Write-Host "Open a new terminal for the change to apply globally." -ForegroundColor DarkGray
-    Write-Host "From the project directory you can still use: .\llm-lab.ps1 <command>"
+    Write-Host "From the project directory you can still use: .\calibr.ps1 <command>"
 }
 
 # ============================================================================
@@ -1430,7 +1467,7 @@ function Format-ConfigValue {
 }
 
 function Show-ConfigUsage {
-    Write-Host "Usage: llm-lab config <action> [<key>] [<value>]"
+    Write-Host "Usage: calibr config <action> [<key>] [<value>]"
     Write-Host ""
     Write-Host "Actions:" -ForegroundColor White
     Write-Host "  list                 Print all keys with type + source ([default] / [local])"
@@ -1440,7 +1477,7 @@ function Show-ConfigUsage {
     Write-Host "  detect [<key>]       Auto-detect a value (interactive picker for ambiguous matches)"
     Write-Host "                       Supported keys: llama_server_exe, hardware, all (default: all)"
     Write-Host ""
-    Write-Host "Run 'llm-lab help config' for examples and details."
+    Write-Host "Run 'calibr help config' for examples and details."
 }
 
 function Invoke-ConfigDetect {
@@ -1453,7 +1490,7 @@ function Invoke-ConfigDetect {
             Write-Host "Searching for llama-server.exe..." -ForegroundColor Cyan
             $exes = @(Find-LlamaServerExe)
             if ($exes.Count -eq 0) {
-                Write-Host "  No candidates found. Set manually with: llm-lab config set llama_server_exe `"<path>`"" -ForegroundColor Yellow
+                Write-Host "  No candidates found. Set manually with: calibr config set llama_server_exe `"<path>`"" -ForegroundColor Yellow
                 return $false
             }
             $picked = $null
@@ -1514,13 +1551,13 @@ function Invoke-Config {
     if (-not $Action) { Show-ConfigUsage; return }
     $act = $Action.ToLower()
 
-    $defRaw = Get-Content $LAB_DEFAULT_CFG -Raw | ConvertFrom-Json
+    $defRaw = Get-Content $CALIBR_DEFAULT_CFG -Raw | ConvertFrom-Json
     $defaultCfg = ConvertTo-Hashtable -obj $defRaw
     $effective  = Get-Config
 
     $localCfg = @{}
-    if (Test-Path $LAB_LOCAL_CFG) {
-        $locRaw = Get-Content $LAB_LOCAL_CFG -Raw | ConvertFrom-Json
+    if (Test-Path $CALIBR_LOCAL_CFG) {
+        $locRaw = Get-Content $CALIBR_LOCAL_CFG -Raw | ConvertFrom-Json
         $localCfg = ConvertTo-Hashtable -obj $locRaw
     }
 
@@ -1528,7 +1565,7 @@ function Invoke-Config {
         "list" {
             $rows = @(Get-FlatConfig -obj $effective)
             $maxKey = ($rows | ForEach-Object { $_.Key.Length } | Measure-Object -Maximum).Maximum
-            $localLabel = if (Test-Path $LAB_LOCAL_CFG) { Split-Path $LAB_LOCAL_CFG -Leaf } else { "(no local override)" }
+            $localLabel = if (Test-Path $CALIBR_LOCAL_CFG) { Split-Path $CALIBR_LOCAL_CFG -Leaf } else { "(no local override)" }
             Write-Host ("=== config (effective: default <- {0}) ===" -f $localLabel) -ForegroundColor Cyan
             foreach ($r in $rows) {
                 $type   = Get-RuntimeType -v $r.Value
@@ -1540,7 +1577,7 @@ function Invoke-Config {
             }
         }
         "get" {
-            if (-not $Key) { throw "config get requires a key. Try 'llm-lab config list'." }
+            if (-not $Key) { throw "config get requires a key. Try 'calibr config list'." }
             $r = Get-NestedValue -obj $effective -path $Key
             if (-not $r.found) { Write-Host "key '$Key' not found." -ForegroundColor Yellow; return }
             $type   = Get-RuntimeType -v $r.value
@@ -1564,21 +1601,21 @@ function Invoke-Config {
             if ($type -eq "object")  { throw "'$Key' is an object; set its leaf keys individually." }
             $converted = Convert-ConfigValueString -valueStr $Value -type $type
             Set-NestedValue -obj $localCfg -path $Key -value $converted
-            $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $LAB_LOCAL_CFG
-            Write-Host ("set {0} = {1}  ({2}) -> {3}" -f $Key, (Format-ConfigValue $converted), $type, (Split-Path $LAB_LOCAL_CFG -Leaf)) -ForegroundColor Green
+            $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $CALIBR_LOCAL_CFG
+            Write-Host ("set {0} = {1}  ({2}) -> {3}" -f $Key, (Format-ConfigValue $converted), $type, (Split-Path $CALIBR_LOCAL_CFG -Leaf)) -ForegroundColor Green
         }
         "unset" {
             if (-not $Key) { throw "config unset requires a key." }
-            if (-not (Test-Path $LAB_LOCAL_CFG)) {
+            if (-not (Test-Path $CALIBR_LOCAL_CFG)) {
                 Write-Host "no local config.json present; nothing to unset." -ForegroundColor Yellow
                 return
             }
             $removed = Remove-NestedValue -obj $localCfg -path $Key
             if ($removed) {
-                $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $LAB_LOCAL_CFG
+                $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $CALIBR_LOCAL_CFG
                 Write-Host "unset $Key  (default value applies on next run)" -ForegroundColor Green
             } else {
-                Write-Host "key '$Key' was not in $(Split-Path $LAB_LOCAL_CFG -Leaf); nothing to do." -ForegroundColor Yellow
+                Write-Host "key '$Key' was not in $(Split-Path $CALIBR_LOCAL_CFG -Leaf); nothing to do." -ForegroundColor Yellow
             }
         }
         "detect" {
@@ -1593,9 +1630,9 @@ function Invoke-Config {
                 $any = Invoke-ConfigDetect -keyName $target -localCfg $localCfg -defaultCfg $defaultCfg
             }
             if ($any) {
-                $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $LAB_LOCAL_CFG
+                $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $CALIBR_LOCAL_CFG
                 Write-Host ""
-                Write-Host "Saved -> $(Split-Path $LAB_LOCAL_CFG -Leaf)" -ForegroundColor Green
+                Write-Host "Saved -> $(Split-Path $CALIBR_LOCAL_CFG -Leaf)" -ForegroundColor Green
             } else {
                 Write-Host ""
                 Write-Host "Nothing detected; config.json unchanged." -ForegroundColor DarkGray
@@ -1618,87 +1655,87 @@ function Invoke-Help {
         "discover"          = "Scan scan_paths for .gguf, write data/catalog.json."
         "plan"              = "Expand the catalog into a sweep of test configs (data/plan.json)."
         "bench"             = "Run pending tests against llama-server, save data/results/*.json."
-        "report"            = "Build data/report.html and data/bats/{family}.bat per winner."
+        "report"            = "Build data/report.html and data/bats/{model}.bat per winner."
         "all"               = "discover + plan + bench + report (optionally + download samples)."
         "status"            = "Show config + counts (catalog/plan/results) + global-install state."
         "config"            = "Get / set / list / unset config values from CLI."
         "get-sample-models" = "List or download curated reference GGUFs from HuggingFace."
-        "install"           = "Add this directory to user PATH so 'llm-lab' works globally."
+        "install"           = "Add this directory to user PATH so 'calibr' works globally."
         "uninstall"         = "Remove this directory from user PATH."
         "help"              = "This screen, or 'help <command>' for details."
     }
 
     $details = @{
         "init" = @{
-            Usage    = "llm-lab init [-LlamaServer <path>] [-ScanPath <paths>] [-Force] [-NonInteractive]"
+            Usage    = "calibr init [-LlamaServer <path>] [-ScanPath <paths>] [-Force] [-NonInteractive]"
             Flags    = @(
                 "-LlamaServer <path>   Pre-fill llama_server_exe instead of auto-detecting"
                 "-ScanPath <paths>     Pre-fill scan_paths (comma-separated or repeated)"
                 "-Force                Overwrite an existing config.json"
                 "-NonInteractive       Pick the first auto-detected option, no prompts"
             )
-            Examples = @( "llm-lab init", "llm-lab init -ScanPath D:\models -Force" )
+            Examples = @( "calibr init", "calibr init -ScanPath D:\models -Force" )
         }
         "discover" = @{
-            Usage    = "llm-lab discover [-ScanPath <paths>] [-ExcludePattern <patterns>]"
+            Usage    = "calibr discover [-ScanPath <paths>] [-ExcludePattern <patterns>]"
             Flags    = @(
                 "-ScanPath <paths>           Scan these instead of config.scan_paths"
                 "-ExcludePattern <patterns>  Skip files matching these wildcards (added to defaults)"
             )
-            Examples = @( "llm-lab discover", "llm-lab discover -ScanPath D:\models" )
+            Examples = @( "calibr discover", "calibr discover -ScanPath D:\models" )
         }
         "plan" = @{
-            Usage    = "llm-lab plan [-Family <regex>] [-Tier {A,B,C}] [-DryRun]"
+            Usage    = "calibr plan [-Model <regex>] [-Tier {A,B,C}] [-DryRun]"
             Flags    = @(
-                "-Family <regex>   Only plan models whose family name matches"
+                "-Model <regex>    Only plan models whose name matches"
                 "-Tier {A|B|C}     Only plan tests for the selected tier"
                 "-DryRun           Print what would be planned, don't write plan.json"
             )
-            Examples = @( "llm-lab plan", "llm-lab plan -Family Qwen3.5 -DryRun" )
+            Examples = @( "calibr plan", "calibr plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "llm-lab bench [-Family <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun]"
+            Usage    = "calibr bench [-Model <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun]"
             Flags    = @(
-                "-Family <regex>   Only run configs whose family name matches"
+                "-Model <regex>    Only run configs whose model name matches"
                 "-Tier {A|B|C}     Only run configs for this tier"
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
                 "-DryRun           List configs that would run, don't execute"
             )
             Examples = @(
-                "llm-lab bench"
-                "llm-lab bench -Family Qwen3.5-9B"
-                "llm-lab bench -Tier A -Force"
+                "calibr bench"
+                "calibr bench -Model Qwen3.5-9B"
+                "calibr bench -Tier A -Force"
             )
         }
         "report" = @{
-            Usage    = "llm-lab report [-GroupBy {family|family+quant}] [-PreferSpeed]"
+            Usage    = "calibr report [-GroupBy {model|model+variant}] [-PreferSpeed]"
             Flags    = @(
-                "-GroupBy family         (default) one winner per family"
-                "-GroupBy family+quant   one winner per (family,quant) pair"
-                "-PreferSpeed            Pick highest eval_tps regardless of WDDM paging"
-                "                        (default: prefer non-paging configs even if slower)"
+                "-GroupBy model           (default) one winner per model"
+                "-GroupBy model+variant   one winner per (model,variant) pair"
+                "-PreferSpeed             Pick highest eval_tps regardless of WDDM paging"
+                "                         (default: prefer non-paging configs even if slower)"
             )
-            Examples = @( "llm-lab report", "llm-lab report -GroupBy family+quant", "llm-lab report -PreferSpeed" )
+            Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "llm-lab all [-DownloadSamples [-SampleId <id>] [-Family <regex>]] [-Force] [-PreferSpeed]"
+            Usage    = "calibr all [-DownloadSamples [-SampleId <id>] [-Model <regex>]] [-Force] [-PreferSpeed]"
             Flags    = @(
                 "-DownloadSamples         Run get-sample-models before the pipeline"
                 "-SampleId <id>           (with -DownloadSamples) only fetch the matching sample"
-                "-Family <regex>          Filter download AND bench by family"
+                "-Model <regex>           Filter download AND bench by model name"
                 "-Force                   Re-run all benchmarks (skip cache)"
-                "-PreferSpeed             Pick fastest config per family, ignore WDDM safety"
+                "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
             )
             Examples = @(
-                "llm-lab all"
-                "llm-lab all -DownloadSamples"
-                "llm-lab all -DownloadSamples -SampleId qwen3.5-9b-q4km"
-                "llm-lab all -PreferSpeed"
+                "calibr all"
+                "calibr all -DownloadSamples"
+                "calibr all -DownloadSamples -SampleId qwen3.5-9b-q4km"
+                "calibr all -PreferSpeed"
             )
         }
         "config" = @{
-            Usage    = "llm-lab config <list|get|set|unset|detect> [<key>] [<value>]"
+            Usage    = "calibr config <list|get|set|unset|detect> [<key>] [<value>]"
             Flags    = @(
                 "list                       Print all keys with type + source ([default] / [local])"
                 "get <key>                  Print one value. Object keys list their sub-keys."
@@ -1712,84 +1749,84 @@ function Invoke-Help {
                 "                           Same logic as 'init' but writes only the requested key."
             )
             Examples = @(
-                "llm-lab config list"
-                "llm-lab config get hardware.vram_total_mib"
-                "llm-lab config set hardware.vram_safety_budget_pct 0.92"
-                "llm-lab config set scan_paths 'D:\models,E:\cache'"
-                "llm-lab config unset llama_server_exe"
-                "llm-lab config detect llama_server_exe"
-                "llm-lab config detect hardware"
-                "llm-lab config detect"
+                "calibr config list"
+                "calibr config get hardware.vram_total_mib"
+                "calibr config set hardware.vram_safety_budget_pct 0.92"
+                "calibr config set scan_paths 'D:\models,E:\cache'"
+                "calibr config unset llama_server_exe"
+                "calibr config detect llama_server_exe"
+                "calibr config detect hardware"
+                "calibr config detect"
             )
         }
         "status" = @{
-            Usage    = "llm-lab status"
+            Usage    = "calibr status"
             Flags    = @()
-            Examples = @( "llm-lab status" )
+            Examples = @( "calibr status" )
         }
         "get-sample-models" = @{
-            Usage    = "llm-lab get-sample-models [-DownloadAll | -SampleId <id> | -Family <regex>] [-Destination <path>] [-DryRun]"
+            Usage    = "calibr get-sample-models [-DownloadAll | -SampleId <id> | -Model <regex>] [-Destination <path>] [-DryRun]"
             Flags    = @(
                 "(no flag)                  Print catalog as a dry listing"
                 "-DownloadAll               Download every sample (asks confirmation, ~100 GB)"
                 "-SampleId <id>             Download only the matching sample id"
-                "-Family <regex>            Filter samples by family"
+                "-Model <regex>             Filter samples by model name"
                 "-Destination <path>        Override target root (default: scan_paths[0])"
                 "-DryRun                    Show what would be downloaded without doing it"
             )
             Examples = @(
-                "llm-lab get-sample-models"
-                "llm-lab get-sample-models -SampleId qwen3.5-9b-q4km"
-                "llm-lab get-sample-models -DownloadAll"
+                "calibr get-sample-models"
+                "calibr get-sample-models -SampleId qwen3.5-9b-q4km"
+                "calibr get-sample-models -DownloadAll"
             )
         }
         "install" = @{
-            Usage    = "llm-lab install"
+            Usage    = "calibr install"
             Flags    = @(
                 "(no flags)                 Adds this directory to the User-scope PATH."
                 "                           Idempotent. Also patches the current shell session."
-                "                           After this, 'llm-lab <cmd>' works from any directory."
+                "                           After this, 'calibr <cmd>' works from any directory."
                 "                           No admin rights needed (writes only User PATH, not Machine)."
             )
-            Examples = @( "llm-lab install" )
+            Examples = @( "calibr install" )
         }
         "uninstall" = @{
-            Usage    = "llm-lab uninstall"
+            Usage    = "calibr uninstall"
             Flags    = @(
                 "(no flags)                 Removes this directory from the User-scope PATH."
                 "                           Files in the project remain untouched."
             )
-            Examples = @( "llm-lab uninstall" )
+            Examples = @( "calibr uninstall" )
         }
         "help" = @{
-            Usage    = "llm-lab help [<command>]"
+            Usage    = "calibr help [<command>]"
             Flags    = @()
-            Examples = @( "llm-lab help", "llm-lab help bench", "llm-lab help config" )
+            Examples = @( "calibr help", "calibr help bench", "calibr help config" )
         }
     }
 
     if (-not $Action) {
-        Write-Host "llm-lab - benchmark crawler/tester for llama.cpp on local GGUFs" -ForegroundColor Cyan
+        Write-Host "calibr - benchmark crawler/tester for llama.cpp on local GGUFs" -ForegroundColor Cyan
         Write-Host ""
-        Write-Host "Usage: llm-lab <command> [options]"
+        Write-Host "Usage: calibr <command> [options]"
         Write-Host ""
         Write-Host "Commands:" -ForegroundColor White
         $w = ($cmds.Keys | ForEach-Object { $_.Length } | Measure-Object -Maximum).Maximum
         foreach ($k in $cmds.Keys) { Write-Host ("  {0,-$w}  {1}" -f $k, $cmds[$k]) }
         Write-Host ""
-        Write-Host "Run 'llm-lab help <command>' for usage details and examples."
+        Write-Host "Run 'calibr help <command>' for usage details and examples."
         if (-not (Test-LlmLabInstalled)) {
             Write-Host ""
-            Write-Host "Note: 'llm-lab' is not on your PATH yet. Run '.\llm-lab.ps1 install'" -ForegroundColor DarkYellow
-            Write-Host "      once to enable global invocation; until then use '.\llm-lab.ps1 <cmd>'" -ForegroundColor DarkYellow
-            Write-Host "      or '.\llm-lab.cmd <cmd>' from this directory." -ForegroundColor DarkYellow
+            Write-Host "Note: 'calibr' is not on your PATH yet. Run '.\calibr.ps1 install'" -ForegroundColor DarkYellow
+            Write-Host "      once to enable global invocation; until then use '.\calibr.ps1 <cmd>'" -ForegroundColor DarkYellow
+            Write-Host "      or '.\calibr.cmd <cmd>' from this directory." -ForegroundColor DarkYellow
         }
         return
     }
 
     $tgt = $Action.ToLower()
     if (-not $details.ContainsKey($tgt)) {
-        Write-Host "Unknown command '$Action'. Run 'llm-lab help' for the list." -ForegroundColor Yellow
+        Write-Host "Unknown command '$Action'. Run 'calibr help' for the list." -ForegroundColor Yellow
         return
     }
 
@@ -1835,8 +1872,8 @@ switch ($Command) {
     "get-sample-models"  { Invoke-GetSampleModels }
     "all"                {
         if ($DownloadSamples) {
-            # Without an explicit filter (-SampleId / -Family / -DownloadAll), default to "all samples".
-            if (-not ($DownloadAll -or $SampleId -or $Family)) { $script:DownloadAll = $true }
+            # Without an explicit filter (-SampleId / -Model / -DownloadAll), default to "all samples".
+            if (-not ($DownloadAll -or $SampleId -or $Model)) { $script:DownloadAll = $true }
             Invoke-GetSampleModels
 
             # If neither config.json nor -ScanPath set scan_paths, point discover at the
@@ -1845,7 +1882,7 @@ switch ($Command) {
             $scanEmpty = (-not $cfgAfter.scan_paths -or $cfgAfter.scan_paths.Count -eq 0)
             $cliEmpty  = (-not $script:ScanPath  -or $script:ScanPath.Count  -eq 0)
             if ($scanEmpty -and $cliEmpty) {
-                $defaultDl = if ($Destination) { $Destination } else { Join-Path $LAB_ROOT "downloaded-models" }
+                $defaultDl = if ($Destination) { $Destination } else { Join-Path $CALIBR_ROOT "downloaded-models" }
                 $script:ScanPath = @($defaultDl)
                 Write-Host "[all] No scan_paths configured. Will scan $defaultDl (where samples landed)." -ForegroundColor Cyan
             }

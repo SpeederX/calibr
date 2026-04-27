@@ -33,7 +33,7 @@ Or filter by file substring:
 2. Top of file:
    ```powershell
    . "$PSScriptRoot\harness.ps1"
-   . "$PSScriptRoot\..\llm-lab.ps1"   # only for unit tests; the dot-source
+   . "$PSScriptRoot\..\calibr.ps1"   # only for unit tests; the dot-source
                                         # guard skips the dispatch
    ```
 3. Use `Describe` / `It` blocks with `Assert-Equal`, `Assert-True`,

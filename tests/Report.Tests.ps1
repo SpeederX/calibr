@@ -21,7 +21,7 @@ Describe "report.template.html structure" {
     It "embeds the new scatter section" {
         Assert-True ($tpl -match 'id="scatter"')          "scatter SVG element missing"
         Assert-True ($tpl -match 'function renderScatter') "renderScatter function missing"
-        Assert-True ($tpl -match 'function familyColor')   "familyColor function missing"
+        Assert-True ($tpl -match 'function modelColor')    "modelColor function missing"
         Assert-True ($tpl -match 'class="scatter-line-gpu"') "scatter-line-gpu CSS class missing"
         Assert-True ($tpl -match 'GPU VRAM \(')             "scatter chart should label the GPU VRAM reference line"
     }
@@ -47,14 +47,14 @@ Describe "report.template.html structure" {
 Describe "Invoke-Report end-to-end on canned data" {
     # Set up a throwaway data dir, drop one canned result + plan, run report,
     # parse the embedded DATA blob and assert.
-    $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "llm-lab-report-test-$([Guid]::NewGuid().ToString('N'))"
+    $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-report-test-$([Guid]::NewGuid().ToString('N'))"
     $tmpData = Join-Path $tmpRoot "data"
     New-Item -ItemType Directory -Path (Join-Path $tmpData "results") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $tmpData "bats")    -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $tmpData "logs")    -Force | Out-Null
 
     $cannedResult = [ordered]@{
-        id="T001_canned"; label="canned config"; family="cannedFam"; quant="Q4"; tier="A"
+        id="T001_canned"; label="canned config"; model="cannedFam"; series="canned"; variant="Q4"; tier="A"
         prompt_tps=100.0; eval_tps=50.0; prompt_n=80; eval_n=128
         vram_peak_mib=2000; shared_peak_mib=0; load_sec=2.5
         kv_cache_mib=50; ctx_size=16384
@@ -65,7 +65,7 @@ Describe "Invoke-Report end-to-end on canned data" {
     }
     $cannedResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 (Join-Path $tmpData "results\T001_canned.json")
     $cannedPlan = @([ordered]@{
-        id="T001_canned"; label="canned config"; family="cannedFam"; quant="Q4"; tier="A"
+        id="T001_canned"; label="canned config"; model="cannedFam"; series="canned"; variant="Q4"; tier="A"
         extra_args="--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0"
         model_path="C:\fake\model.gguf"; mmproj_path=$null
     })
@@ -87,7 +87,7 @@ Describe "Invoke-Report end-to-end on canned data" {
 
     # Run via subprocess. We need the script to use $tmpData as its data dir,
     # which is anchored to $LAB_ROOT. Since $LAB_ROOT == script dir, we have
-    # to point the data dir override another way — but llm-lab doesn't expose
+    # to point the data dir override another way — but calibr doesn't expose
     # one. Workaround: run from the temp dir as cwd; LAB_ROOT is still the
     # script dir, so data/ lands there. Instead, we copy fixture into the
     # real data/ temporarily under a unique id and clean up after.
@@ -99,7 +99,7 @@ Describe "Invoke-Report end-to-end on canned data" {
     $cannedResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $resPath
 
     try {
-        $labScript = Join-Path $labRoot "llm-lab.ps1"
+        $labScript = Join-Path $labRoot "calibr.ps1"
         $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $labScript -Config $tmpCfg report 2>&1 | Out-String
 
         $reportPath = Join-Path $realData "report.html"

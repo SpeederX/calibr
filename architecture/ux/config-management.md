@@ -17,22 +17,22 @@ opening `config.json` in an editor.
 
 ```powershell
 # What's set right now?
-llm-lab config list
-llm-lab config get hardware.vram_total_mib
-llm-lab config get hardware                # whole subtree
+calibr config list
+calibr config get hardware.vram_total_mib
+calibr config get hardware                # whole subtree
 
 # Change something
-llm-lab config set hardware.vram_safety_budget_pct 0.92    # float
-llm-lab config set bench.warmup false                       # bool
-llm-lab config set scan_paths "D:\models,E:\cache"          # array via CSV
+calibr config set hardware.vram_safety_budget_pct 0.92    # float
+calibr config set bench.warmup false                       # bool
+calibr config set scan_paths "D:\models,E:\cache"          # array via CSV
 
 # Revert to defaults
-llm-lab config unset hardware.vram_safety_budget_pct
+calibr config unset hardware.vram_safety_budget_pct
 
 # Re-run auto-detect (after switching llama.cpp build, GPU upgrade, etc.)
-llm-lab config detect llama_server_exe   # interactive picker if multiple
-llm-lab config detect hardware            # re-detect via nvidia-smi + WMI
-llm-lab config detect                     # both, in order
+calibr config detect llama_server_exe   # interactive picker if multiple
+calibr config detect hardware            # re-detect via nvidia-smi + WMI
+calibr config detect                     # both, in order
 ```
 
 ## What the user sees
@@ -50,9 +50,9 @@ llm-lab config detect                     # both, in order
 
 ## Discoverability
 
-- `llm-lab config` (no action) prints a usage banner with the action list.
-- `llm-lab config <unknown>` prints "Unknown action" + the same banner.
-- `llm-lab help config` prints the full help with examples.
+- `calibr config` (no action) prints a usage banner with the action list.
+- `calibr config <unknown>` prints "Unknown action" + the same banner.
+- `calibr help config` prints the full help with examples.
 
 ## Common mistakes the system catches
 
