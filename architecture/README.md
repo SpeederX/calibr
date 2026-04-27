@@ -45,6 +45,21 @@ Short-lived branches off `master`:
 Features accumulate on `dev` and ship as a MINOR when we cut a release.
 Hotfixes go straight to `master` and ship as a PATCH on top of the latest tag.
 
+### Pre-public flexibility
+
+While the project is offline (no public remote, no external users),
+breaking changes are allowed at MINOR bumps even after v1.0.0. SemVer
+2.0 already allows this freely in the `0.x.y` range; we extend the
+permission to `1.x.y` while we have no consumers to protect. Once the
+project is published (GitHub remote, external users, package
+registry), strict SemVer applies: every breaking change becomes
+MAJOR.
+
+This is not an excuse to break things capriciously — every break
+still gets a release note and a migration path. It is permission to
+keep iterating on the schema and vocabulary while there is no one
+downstream to inconvenience.
+
 ## Folders
 
 ```
