@@ -1,5 +1,7 @@
 # calibr roadmap
 
+> Project name was `llm-lab` through v0.3.2; renamed to `calibr` in v1.0.0.
+
 Concise. One line per item. The entire file should fit on a single screen.
 Mark items `[x]` when shipped. Move stale items to bottom or remove.
 
@@ -29,6 +31,9 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] Picker uses `wddm_detection.shared_delta_confirm_mib` as the paging
       threshold (was a too-strict `> 0`). Default + `-PreferSpeed` now diverge
       meaningfully on real desktops with Chrome/Discord baselines.
+- [x] **v1.0.0**: taxonomy rename (`family` → `model`, `quant` → `variant`,
+      add `series`); project rename (`llm-lab` → `calibr`); methodology
+      doc allows MINOR breaking changes post-v1 while still offline.
 
 ## Open — code & UX
 
