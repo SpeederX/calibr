@@ -11,7 +11,7 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
 
 1. **Discover**:
    ```powershell
-   llm-lab discover
+   calibr discover
    ```
    Recursive glob of `scan_paths` (filtered by `exclude_patterns`). Builds
    `data/catalog.json` with one entry per `.gguf` file: model, series,
@@ -19,7 +19,7 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
 
 2. **Plan**:
    ```powershell
-   llm-lab plan
+   calibr plan
    ```
    Expands each cataloged model into N test configurations based on its
    tier (Tier A: ctx × KV-quant pairs; Tier B: `--n-cpu-moe` sweep;
@@ -27,7 +27,7 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
 
 3. **Bench**:
    ```powershell
-   llm-lab bench
+   calibr bench
    ```
    For each pending config (skips ones with cached `data/results/*.json`):
    - Print warning if backend doesn't match GPU (Vulkan-only on NVIDIA).
@@ -43,7 +43,7 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
 
 4. **Report**:
    ```powershell
-   llm-lab report
+   calibr report
    ```
    Picks one winner per model (or model+variant if `-GroupBy model+variant`),
    preferring safe (non-paging) configs over fast-but-paging ones. Emits:
@@ -51,7 +51,7 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
    - `data/bats/<model>.bat` — double-clickable launcher with the winning
      cmdline and a header reporting the measured numbers.
 
-5. **One-shot**: `llm-lab all` does steps 1-4 in sequence. Add
+5. **One-shot**: `calibr all` does steps 1-4 in sequence. Add
    `-DownloadSamples` to fetch the curated reference set first.
 
 ## Filters

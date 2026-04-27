@@ -8,7 +8,7 @@ the GPU has. The driver silently pages weights out to "Shared GPU memory"
 every token incurs PCIe round-trips — eval throughput collapses 2-4× without
 any error message.
 
-Without detection, llm-lab would happily declare a paging configuration as
+Without detection, calibr would happily declare a paging configuration as
 the "winner" because its tokens-per-second number, while degraded, is still
 positive. We need to spot the cliff.
 

@@ -63,7 +63,7 @@ downstream to inconvenience.
 ## Folders
 
 ```
-llm-lab/
+calibr/
 ├── architecture/           methodology + design rationale
 │   ├── README.md           this file
 │   ├── design/             why-we-chose-X notes (one .md per decision)
@@ -74,8 +74,8 @@ llm-lab/
 ├── docs/                   README assets (screenshots, etc.)
 ├── data/                   runtime artifacts (gitignored)
 ├── .github/workflows/      CI configs (placeholder; see ROADMAP.md)
-├── llm-lab.ps1             the engine
-├── llm-lab.cmd             cmd.exe / PS wrapper for global invocation
+├── calibr.ps1             the engine
+├── calibr.cmd             cmd.exe / PS wrapper for global invocation
 ├── config.default.json     schema + defaults (committed)
 ├── config.json             personal overrides (gitignored)
 ├── samples.json            curated reference GGUFs

@@ -21,8 +21,8 @@ the picker by hand. Item from the v0.2.0 follow-up roadmap.
 A new `-PreferSpeed` switch on the `report` and `all` subcommands:
 
 ```powershell
-llm-lab report -PreferSpeed
-llm-lab all    -PreferSpeed
+calibr report -PreferSpeed
+calibr all    -PreferSpeed
 ```
 
 When `-PreferSpeed` is set, the picker selects the highest `eval_tps`
@@ -35,12 +35,12 @@ file in place. Documented in `help report`.
 
 ## Acceptance
 
-- [ ] `llm-lab report -PreferSpeed` on a dataset where a paging config
+- [ ] `calibr report -PreferSpeed` on a dataset where a paging config
       has a higher `eval_tps` than the safe one picks the paging config
       as winner; the same dataset without the flag picks the safe one.
 - [ ] The winner is reflected in both the HTML report and the per-family
       `.bat` launcher (the launcher's flags match the picker's choice).
-- [ ] `llm-lab help report` lists `-PreferSpeed` with a one-line
+- [ ] `calibr help report` lists `-PreferSpeed` with a one-line
       description.
 - [ ] `Test-IsBetterWinner` (the extracted helper) is covered by unit
       tests for the four cases: prefer-speed on/off × paging on/off.

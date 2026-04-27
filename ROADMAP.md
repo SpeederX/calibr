@@ -1,4 +1,4 @@
-# llm-lab roadmap
+# calibr roadmap
 
 Concise. One line per item. The entire file should fit on a single screen.
 Mark items `[x]` when shipped. Move stale items to bottom or remove.
@@ -15,7 +15,7 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] One-shot `all -DownloadSamples` for fresh installs
 - [x] Config CLI: `list / get / set / unset / detect`
 - [x] `install / uninstall` (User-scope PATH, no admin)
-- [x] `help` system, unified naming on `llm-lab` everywhere
+- [x] `help` system, unified naming on `calibr` everywhere
 - [x] `.cmd` wrapper for cmd.exe + PowerShell
 - [x] Test suite (custom Describe/It harness, 42 tests, no external deps)
 - [x] CI workflow scaffold (`.github/workflows/tests.yml`, runs on push/PR to dev/master)
@@ -39,7 +39,7 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [ ] **Linux/macOS port**: NVML-based equivalent of WDDM perf-counter heuristic.
       `Get-LlamaBackends` to recognize `.so` / `.dylib`. `install/uninstall` to
       write to shell rc files instead of Windows User PATH. Shell wrapper
-      `llm-lab` (no extension) mirroring `llm-lab.cmd`.
+      `calibr` (no extension) mirroring `calibr.cmd`.
 - [ ] Android exploration (Termux + llama.cpp ARM64 builds).
 - [ ] Multi-GPU planning with `--tensor-split`.
 

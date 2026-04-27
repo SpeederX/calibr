@@ -1,4 +1,4 @@
-# Spec: `llm-lab config <action>`
+# Spec: `calibr config <action>`
 
 ## Goal
 
@@ -76,10 +76,10 @@ succeeded.
 
 ## Acceptance criteria
 
-- [ ] `llm-lab config` (no action) → prints usage banner with the five
+- [ ] `calibr config` (no action) → prints usage banner with the five
       actions, doesn't run anything.
-- [ ] `llm-lab config bogus` → prints "Unknown action" + the same banner.
-- [ ] `llm-lab config list` → 25-30 lines, each tagged `[default]` or
+- [ ] `calibr config bogus` → prints "Unknown action" + the same banner.
+- [ ] `calibr config list` → 25-30 lines, each tagged `[default]` or
       `[local]` with the right type.
 - [ ] `set` + `get` round-trips bool, int, float, string, and array values.
 - [ ] `set` rejects unknown keys, object keys, and bad type input with

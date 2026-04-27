@@ -47,7 +47,7 @@ Describe "report.template.html structure" {
 Describe "Invoke-Report end-to-end on canned data" {
     # Set up a throwaway data dir, drop one canned result + plan, run report,
     # parse the embedded DATA blob and assert.
-    $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "llm-lab-report-test-$([Guid]::NewGuid().ToString('N'))"
+    $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-report-test-$([Guid]::NewGuid().ToString('N'))"
     $tmpData = Join-Path $tmpRoot "data"
     New-Item -ItemType Directory -Path (Join-Path $tmpData "results") -Force | Out-Null
     New-Item -ItemType Directory -Path (Join-Path $tmpData "bats")    -Force | Out-Null
@@ -87,7 +87,7 @@ Describe "Invoke-Report end-to-end on canned data" {
 
     # Run via subprocess. We need the script to use $tmpData as its data dir,
     # which is anchored to $LAB_ROOT. Since $LAB_ROOT == script dir, we have
-    # to point the data dir override another way — but llm-lab doesn't expose
+    # to point the data dir override another way — but calibr doesn't expose
     # one. Workaround: run from the temp dir as cwd; LAB_ROOT is still the
     # script dir, so data/ lands there. Instead, we copy fixture into the
     # real data/ temporarily under a unique id and clean up after.
@@ -99,7 +99,7 @@ Describe "Invoke-Report end-to-end on canned data" {
     $cannedResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $resPath
 
     try {
-        $labScript = Join-Path $labRoot "llm-lab.ps1"
+        $labScript = Join-Path $labRoot "calibr.ps1"
         $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $labScript -Config $tmpCfg report 2>&1 | Out-String
 
         $reportPath = Join-Path $realData "report.html"

@@ -42,7 +42,7 @@ Override is a *post-hoc* filter on the regex; the regex stays as-is
 - [ ] The same model gets a Tier A or Tier C plan sweep, not Tier B.
 - [ ] An empty `dense_overrides` (default) leaves behavior unchanged
       from v0.2.0 (no regression on real MoE detection).
-- [ ] `llm-lab config set dense_overrides "fam1,fam2"` sets the array
+- [ ] `calibr config set dense_overrides "fam1,fam2"` sets the array
       via the existing CSV-on-set path.
 - [ ] `Get-ModelMetadata` itself still records the regex match
       (`is_moe = true` for ambiguous names) — the override is applied

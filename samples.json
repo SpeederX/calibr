@@ -1,7 +1,7 @@
 {
   "$schema_version": 1,
   "_notes": [
-    "Curated list of reference GGUF models for llm-lab. Purpose: give users a common dataset so benchmark numbers are comparable across different hardware.",
+    "Curated list of reference GGUF models for calibr. Purpose: give users a common dataset so benchmark numbers are comparable across different hardware.",
     "Sizes span 0.8B to 31B so every VRAM budget has something to test.",
     "target_dir is relative to scan_paths[0] in config.json. Files land at {scan_paths[0]}/{target_dir}/{hf_file}.",
     "hf_file matches an existing path inside the hf_repo. If a repo is taken down or renamed, edit this file and submit a PR.",

@@ -1,6 +1,6 @@
 {
   "$schema_version": 1,
-  "_comment": "llm-lab default config. DO NOT EDIT: create ./config.json with your overrides and run '.\\llm-lab.ps1 init' to populate hardware detection.",
+  "_comment": "calibr default config. DO NOT EDIT: create ./config.json with your overrides and run '.\\calibr.ps1 init' to populate hardware detection.",
 
   "llama_server_exe": null,
   "_comment_exe": "Absolute path to llama-server.exe (CUDA build recommended). If null, the tool will try to auto-detect in PATH and in sibling folders of scan_paths.",

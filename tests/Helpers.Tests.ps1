@@ -1,7 +1,7 @@
-# Unit tests for the dot-path / type-coercion helpers in llm-lab.ps1.
+# Unit tests for the dot-path / type-coercion helpers in calibr.ps1.
 # Run via:  .\tests\run-tests.ps1
 . "$PSScriptRoot\harness.ps1"
-. "$PSScriptRoot\..\llm-lab.ps1"
+. "$PSScriptRoot\..\calibr.ps1"
 
 Describe "Get-NestedValue" {
     It "returns @{found=true; value=...} on a hit" {
