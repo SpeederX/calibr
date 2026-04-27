@@ -9,7 +9,7 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] Tier classification (A/B/C, MoE detection via filename regex)
 - [x] WDDM paging detection (Windows shared-memory delta + saturation)
 - [x] Backend cross-check (warn when NVIDIA GPU but Vulkan-only build)
-- [x] Family-skip on `unknown model architecture` errors (saves ~10 min/run)
+- [x] Model-skip on `unknown model architecture` errors (saves ~10 min/run)
 - [x] `Write-Progress` bar + ETA + summary table during bench
 - [x] Curated reference set: `samples.json` + `get-sample-models`
 - [x] One-shot `all -DownloadSamples` for fresh installs

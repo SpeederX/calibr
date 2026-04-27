@@ -18,11 +18,9 @@ A `.gguf` file represents one **variant** of one **model** within one
 | **Variant** | The quantization or precision applied to the model | `Q4_K_M`, `BF16`, `UD-Q4_K_XL`, `Q8_0` |
 | **Run config** | The bench-time flags applied to a variant | `ctx=16384, kv=q8_0`, `--n-cpu-moe 32`, `--gpu-layers 28` |
 
-> **Pending rename**: in code today the field named `family` corresponds to
-> **model** in this taxonomy. The rename to the correct term is planned for
-> v0.4.0 (per the SemVer-in-0.x convention; breaking changes allowed in
-> minor bumps before 1.0). `series` will become a parsed sibling field
-> (`Qwen3.5-9B` → series=`Qwen3.5`).
+The code uses these names directly: `model`, `series`, `variant`. Pre-v1.0
+results may still carry the old `family` / `quant` field names; the report
+migrates them on first run.
 
 ## Bench domain
 

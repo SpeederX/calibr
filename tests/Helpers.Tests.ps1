@@ -149,33 +149,33 @@ Describe "Format-ConfigValue" {
 }
 
 Describe "Invoke-DenseOverrideFilter" {
-    It "flips is_moe to false when the family is on the override list" {
-        $m = @{ family = "something-A100B-special"; is_moe = $true }
+    It "flips is_moe to false when the model is on the override list" {
+        $m = @{ model = "something-A100B-special"; is_moe = $true }
         $r = Invoke-DenseOverrideFilter -meta $m -denseOverrides @("something-A100B-special")
         Assert-False $r.is_moe
     }
-    It "leaves is_moe untouched when the family is not on the list" {
-        $m = @{ family = "Qwen3.6-35B-A3B"; is_moe = $true }
+    It "leaves is_moe untouched when the model is not on the list" {
+        $m = @{ model = "Qwen3.6-35B-A3B"; is_moe = $true }
         $r = Invoke-DenseOverrideFilter -meta $m -denseOverrides @("OtherFamily")
-        Assert-True $r.is_moe "real MoE family must keep is_moe=true"
+        Assert-True $r.is_moe "real MoE model must keep is_moe=true"
     }
     It "leaves is_moe untouched when it was already false" {
-        $m = @{ family = "Qwen3.5-9B"; is_moe = $false }
+        $m = @{ model = "Qwen3.5-9B"; is_moe = $false }
         $r = Invoke-DenseOverrideFilter -meta $m -denseOverrides @("Qwen3.5-9B")
-        Assert-False $r.is_moe "dense family must stay dense"
+        Assert-False $r.is_moe "dense model must stay dense"
     }
     It "is a no-op when denseOverrides is null" {
-        $m = @{ family = "Qwen3.6-35B-A3B"; is_moe = $true }
+        $m = @{ model = "Qwen3.6-35B-A3B"; is_moe = $true }
         $r = Invoke-DenseOverrideFilter -meta $m -denseOverrides $null
         Assert-True $r.is_moe
     }
     It "is a no-op when denseOverrides is empty" {
-        $m = @{ family = "Qwen3.6-35B-A3B"; is_moe = $true }
+        $m = @{ model = "Qwen3.6-35B-A3B"; is_moe = $true }
         $r = Invoke-DenseOverrideFilter -meta $m -denseOverrides @()
         Assert-True $r.is_moe
     }
     It "matches exact case-sensitively" {
-        $m = @{ family = "Qwen3.6-35B-A3B"; is_moe = $true }
+        $m = @{ model = "Qwen3.6-35B-A3B"; is_moe = $true }
         $r = Invoke-DenseOverrideFilter -meta $m -denseOverrides @("qwen3.6-35b-a3b")
         Assert-True $r.is_moe "case mismatch must NOT trigger the override"
     }

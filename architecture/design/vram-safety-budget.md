@@ -35,7 +35,7 @@ check entirely and go straight to Tier B with a `--n-cpu-moe` sweep.
 
 ## Cons
 
-- Constants are calibrated on RTX 2070 + Qwen 3.5 family. Other architectures
+- Constants are calibrated on RTX 2070 + Qwen 3.5 series. Other architectures
   (Mamba, Phi) might draw less or more overhead.
 - `overhead_mib` is one number. A per-architecture override could shave a
   few percent off the budget for known-lean families.

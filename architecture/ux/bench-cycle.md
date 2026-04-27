@@ -1,7 +1,7 @@
 # UX flow: bench cycle
 
 The user has `config.json` set up and `.gguf` files on disk. They want
-benchmark numbers and per-family launchers.
+benchmark numbers and per-model launchers.
 
 ## Goal
 
@@ -14,8 +14,8 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
    llm-lab discover
    ```
    Recursive glob of `scan_paths` (filtered by `exclude_patterns`). Builds
-   `data/catalog.json` with one entry per `.gguf` file: family, quant,
-   size, tier hint, sibling mmproj if any.
+   `data/catalog.json` with one entry per `.gguf` file: model, series,
+   variant, size, tier hint, sibling mmproj if any.
 
 2. **Plan**:
    ```powershell
@@ -36,7 +36,7 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
      `/completion` call. Record `prompt_tps`, `eval_tps`, `vram_peak`,
      `shared_peak`.
    - On `unknown model architecture` error: skip remaining configs of the
-     same family.
+     same model.
    - Print one line per config: `[OK] / [FAIL] / [SKIP]` with results or
      reason.
    - At the end: summary table with counts and abandoned families.
@@ -45,10 +45,10 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
    ```powershell
    llm-lab report
    ```
-   Picks one winner per family (or family+quant if `-GroupBy family+quant`),
+   Picks one winner per model (or model+variant if `-GroupBy model+variant`),
    preferring safe (non-paging) configs over fast-but-paging ones. Emits:
    - `data/report.html` — sortable tables, charts, WDDM watchlist.
-   - `data/bats/<family>.bat` — double-clickable launcher with the winning
+   - `data/bats/<model>.bat` — double-clickable launcher with the winning
      cmdline and a header reporting the measured numbers.
 
 5. **One-shot**: `llm-lab all` does steps 1-4 in sequence. Add
@@ -58,7 +58,7 @@ From a populated `scan_paths` to `data/report.html` + `data/bats/*.bat`.
 
 Any of `discover` / `plan` / `bench` / `report` accepts:
 
-- `-Family <regex>` — only families whose name matches.
+- `-Model <regex>` — only models whose name matches.
 - `-Tier {A,B,C}` — only the selected tier.
 - `-Id <wildcard>` — only configs whose test ID matches (`bench` only).
 - `-Force` — re-run cached configs.
@@ -68,16 +68,16 @@ Any of `discover` / `plan` / `bench` / `report` accepts:
 
 - A bench summary like `64 ok · 4 fail · 22 skipped (out of 90)`.
 - `data/report.html` with bar charts of `eval_tps` and `vram_peak`,
-  per-family winner cards, and a WDDM watchlist for any saturating
+  per-model winner cards, and a WDDM watchlist for any saturating
   configs.
-- `data/bats/<family>.bat` per winner.
+- `data/bats/<model>.bat` per winner.
 
 ## Reading the report
 
 - **Top of dashboard**: VRAM safety budget chart. Configs at the budget
   line are healthy; configs spilling above are flagged.
 - **Bar chart**: `eval_tps` per config. Tall bars = fast.
-- **Per-family card**: the winning config's flag string, copy-pasteable
+- **Per-model card**: the winning config's flag string, copy-pasteable
   to a custom `llama-server` invocation.
 - **WDDM watchlist**: configs where `shared_peak_mib` exceeded the
   `shared_delta_confirm_mib` threshold or `vram_saturation > 0.92`.

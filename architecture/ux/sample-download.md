@@ -35,10 +35,10 @@ No download triggered without a flag.
 llm-lab get-sample-models -SampleId qwen3.5-9b-q4km   # ~5 GB
 ```
 
-### Family
+### Model
 
 ```powershell
-llm-lab get-sample-models -Family "Qwen3.5"           # all Qwen3.5 variants
+llm-lab get-sample-models -Model "Qwen3.5"            # all Qwen3.5-* models
 ```
 
 ### The full set
@@ -55,7 +55,7 @@ hints.
 ```powershell
 llm-lab all -DownloadSamples                          # full set + pipeline
 llm-lab all -DownloadSamples -SampleId qwen3.5-9b-q4km # one model + pipeline
-llm-lab all -DownloadSamples -Family "Qwen3.5"        # one family + pipeline
+llm-lab all -DownloadSamples -Model "Qwen3.5"         # one model + pipeline
 ```
 
 If neither `config.json` nor `-ScanPath` provides a scan path, the samples

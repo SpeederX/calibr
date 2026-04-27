@@ -10,7 +10,7 @@
 opinions about which models you should have.** You decide what sits on disk;
 it catalogs them, sweeps a planned set of configurations, runs each one,
 detects silent WDDM paging on Windows, and emits an HTML dashboard plus
-per-family optimized `.bat` launchers.
+per-model optimized `.bat` launchers.
 
 ![dashboard screenshot](docs/screenshot.png)
 
@@ -59,7 +59,7 @@ cd llm-lab
 start data\report.html  # open the dashboard
 ```
 
-You're done. The winning configurations are in `data/bats/{family}.bat` —
+You're done. The winning configurations are in `data/bats/{model}.bat` —
 double-click one and you have llama-server running with the optimized flags.
 
 If you don't have any `.gguf` files yet, or want to try every model from the
@@ -104,7 +104,7 @@ shared repo to crowdsource a "what runs well on what GPU" dataset.
   ~10-15% slower; `bench` will print a yellow warning if it spots this
   mismatch. Older builds may also lack support for newer model architectures
   — `bench` detects "unknown model architecture" failures and skips the
-  remaining tests of the affected family instead of running them all to fail.)
+  remaining tests of the affected model instead of running them all to fail.)
 
 ## Setup details
 
@@ -137,7 +137,7 @@ That's it. Now from any directory, in either cmd.exe or PowerShell:
 ```powershell
 llm-lab help
 llm-lab status
-llm-lab bench -Family Qwen3.5-9B
+llm-lab bench -Model Qwen3.5-9B
 llm-lab config set hardware.vram_safety_budget_pct 0.92
 ```
 
@@ -179,7 +179,7 @@ any subcommand (e.g. `help bench`, `help config`).
 
 | Flag | Effect |
 |------|--------|
-| `-Family <regex>` | Only operate on models whose family name matches |
+| `-Model <regex>` | Only operate on models whose name matches |
 | `-Tier {A,B,C}`   | Only operate on the selected tier |
 | `-Id <pattern>`   | Only run configs whose test ID matches (wildcards ok) |
 | `-DryRun`         | Print what would be done; don't run llama-server |
@@ -191,12 +191,12 @@ any subcommand (e.g. `help bench`, `help config`).
 |------|---------|--------|
 | `-ScanPath <path[,path,...]>` | `discover`, `init`, `all` | Replaces `scan_paths` for this run |
 | `-LlamaServer <path>`         | `bench`, `report`, `init`, `all` | Replaces `llama_server_exe` for this run |
-| `-GroupBy {family,family+quant}` | `report`, `all` | How to group results when picking winners. Default `family`. With `family+quant` you get a separate winner (and `.bat`) per quantization. |
-| `-DownloadSamples`            | `all` | Run `get-sample-models` before the pipeline. Without a filter implies "download everything"; combine with `-SampleId` or `-Family` to narrow. |
+| `-GroupBy {model,model+variant}` | `report`, `all` | How to group results when picking winners. Default `model`. With `model+variant` you get a separate winner (and `.bat`) per variant. |
+| `-DownloadSamples`            | `all` | Run `get-sample-models` before the pipeline. Without a filter implies "download everything"; combine with `-SampleId` or `-Model` to narrow. |
 
 ```powershell
-# Compare Q4 vs Q8 of the same family by giving them separate winners
-.\llm-lab.ps1 all -GroupBy family+quant
+# Compare Q4 vs Q8 of the same model by giving them separate winners
+.\llm-lab.ps1 all -GroupBy model+variant
 # -> data/bats/Qwen3.5-9B_Q4_K_M.bat
 # -> data/bats/Qwen3.5-9B_Q8_0.bat
 ```
@@ -211,7 +211,7 @@ any subcommand (e.g. `help bench`, `help config`).
 # B. Start fresh with the curated reference set (one shot, download + bench)
 .\llm-lab.ps1 all -DownloadSamples                            # ~100 GB; prompts to confirm
 .\llm-lab.ps1 all -DownloadSamples -SampleId qwen3.5-9b-q4km  # one model, ~5 GB
-.\llm-lab.ps1 all -DownloadSamples -Family "Qwen3.5"          # one family
+.\llm-lab.ps1 all -DownloadSamples -Model "Qwen3.5"           # one model
 
 # C. Pure CLI, no config.json (CI / try-and-throw-away)
 .\llm-lab.ps1 get-sample-models -SampleId qwen3.5-0.8b-q4xl -Destination .\models
@@ -258,7 +258,7 @@ compared directly.
 ```powershell
 .\llm-lab.ps1 get-sample-models                                    # list (OK = on disk)
 .\llm-lab.ps1 get-sample-models -SampleId qwen3.5-9b-q4km          # download one
-.\llm-lab.ps1 get-sample-models -Family "Gemma-4"                  # by family
+.\llm-lab.ps1 get-sample-models -Model "Gemma-4"                   # by model
 .\llm-lab.ps1 get-sample-models -DownloadAll                       # all (~100 GB, prompts to confirm)
 .\llm-lab.ps1 get-sample-models -DownloadAll -DryRun               # preview
 .\llm-lab.ps1 get-sample-models -SampleId qwen3.5-9b-q4km -Destination "D:\models"
@@ -267,7 +267,7 @@ compared directly.
 Files land at `{scan_paths[0]}/{target_dir}/{hf_file}` so a subsequent
 `discover` picks them up automatically.
 
-| Tier hint | Family | Approx size | Why it's in the reference set |
+| Tier hint | Model | Approx size | Why it's in the reference set |
 |-----------|--------|-------------|-------------------------------|
 | A | Qwen3.5 0.8B Q8_0 + Q4_K_XL    | 0.5 - 0.8 GB | Bandwidth/sanity baseline |
 | A | Qwen3.5 2B UD-Q4_K_XL + BF16   | 1.3 - 3.5 GB | Multimodal small + quality reference |
@@ -322,9 +322,10 @@ next one reads:
 Recursive glob of `scan_paths`, filtered by `exclude_patterns` (defaults skip
 `mmproj-*.gguf`, `ggml-vocab-*.gguf`, `*draft*.gguf`). For each surviving file:
 
-- **Family** is the filename stem stripped of the quant suffix, e.g.
-  `Qwen3.5-9B-Q4_K_M.gguf` → family `Qwen3.5-9B`, quant `Q4_K_M`.
-- **MoE detection** is regex on the family: matches `A\d+B` (e.g. `Qwen3.6-35B-A3B`)
+- **Model** is the filename stem stripped of the variant suffix, e.g.
+  `Qwen3.5-9B-Q4_K_M.gguf` → model `Qwen3.5-9B`, variant `Q4_K_M`.
+- **Series** is parsed from the model (e.g. `Qwen3.5-9B` → series `Qwen3.5`).
+- **MoE detection** is regex on the model: matches `A\d+B` (e.g. `Qwen3.6-35B-A3B`)
   or contains `MoE` / `Mixtral`. *(See [Known limitations](#known-limitations) for false-positive risk.)*
 - **mmproj pairing**: a sibling `mmproj-*.gguf` in the same directory is
   auto-paired by precision preference (F16 → BF16 → F32). Concrete example:
@@ -349,7 +350,7 @@ Each cataloged model produces N test configurations based on its tier:
 
 Two quants of the same model both get expanded — if you have
 `Qwen3.5-0.8B-Q8_0.gguf` and `Qwen3.5-0.8B-UD-Q4_K_XL.gguf`, plan generates
-12 configs (6 Tier A candidates × 2 quants). Both compete in the same family
+12 configs (6 Tier A candidates × 2 variants). Both compete in the same model
 pool when `report` picks winners.
 
 #### `vram_safety_budget` defined explicitly
@@ -402,7 +403,7 @@ For every config:
 
 ### Stage 4 — `report` picks winners and emits artifacts
 
-Results are grouped by `-GroupBy` (default `family`):
+Results are grouped by `-GroupBy` (default `model`):
 
 ```text
 for each result where ok == true:
@@ -417,7 +418,7 @@ Safety preference is intentional: a 30 t/s safe config is more useful than a
 50 t/s config that's one Chrome tab away from collapsing.
 
 Output:
-- `data/report.html` — sortable tables, per-family winner cards, charts, WDDM
+- `data/report.html` — sortable tables, per-model winner cards, charts, WDDM
   watchlist (configs where `shared_peak_mib > shared_delta_confirm_mib` or
   `vram_saturation > 0.92`).
 - `data/bats/{group_key}.bat` — one launcher per group with the winning
@@ -471,11 +472,11 @@ llm-lab/
   but not a 5 % regression. If you need stable numbers, the cleanest patch is
   a loop in `Invoke-OneBench` taking the median of 3 runs (the rest of the
   pipeline is unchanged). PRs welcome.
-- **MoE detection is a regex on the filename.** `family =~ /A\d+B/` correctly
+- **MoE detection is a regex on the filename.** `model =~ /A\d+B/` correctly
   matches `Qwen3.6-35B-A3B` and `Mixtral-8x7B`-style names but **a model
   innocently named `something-A100B-special.gguf` would be false-flagged as
   MoE** and routed to a `--n-cpu-moe` sweep that won't apply to it. If this
-  bites you, add the family to a manual `dense_overrides` list in
+  bites you, add the model to a manual `dense_overrides` list in
   `config.json` (not yet implemented; PR welcome) or rename the file.
 - **Single GPU only.** No `--tensor-split` planning or per-device VRAM
   tracking. Multi-GPU users have to point `-LlamaServer` at a build that
@@ -487,7 +488,7 @@ llm-lab/
   doesn't exist there.
 - **Winner picker doesn't model quality.** Q4 is preferred over BF16 if it
   generates faster, even though BF16 has higher fidelity. If you care about
-  the tradeoff, look at the report's per-family table and pick by hand —
+  the tradeoff, look at the report's per-model table and pick by hand —
   every number is preserved.
 - **No HuggingFace authentication for `get-sample-models`.** Models that
   require accepting a license (notably some Gemma variants) will return 401.
@@ -502,7 +503,7 @@ Things explicitly out of scope for v1 but reasonable next steps:
   picker (so a paging-but-faster config can win when you accept the risk).
 - Per-config N-run support with median + MAD for variance reduction.
 - `dense_overrides` list to bypass MoE filename regex false positives.
-- Speculative decoding planning: pair a small model in the same family
+- Speculative decoding planning: pair a small model in the same series
   (e.g. Qwen3.5-0.8B as draft for Qwen3.5-9B) and benchmark the
   `--draft-max` configurations.
 - Quality scoring: optionally run a small task suite (truthful-qa subset,

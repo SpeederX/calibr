@@ -6,14 +6,14 @@
 .DESCRIPTION
     Discovers GGUF models in configured paths, classifies each by tier based on
     a VRAM safety budget, generates and runs a benchmark plan with WDDM-paging
-    detection on Windows, and emits an HTML report plus per-family .bat launchers.
+    detection on Windows, and emits an HTML report plus per-model .bat launchers.
 
 .EXAMPLE
     llm-lab init                     # first-time setup: detect HW, write config.json
     llm-lab discover                 # scan for .gguf files
     llm-lab plan                     # generate test plan
     llm-lab bench -Tier A            # run only Tier A benchmarks
-    llm-lab bench -Family Qwen3.5-9B # run only this family
+    llm-lab bench -Model Qwen3.5-9B  # run only this model
     llm-lab report                   # build HTML + .bat
     llm-lab all                      # full pipeline (works on whatever .gguf are on disk)
     llm-lab all -DownloadSamples     # fetch curated samples first, then run the pipeline
@@ -48,7 +48,7 @@ param(
     [string]$Value = "",
 
     [string]$Config = "",
-    [string]$Family = "",
+    [string]$Model = "",
     [ValidateSet("", "A", "B", "C")][string]$Tier = "",
     [string]$Id = "",
     [switch]$DryRun,
@@ -68,8 +68,8 @@ param(
     [string]$Destination = "",       # override target root (default: scan_paths[0])
 
     # Used by report: how to group results when selecting winners
-    [ValidateSet("family", "family+quant")]
-    [string]$GroupBy = "family",
+    [ValidateSet("model", "model+variant")]
+    [string]$GroupBy = "model",
 
     # Used by report (and `all`): pick the highest-eval_tps config per group,
     # ignoring WDDM-paging safety. Default off — safety wins ties.
@@ -410,27 +410,36 @@ function Get-ModelMetadata {
     $file = Get-Item -LiteralPath $path
     $fname = $file.BaseName
 
-    $quant  = "unknown"
-    $family = $fname
-    $quantPatterns = @(
-        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_XL)$',
-        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_M)$',
-        '^(?<fam>.+?)[\.\-](?<q>UD-Q\d+_K_S)$',
-        '^(?<fam>.+?)[\.\-](?<q>Q\d+_K_[A-Z]+)$',
-        '^(?<fam>.+?)[\.\-](?<q>Q\d+_\d+)$',
-        '^(?<fam>.+?)[\.\-](?<q>IQ\d+_[A-Z_]+)$',
-        '^(?<fam>.+?)[\.\-](?<q>BF16|F16|F32)$'
+    $variant = "unknown"
+    $model   = $fname
+    $variantPatterns = @(
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_XL)$',
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_M)$',
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_S)$',
+        '^(?<m>.+?)[\.\-](?<v>Q\d+_K_[A-Z]+)$',
+        '^(?<m>.+?)[\.\-](?<v>Q\d+_\d+)$',
+        '^(?<m>.+?)[\.\-](?<v>IQ\d+_[A-Z_]+)$',
+        '^(?<m>.+?)[\.\-](?<v>BF16|F16|F32)$'
     )
-    foreach ($p in $quantPatterns) {
-        if ($fname -match $p) { $family = $Matches.fam; $quant = $Matches.q; break }
+    foreach ($p in $variantPatterns) {
+        if ($fname -match $p) { $model = $Matches.m; $variant = $Matches.v; break }
+    }
+
+    # Series: parsed from model. Strip the trailing size+suffix token group
+    # (e.g. "Qwen3.5-9B" -> "Qwen3.5", "Gemma-4-E2B-it" -> "Gemma-4",
+    # "Qwen3.6-35B-A3B" -> "Qwen3.6"). Falls back to the model itself if
+    # nothing matches.
+    $series = $model
+    if ($model -match '^(.+?)-[A-Z]?\d+(\.\d+)?B(-A\d+B)?(-it|-Instruct)?$') {
+        $series = $Matches[1]
     }
 
     # MoE heuristics: -A\d+B (active params) or explicit MoE/Mixtral
-    $is_moe = ($family -match 'A\d+B' -or $family -match 'MoE' -or $family -match 'Mixtral')
+    $is_moe = ($model -match 'A\d+B' -or $model -match 'MoE' -or $model -match 'Mixtral')
 
     # Param count in billions (best-effort)
     $params_b = 0
-    if ($family -match '(\d+\.?\d*)B') { $params_b = [double]$Matches[1] }
+    if ($model -match '(\d+\.?\d*)B') { $params_b = [double]$Matches[1] }
 
     # Sibling mmproj (prefer F16 < BF16 < F32)
     $mmproj = $null
@@ -448,8 +457,9 @@ function Get-ModelMetadata {
         name       = $file.Name
         size_bytes = $file.Length
         size_mib   = [int]($file.Length / 1MB)
-        family     = $family
-        quant      = $quant
+        model      = $model
+        series     = $series
+        variant    = $variant
         params_b   = $params_b
         is_moe     = $is_moe
         mmproj     = $mmproj
@@ -458,7 +468,7 @@ function Get-ModelMetadata {
 }
 
 function Invoke-DenseOverrideFilter {
-    # Post-hoc filter: clear is_moe if the family is on the user's
+    # Post-hoc filter: clear is_moe if the model is on the user's
     # dense_overrides list. The MoE regex inside Get-ModelMetadata stays
     # untouched (real MoE families are still detected by default); the
     # override is a small, exact-match escape hatch for false positives.
@@ -470,7 +480,7 @@ function Invoke-DenseOverrideFilter {
     # -ccontains keeps the comparison case-sensitive (per spec). -contains
     # in PowerShell is case-insensitive by default; we do not want
     # `qwen3.6-35b-a3b` to silently match `Qwen3.6-35B-A3B` and disable MoE.
-    if ($meta.is_moe -and ($list -ccontains $meta.family)) {
+    if ($meta.is_moe -and ($list -ccontains $meta.model)) {
         $meta.is_moe = $false
     }
     return $meta
@@ -497,7 +507,7 @@ function Invoke-Discover {
             $meta = Get-ModelMetadata $f.FullName
             $meta = Invoke-DenseOverrideFilter -meta $meta -denseOverrides $cfg.dense_overrides
             $catalog += $meta
-            Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.family, $meta.size_mib, $meta.quant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
+            Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.model, $meta.size_mib, $meta.variant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
         }
     }
 
@@ -521,16 +531,17 @@ function Get-Tier {
 
 function New-PlanItem {
     param($meta, $tier, $extraArgs, $label, $idx)
-    $sanitized = ($meta.family + "_" + $meta.quant) -replace '[^\w]', '_'
+    $sanitized = ($meta.model + "_" + $meta.variant) -replace '[^\w]', '_'
     $id = "T{0:D3}_{1}_{2}" -f $idx, $sanitized.Substring(0, [Math]::Min(30, $sanitized.Length)), ($label -replace '[^\w]', '_').Substring(0, [Math]::Min(20, ($label -replace '[^\w]', '_').Length))
     return @{
         id          = $id
         model_path  = $meta.path
         mmproj_path = $meta.mmproj
-        family      = $meta.family
-        quant       = $meta.quant
+        model       = $meta.model
+        variant     = $meta.variant
+        series      = $meta.series
         tier        = $tier
-        label       = "$($meta.family) $($meta.quant) @ $label"
+        label       = "$($meta.model) $($meta.variant) @ $label"
         extra_args  = $extraArgs
     }
 }
@@ -551,7 +562,7 @@ function Invoke-Plan {
     $plan = @()
     $idx = 1
     foreach ($m in $catalog) {
-        if ($Family -and $m.family -notmatch $Family) { continue }
+        if ($Model -and $m.model -notmatch $Model) { continue }
         $tier = Get-Tier -meta $m -cfg $cfg
         if ($Tier -and $tier -ne $Tier) { continue }
 
@@ -672,8 +683,9 @@ function Invoke-OneBench {
     $result = [ordered]@{
         id              = $item.id
         label           = $item.label
-        family          = $item.family
-        quant           = $item.quant
+        model           = $item.model
+        variant         = $item.variant
+        series          = $item.series
         tier            = $item.tier
         timestamp       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
         model_path      = $item.model_path
@@ -745,9 +757,9 @@ function Invoke-OneBench {
             else { $result[$k] = [double]$m.Groups[1].Value }
         }
     }
-    # Trap llama.cpp builds that don't recognize a model's architecture (e.g. an
-    # older build vs. a brand-new family). Surface the architecture name so the
-    # caller can short-circuit further tests on the same family.
+    # Trap llama.cpp builds that don't recognize a model's architecture (e.g.
+    # an older build vs. a brand-new lineage). Surface the architecture name
+    # so the caller can short-circuit further tests on the same model.
     $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
     if ($mArch.Success) { $result.unsupported_architecture = $mArch.Groups[1].Value }
     if ($err -match 'successfully fit params') { $result.fit_status = "success" }
@@ -806,7 +818,7 @@ function Invoke-Bench {
     # PowerShell unwraps to the bare hashtable and $filtered.Count returns the
     # number of keys (8) instead of 1, which throws the [i/total] display off.
     $filtered = @($plan | Where-Object {
-        (-not $Family -or $_.family -match $Family) -and
+        (-not $Model -or $_.model -match $Model) -and
         (-not $Tier   -or $_.tier  -eq $Tier) -and
         (-not $Id     -or $_.id    -like $Id)
     })
@@ -828,8 +840,8 @@ function Invoke-Bench {
     foreach ($item in $filtered) {
         $i++
 
-        if ($abandoned.ContainsKey($item.family)) {
-            $reason = $abandoned[$item.family]
+        if ($abandoned.ContainsKey($item.model)) {
+            $reason = $abandoned[$item.model]
             Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkYellow
             $skipCount++
             continue
@@ -853,8 +865,8 @@ function Invoke-Bench {
         if ($r.ok) { $okCount++ } else { $failCount++ }
 
         if (-not $r.ok -and $r.unsupported_architecture) {
-            $abandoned[$item.family] = "unsupported architecture '$($r.unsupported_architecture)'"
-            Write-Host "  -> abandoning remaining tests for family '$($item.family)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
+            $abandoned[$item.model] = "unsupported architecture '$($r.unsupported_architecture)'"
+            Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
         }
     }
 
@@ -945,25 +957,50 @@ function Invoke-Report {
     }
     if ($results.Count -eq 0) { throw "No results. Run 'llm-lab bench' first." }
 
-    # Back-compat: older result JSONs may lack the 'quant' field. Backfill it from plan.json.
-    if (Test-Path $LAB_PLAN) {
-        $planIdx = @{}
-        $planRaw = Get-Content $LAB_PLAN -Raw | ConvertFrom-Json
-        foreach ($p in $planRaw) { $planIdx[$p.id] = $p.quant }
-        foreach ($r in $results) {
-            if (-not $r.quant -and $planIdx[$r.id]) {
-                $r | Add-Member -NotePropertyName quant -NotePropertyValue $planIdx[$r.id] -Force
-            }
+    # v1.0 migration: pre-v1 result JSONs used `family` and `quant`. Detect
+    # any in the loaded set, backfill model/variant/series, and rewrite the
+    # file so subsequent runs are clean. Idempotent.
+    $migrated = 0
+    foreach ($jsonFile in (Get-ChildItem $LAB_RESULTS_DIR -Filter "*.json" -ErrorAction SilentlyContinue)) {
+        $r = Get-Content $jsonFile.FullName -Raw | ConvertFrom-Json
+        $touched = $false
+        if ($null -eq $r.model -and $r.PSObject.Properties.Name -contains 'family') {
+            $r | Add-Member -NotePropertyName model -NotePropertyValue $r.family -Force
+            $touched = $true
+        }
+        if ($null -eq $r.variant -and $r.PSObject.Properties.Name -contains 'quant') {
+            $r | Add-Member -NotePropertyName variant -NotePropertyValue $r.quant -Force
+            $touched = $true
+        }
+        if ($null -eq $r.series -and $r.model) {
+            $s = $r.model
+            if ($s -match '^(.+?)-[A-Z]?\d+(\.\d+)?B(-A\d+B)?(-it|-Instruct)?$') { $s = $Matches[1] }
+            $r | Add-Member -NotePropertyName series -NotePropertyValue $s -Force
+            $touched = $true
+        }
+        if ($touched) {
+            $r.PSObject.Properties.Remove('family') | Out-Null
+            $r.PSObject.Properties.Remove('quant')  | Out-Null
+            $r | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile.FullName
+            $migrated++
+        }
+    }
+    if ($migrated -gt 0) {
+        Write-Host ("migrated {0} result file(s) to v1 schema" -f $migrated) -ForegroundColor DarkGray
+        # Reload the now-migrated results so the rest of the function sees the new shape.
+        $results = @()
+        Get-ChildItem $LAB_RESULTS_DIR -Filter "*.json" | Sort-Object Name | ForEach-Object {
+            $results += (Get-Content $_.FullName -Raw | ConvertFrom-Json)
         }
     }
 
-    # Pick winner per grouping key (family, or family+quant if -GroupBy family+quant).
+    # Pick winner per grouping key (model, or model+variant if -GroupBy model+variant).
     # Default safety rule: a config without WDDM paging always beats one that pages.
     # With -PreferSpeed: ignore safety, pick the highest eval_tps.
     function Get-GroupKey {
         param($r, $mode)
-        if ($mode -eq "family+quant") { return "$($r.family)_$($r.quant)" }
-        return $r.family
+        if ($mode -eq "model+variant") { return "$($r.model)_$($r.variant)" }
+        return $r.model
     }
 
     $confirmMib = if ($cfg.wddm_detection -and $cfg.wddm_detection.shared_delta_confirm_mib) {
@@ -980,9 +1017,9 @@ function Invoke-Report {
     Write-Host ("Grouping by '{0}'; produced {1} winner(s)" -f $GroupBy, $winners.Count)
 
     # Generate .bat per winner
-    foreach ($fam in $winners.Keys) {
-        $w = $winners[$fam]
-        $batName = ($fam -replace '[^\w\.\-]', '_') + ".bat"
+    foreach ($key in $winners.Keys) {
+        $w = $winners[$key]
+        $batName = ($key -replace '[^\w\.\-]', '_') + ".bat"
         $batPath = Join-Path $LAB_BATS_DIR $batName
         # Split extra_args into pairs "--flag value" or bare switches "--flag"
         # Regex grabs a `--name` and optionally its following non-flag value.
@@ -991,7 +1028,7 @@ function Invoke-Report {
         $lines = @(
             "@echo off"
             "REM Auto-generated by llm-lab on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-            "REM Family: $fam"
+            "REM Model: $key"
             "REM Bench: prompt=$($w.prompt_tps) t/s, eval=$($w.eval_tps) t/s, VRAM peak=$($w.vram_peak_mib) MiB"
             "REM Test ID: $($w.id)"
             ""
@@ -1013,7 +1050,7 @@ function Invoke-Report {
         $derived = Get-ResultDerivedFields -result $r -vramTotal $vramTotal
         $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
         [ordered]@{
-            id=$r.id; label=$r.label; family=$r.family; tier=$r.tier
+            id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; tier=$r.tier
             prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
             vram_peak_mib=([int]$r.vram_peak_mib); shared_peak_mib=([int]$r.shared_peak_mib)
             load_sec=([double]$r.load_sec); layers_offloaded=$r.layers_offloaded
@@ -1028,7 +1065,7 @@ function Invoke-Report {
         }
     }) | ConvertTo-Json -Depth 5 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {
-        [ordered]@{ family=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + ".bat") }
+        [ordered]@{ model=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + ".bat") }
     }) | ConvertTo-Json -Depth 5 -Compress
 
     $now = (Get-Date).ToString("yyyy-MM-dd HH:mm")
@@ -1118,21 +1155,21 @@ function Invoke-GetSampleModels {
     $cfg = Get-Config
     $samples = Get-SampleList
 
-    # Filter by -Family or -SampleId if provided
+    # Filter by -Model or -SampleId if provided
     $filtered = $samples
     if ($SampleId)  { $filtered = $filtered | Where-Object { $_.id -like $SampleId } }
-    if ($Family)    { $filtered = $filtered | Where-Object { $_.family -match $Family } }
+    if ($Model)    { $filtered = $filtered | Where-Object { $_.model -match $Model } }
 
     Write-Host "=== get-sample-models ===" -ForegroundColor Cyan
     Write-Host ("Samples catalog: {0} entries" -f $samples.Count)
-    if ($Family -or $SampleId) {
+    if ($Model -or $SampleId) {
         Write-Host ("Filtered: {0} matching" -f @($filtered).Count)
     }
     Write-Host ""
 
     # Always print the table first
     $fmt = "  {0,-2} {1,-24} {2,-30} {3,-14} {4,10}  {5}"
-    Write-Host ($fmt -f "", "ID", "Family", "Quant", "Size", "HF repo") -ForegroundColor White
+    Write-Host ($fmt -f "", "ID", "Model", "Variant", "Size", "HF repo") -ForegroundColor White
     Write-Host ($fmt -f "", ("-"*24), ("-"*30), ("-"*14), ("-"*10), ("-"*40)) -ForegroundColor DarkGray
     foreach ($s in $filtered) {
         $dest = Get-SampleDestination -sample $s -cfg $cfg
@@ -1140,20 +1177,20 @@ function Invoke-GetSampleModels {
         $status = if (Test-Path $finalPath) { "OK" } else { " " }
         $color = if ($status -eq "OK") { 'Green' } else { 'Gray' }
         $sizeStr = Format-HumanSize ([long]$s.size_bytes)
-        Write-Host ($fmt -f $status, $s.id, $s.family, $s.variant, $sizeStr, $s.hf_repo) -ForegroundColor $color
+        Write-Host ($fmt -f $status, $s.id, $s.model, $s.variant, $sizeStr, $s.hf_repo) -ForegroundColor $color
     }
 
     # Decide what to actually do
     $toDownload = @()
     if ($DownloadAll) {
         $toDownload = @($filtered)
-    } elseif ($SampleId -or $Family) {
+    } elseif ($SampleId -or $Model) {
         $toDownload = @($filtered)
     } else {
-        Write-Host "`nNo -SampleId, -Family or -DownloadAll passed: nothing to download. This was a dry listing." -ForegroundColor Yellow
+        Write-Host "`nNo -SampleId, -Model or -DownloadAll passed: nothing to download. This was a dry listing." -ForegroundColor Yellow
         Write-Host "Examples:" -ForegroundColor Yellow
         Write-Host "  llm-lab get-sample-models -SampleId qwen3.5-9b-q4km"
-        Write-Host "  llm-lab get-sample-models -Family 'Qwen3.5'"
+        Write-Host "  llm-lab get-sample-models -Model 'Qwen3.5'"
         Write-Host "  llm-lab get-sample-models -DownloadAll   # requires confirmation"
         return
     }
@@ -1184,7 +1221,7 @@ function Invoke-GetSampleModels {
     # Download
     $okCount = 0; $failCount = 0
     foreach ($s in $toDownload) {
-        Write-Host ("`n[{0}] {1} ({2})" -f $s.id, $s.family, (Format-HumanSize ([long]$s.size_bytes))) -ForegroundColor Cyan
+        Write-Host ("`n[{0}] {1} ({2})" -f $s.id, $s.model, (Format-HumanSize ([long]$s.size_bytes))) -ForegroundColor Cyan
         $dest = Get-SampleDestination -sample $s -cfg $cfg
         $modelPath = Join-Path $dest $s.hf_file
         $ok = Invoke-HFDownload -Repo $s.hf_repo -File $s.hf_file -DestPath $modelPath -ExpectedBytes ([long]$s.size_bytes)
@@ -1618,7 +1655,7 @@ function Invoke-Help {
         "discover"          = "Scan scan_paths for .gguf, write data/catalog.json."
         "plan"              = "Expand the catalog into a sweep of test configs (data/plan.json)."
         "bench"             = "Run pending tests against llama-server, save data/results/*.json."
-        "report"            = "Build data/report.html and data/bats/{family}.bat per winner."
+        "report"            = "Build data/report.html and data/bats/{model}.bat per winner."
         "all"               = "discover + plan + bench + report (optionally + download samples)."
         "status"            = "Show config + counts (catalog/plan/results) + global-install state."
         "config"            = "Get / set / list / unset config values from CLI."
@@ -1648,18 +1685,18 @@ function Invoke-Help {
             Examples = @( "llm-lab discover", "llm-lab discover -ScanPath D:\models" )
         }
         "plan" = @{
-            Usage    = "llm-lab plan [-Family <regex>] [-Tier {A,B,C}] [-DryRun]"
+            Usage    = "llm-lab plan [-Model <regex>] [-Tier {A,B,C}] [-DryRun]"
             Flags    = @(
-                "-Family <regex>   Only plan models whose family name matches"
+                "-Model <regex>    Only plan models whose name matches"
                 "-Tier {A|B|C}     Only plan tests for the selected tier"
                 "-DryRun           Print what would be planned, don't write plan.json"
             )
-            Examples = @( "llm-lab plan", "llm-lab plan -Family Qwen3.5 -DryRun" )
+            Examples = @( "llm-lab plan", "llm-lab plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "llm-lab bench [-Family <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun]"
+            Usage    = "llm-lab bench [-Model <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun]"
             Flags    = @(
-                "-Family <regex>   Only run configs whose family name matches"
+                "-Model <regex>    Only run configs whose model name matches"
                 "-Tier {A|B|C}     Only run configs for this tier"
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
@@ -1667,28 +1704,28 @@ function Invoke-Help {
             )
             Examples = @(
                 "llm-lab bench"
-                "llm-lab bench -Family Qwen3.5-9B"
+                "llm-lab bench -Model Qwen3.5-9B"
                 "llm-lab bench -Tier A -Force"
             )
         }
         "report" = @{
-            Usage    = "llm-lab report [-GroupBy {family|family+quant}] [-PreferSpeed]"
+            Usage    = "llm-lab report [-GroupBy {model|model+variant}] [-PreferSpeed]"
             Flags    = @(
-                "-GroupBy family         (default) one winner per family"
-                "-GroupBy family+quant   one winner per (family,quant) pair"
-                "-PreferSpeed            Pick highest eval_tps regardless of WDDM paging"
-                "                        (default: prefer non-paging configs even if slower)"
+                "-GroupBy model           (default) one winner per model"
+                "-GroupBy model+variant   one winner per (model,variant) pair"
+                "-PreferSpeed             Pick highest eval_tps regardless of WDDM paging"
+                "                         (default: prefer non-paging configs even if slower)"
             )
-            Examples = @( "llm-lab report", "llm-lab report -GroupBy family+quant", "llm-lab report -PreferSpeed" )
+            Examples = @( "llm-lab report", "llm-lab report -GroupBy model+variant", "llm-lab report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "llm-lab all [-DownloadSamples [-SampleId <id>] [-Family <regex>]] [-Force] [-PreferSpeed]"
+            Usage    = "llm-lab all [-DownloadSamples [-SampleId <id>] [-Model <regex>]] [-Force] [-PreferSpeed]"
             Flags    = @(
                 "-DownloadSamples         Run get-sample-models before the pipeline"
                 "-SampleId <id>           (with -DownloadSamples) only fetch the matching sample"
-                "-Family <regex>          Filter download AND bench by family"
+                "-Model <regex>           Filter download AND bench by model name"
                 "-Force                   Re-run all benchmarks (skip cache)"
-                "-PreferSpeed             Pick fastest config per family, ignore WDDM safety"
+                "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
             )
             Examples = @(
                 "llm-lab all"
@@ -1728,12 +1765,12 @@ function Invoke-Help {
             Examples = @( "llm-lab status" )
         }
         "get-sample-models" = @{
-            Usage    = "llm-lab get-sample-models [-DownloadAll | -SampleId <id> | -Family <regex>] [-Destination <path>] [-DryRun]"
+            Usage    = "llm-lab get-sample-models [-DownloadAll | -SampleId <id> | -Model <regex>] [-Destination <path>] [-DryRun]"
             Flags    = @(
                 "(no flag)                  Print catalog as a dry listing"
                 "-DownloadAll               Download every sample (asks confirmation, ~100 GB)"
                 "-SampleId <id>             Download only the matching sample id"
-                "-Family <regex>            Filter samples by family"
+                "-Model <regex>             Filter samples by model name"
                 "-Destination <path>        Override target root (default: scan_paths[0])"
                 "-DryRun                    Show what would be downloaded without doing it"
             )
@@ -1835,8 +1872,8 @@ switch ($Command) {
     "get-sample-models"  { Invoke-GetSampleModels }
     "all"                {
         if ($DownloadSamples) {
-            # Without an explicit filter (-SampleId / -Family / -DownloadAll), default to "all samples".
-            if (-not ($DownloadAll -or $SampleId -or $Family)) { $script:DownloadAll = $true }
+            # Without an explicit filter (-SampleId / -Model / -DownloadAll), default to "all samples".
+            if (-not ($DownloadAll -or $SampleId -or $Model)) { $script:DownloadAll = $true }
             Invoke-GetSampleModels
 
             # If neither config.json nor -ScanPath set scan_paths, point discover at the

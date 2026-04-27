@@ -59,7 +59,7 @@ llm-lab all -DownloadSamples -SampleId qwen3.5-9b-q4km
   paths under `Config:`.
 - `data\report.html` exists and opens in a browser with at least one
   winning configuration.
-- `data\bats\<family>.bat` files are present, double-clickable to launch
+- `data\bats\<model>.bat` files are present, double-clickable to launch
   llama-server with the optimized flags.
 
 ## Common first-run gotchas
