@@ -5,8 +5,8 @@
 . "$PSScriptRoot\harness.ps1"
 
 $labRoot   = (Resolve-Path "$PSScriptRoot\..").Path
-$labScript = Join-Path $labRoot "llm-lab.ps1"
-$tmpCfg    = Join-Path ([System.IO.Path]::GetTempPath()) "llm-lab-test-config-$([Guid]::NewGuid().ToString('N')).json"
+$labScript = Join-Path $labRoot "calibr.ps1"
+$tmpCfg    = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-test-config-$([Guid]::NewGuid().ToString('N')).json"
 
 function Invoke-Lab {
     # Run the script with -Config pointing at our throwaway file. Returns
@@ -31,7 +31,7 @@ Describe "config (no action)" {
     It "prints usage banner" {
         $r = Invoke-Lab -LabArgs @("config")
         Assert-Equal 0 $r.exit
-        Assert-True ($r.stdout -match "Usage: llm-lab config")  "stdout was: $($r.stdout)"
+        Assert-True ($r.stdout -match "Usage: calibr config")  "stdout was: $($r.stdout)"
         Assert-True ($r.stdout -match "list")
         Assert-True ($r.stdout -match "set <key> <value>")
         Assert-True ($r.stdout -match "detect")
@@ -120,7 +120,7 @@ Describe "config error cases" {
         $r = Invoke-Lab -LabArgs @("config", "totally_bogus_action")
         Assert-Equal 0 $r.exit
         Assert-True ($r.stdout -match "Unknown config action")
-        Assert-True ($r.stdout -match "Usage: llm-lab config")
+        Assert-True ($r.stdout -match "Usage: calibr config")
     }
 }
 
@@ -136,7 +136,7 @@ Describe "help system" {
         $r = Invoke-Lab -LabArgs @("help", "config")
         Assert-Equal 0 $r.exit
         Assert-True ($r.stdout -match "Examples:")
-        Assert-True ($r.stdout -match "llm-lab config detect")
+        Assert-True ($r.stdout -match "calibr config detect")
     }
     It "handles unknown command gracefully" {
         $r = Invoke-Lab -LabArgs @("help", "definitelynotacommand")

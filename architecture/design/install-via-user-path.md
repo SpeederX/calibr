@@ -2,8 +2,8 @@
 
 ## Why
 
-Most users want to type `llm-lab status` from any directory, not
-`.\llm-lab.ps1 status` from the project folder. Options:
+Most users want to type `calibr status` from any directory, not
+`.\calibr.ps1 status` from the project folder. Options:
 
 1. Install as a PowerShell module (`Install-Module`).
 2. Drop a wrapper into a system-wide bin directory (admin-only).
@@ -18,7 +18,7 @@ Option 3, scoped to **User PATH** (no admin needed):
 $env:PATH = "$env:PATH;<lab_root>"   # patches the current shell too
 ```
 
-A `.cmd` wrapper (`llm-lab.cmd`) lets cmd.exe find a `llm-lab` command;
+A `.cmd` wrapper (`calibr.cmd`) lets cmd.exe find a `calibr` command;
 PowerShell finds it via PATHEXT. The wrapper invokes the `.ps1` with
 `-NoProfile -ExecutionPolicy Bypass` so it works on locked-down machines
 and starts faster (no profile load).
@@ -27,9 +27,9 @@ and starts faster (no profile load).
 
 ## Pros
 
-- One command (`llm-lab install`) for the user. Zero filesystem moves, no
+- One command (`calibr install`) for the user. Zero filesystem moves, no
   symlinks, no junctions.
-- Reversible: `llm-lab uninstall` removes only the entry it added.
+- Reversible: `calibr uninstall` removes only the entry it added.
 - No admin rights required. Works on locked-down corporate machines.
 - The script can self-update via `git pull` and changes take effect
   immediately — no module re-import or re-install.
@@ -37,7 +37,7 @@ and starts faster (no profile load).
 ## Cons
 
 - Two filenames in the project (`.ps1` and `.cmd`). Mitigated by the help
-  system using `llm-lab` everywhere; the user rarely thinks about which
+  system using `calibr` everywhere; the user rarely thinks about which
   extension is invoked.
 - Relative paths in `config.json` resolve to the user's CWD at invocation
   time, not the project dir. Documented; recommended fix is absolute paths

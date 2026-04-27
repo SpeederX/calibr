@@ -21,3 +21,5 @@ gets a plan in `../plans/`. See `../architecture/README.md`.
 - [scatter-log-scale.md](scatter-log-scale.md) — log-10 X axis for the latency-vs-memory scatter
 - [winner-picker-prefer-speed.md](winner-picker-prefer-speed.md) — `-PreferSpeed` flag, opt-out of safety preference
 - [dense-overrides.md](dense-overrides.md) — explicit list to override MoE filename false positives
+- [v1-taxonomy-rename.md](v1-taxonomy-rename.md) — `family` → `model`, add `series`
+- [v1-project-rename.md](v1-project-rename.md) — `llm-lab` → `calibr`

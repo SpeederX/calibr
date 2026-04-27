@@ -1,4 +1,6 @@
-# llm-lab roadmap
+# calibr roadmap
+
+> Project name was `llm-lab` through v0.3.2; renamed to `calibr` in v1.0.0.
 
 Concise. One line per item. The entire file should fit on a single screen.
 Mark items `[x]` when shipped. Move stale items to bottom or remove.
@@ -9,13 +11,13 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] Tier classification (A/B/C, MoE detection via filename regex)
 - [x] WDDM paging detection (Windows shared-memory delta + saturation)
 - [x] Backend cross-check (warn when NVIDIA GPU but Vulkan-only build)
-- [x] Family-skip on `unknown model architecture` errors (saves ~10 min/run)
+- [x] Model-skip on `unknown model architecture` errors (saves ~10 min/run)
 - [x] `Write-Progress` bar + ETA + summary table during bench
 - [x] Curated reference set: `samples.json` + `get-sample-models`
 - [x] One-shot `all -DownloadSamples` for fresh installs
 - [x] Config CLI: `list / get / set / unset / detect`
 - [x] `install / uninstall` (User-scope PATH, no admin)
-- [x] `help` system, unified naming on `llm-lab` everywhere
+- [x] `help` system, unified naming on `calibr` everywhere
 - [x] `.cmd` wrapper for cmd.exe + PowerShell
 - [x] Test suite (custom Describe/It harness, 42 tests, no external deps)
 - [x] CI workflow scaffold (`.github/workflows/tests.yml`, runs on push/PR to dev/master)
@@ -29,6 +31,9 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] Picker uses `wddm_detection.shared_delta_confirm_mib` as the paging
       threshold (was a too-strict `> 0`). Default + `-PreferSpeed` now diverge
       meaningfully on real desktops with Chrome/Discord baselines.
+- [x] **v1.0.0**: taxonomy rename (`family` → `model`, `quant` → `variant`,
+      add `series`); project rename (`llm-lab` → `calibr`); methodology
+      doc allows MINOR breaking changes post-v1 while still offline.
 
 ## Open — code & UX
 
@@ -39,7 +44,7 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [ ] **Linux/macOS port**: NVML-based equivalent of WDDM perf-counter heuristic.
       `Get-LlamaBackends` to recognize `.so` / `.dylib`. `install/uninstall` to
       write to shell rc files instead of Windows User PATH. Shell wrapper
-      `llm-lab` (no extension) mirroring `llm-lab.cmd`.
+      `calibr` (no extension) mirroring `calibr.cmd`.
 - [ ] Android exploration (Termux + llama.cpp ARM64 builds).
 - [ ] Multi-GPU planning with `--tensor-split`.
 

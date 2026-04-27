@@ -1,16 +1,16 @@
-# llm-lab — measure, don't guess: benchmark llama.cpp on consumer GPUs
+# calibr — measure, don't guess: benchmark llama.cpp on consumer GPUs
 
 > A `--ctx-size 262144` flag silently caused Windows to page model weights to
 > system RAM, dropping eval from 45 t/s to 10 t/s. No error, no warning.
-> `llm-lab` automates the discovery of that cliff and the configuration that
+> `calibr` automates the discovery of that cliff and the configuration that
 > avoids it.
 
-`llm-lab` is a benchmark crawler/tester for local GGUF models served by
+`calibr` is a benchmark crawler/tester for local GGUF models served by
 [llama.cpp](https://github.com/ggml-org/llama.cpp) on NVIDIA CUDA. **It has no
 opinions about which models you should have.** You decide what sits on disk;
 it catalogs them, sweeps a planned set of configurations, runs each one,
 detects silent WDDM paging on Windows, and emits an HTML dashboard plus
-per-family optimized `.bat` launchers.
+per-model optimized `.bat` launchers.
 
 ![dashboard screenshot](docs/screenshot.png)
 
@@ -52,42 +52,42 @@ per-family optimized `.bat` launchers.
 ## Quickstart
 
 ```powershell
-git clone https://github.com/your-username/llm-lab.git    # replace with your fork
-cd llm-lab
-.\llm-lab.ps1 init      # detect HW + write config.json
-.\llm-lab.ps1 all       # discover -> plan -> bench -> report
+git clone https://github.com/your-username/calibr.git    # replace with your fork
+cd calibr
+.\calibr.ps1 init      # detect HW + write config.json
+.\calibr.ps1 all       # discover -> plan -> bench -> report
 start data\report.html  # open the dashboard
 ```
 
-You're done. The winning configurations are in `data/bats/{family}.bat` —
+You're done. The winning configurations are in `data/bats/{model}.bat` —
 double-click one and you have llama-server running with the optimized flags.
 
 If you don't have any `.gguf` files yet, or want to try every model from the
-curated reference set, add `-DownloadSamples` to `all` and llm-lab will fetch
+curated reference set, add `-DownloadSamples` to `all` and calibr will fetch
 the models first, then run the full pipeline:
 
 ```powershell
-.\llm-lab.ps1 all -DownloadSamples   # ~100 GB, full reference set (prompts to confirm)
+.\calibr.ps1 all -DownloadSamples   # ~100 GB, full reference set (prompts to confirm)
 ```
 
 Or you can just try out with one sample:
 
 ```powershell
-.\llm-lab.ps1 all -DownloadSamples -SampleId qwen3.5-9b-q4km   # ~5 GB, one model
+.\calibr.ps1 all -DownloadSamples -SampleId qwen3.5-9b-q4km   # ~5 GB, one model
 ```
 
 ## Why not just …?
 
 | You might be thinking | Why this exists anyway |
 |-----------------------|------------------------|
-| **`llama-bench`** | That's a single-config micro-benchmark. `llm-lab` is the harness around it: cataloging your models, planning a sweep, executing it, picking winners, generating launchers. |
+| **`llama-bench`** | That's a single-config micro-benchmark. `calibr` is the harness around it: cataloging your models, planning a sweep, executing it, picking winners, generating launchers. |
 | **LM Studio / Ollama** | Those are runtimes. They run a model; they don't measure across configurations to find your hardware's optimum. |
-| **"I'll just try `-ngl 20` and `-ngl 24`"** | That's a guess. With `llm-lab` you measure all reasonable values, in batch, with WDDM-paging detection so the result you ship isn't the one quietly using system RAM. |
-| **HuggingFace's leaderboards** | Those rank model *quality*. `llm-lab` ranks *configurations* on **your** GPU. |
+| **"I'll just try `-ngl 20` and `-ngl 24`"** | That's a guess. With `calibr` you measure all reasonable values, in batch, with WDDM-paging detection so the result you ship isn't the one quietly using system RAM. |
+| **HuggingFace's leaderboards** | Those rank model *quality*. `calibr` ranks *configurations* on **your** GPU. |
 
 ## Want comparable numbers across machines?
 
-Run `.\llm-lab.ps1 get-sample-models -DownloadAll` (~100 GB) to populate a
+Run `.\calibr.ps1 get-sample-models -DownloadAll` (~100 GB) to populate a
 [curated reference set](#reference-dataset--get-sample-models) spanning 0.8B
 dense up to 31B MoE. Anyone running the same set on different hardware
 produces directly comparable `data/results/*.json` files — drop them into a
@@ -104,7 +104,7 @@ shared repo to crowdsource a "what runs well on what GPU" dataset.
   ~10-15% slower; `bench` will print a yellow warning if it spots this
   mismatch. Older builds may also lack support for newer model architectures
   — `bench` detects "unknown model architecture" failures and skips the
-  remaining tests of the affected family instead of running them all to fail.)
+  remaining tests of the affected model instead of running them all to fail.)
 
 ## Setup details
 
@@ -123,27 +123,27 @@ You can edit `config.json` by hand, or use `config get/set/unset` from the
 command line — see [Editing config from the CLI](#editing-config-from-the-cli)
 below.
 
-### Run `llm-lab` from anywhere
+### Run `calibr` from anywhere
 
-The repo ships with `llm-lab.cmd`, a thin wrapper around the PowerShell
+The repo ships with `calibr.cmd`, a thin wrapper around the PowerShell
 script. Run `install` once to put this directory on your user PATH:
 
 ```powershell
-.\llm-lab.ps1 install
+.\calibr.ps1 install
 ```
 
 That's it. Now from any directory, in either cmd.exe or PowerShell:
 
 ```powershell
-llm-lab help
-llm-lab status
-llm-lab bench -Family Qwen3.5-9B
-llm-lab config set hardware.vram_safety_budget_pct 0.92
+calibr help
+calibr status
+calibr bench -Model Qwen3.5-9B
+calibr config set hardware.vram_safety_budget_pct 0.92
 ```
 
 `install` writes only the User-scope PATH (no admin rights), is
 idempotent, and patches the current shell session so you don't have to
-reopen the terminal. To revert, run `llm-lab uninstall`.
+reopen the terminal. To revert, run `calibr uninstall`.
 
 The wrapper sets `-ExecutionPolicy Bypass -NoProfile`, so it works on
 locked-down machines and starts faster (no profile load). One caveat: if
@@ -154,32 +154,32 @@ location-independent.
 
 ## Usage
 
-After `llm-lab install` you can drop the `.\llm-lab.ps1` prefix; before
+After `calibr install` you can drop the `.\calibr.ps1` prefix; before
 that, every command works the same way with the prefix from the project
 directory.
 
 ```powershell
-llm-lab init                # one-time setup -> config.json
-llm-lab discover            # scan scan_paths[] for .gguf -> data/catalog.json
-llm-lab plan                # generate test configs -> data/plan.json
-llm-lab bench               # run pending configs -> data/results/*.json
-llm-lab report              # HTML + .bat for winners -> data/report.html + data/bats/
-llm-lab all                 # discover + plan + bench + report
-llm-lab status              # state + config + global-install indicator
-llm-lab config <list|get|set|unset>  [<key>] [<value>]   # inspect/edit config
-llm-lab install / uninstall # add or remove this dir from user PATH
-llm-lab help [<command>]    # general help, or detail for one command
-llm-lab get-sample-models   # curated reference shelf (see below)
+calibr init                # one-time setup -> config.json
+calibr discover            # scan scan_paths[] for .gguf -> data/catalog.json
+calibr plan                # generate test configs -> data/plan.json
+calibr bench               # run pending configs -> data/results/*.json
+calibr report              # HTML + .bat for winners -> data/report.html + data/bats/
+calibr all                 # discover + plan + bench + report
+calibr status              # state + config + global-install indicator
+calibr config <list|get|set|unset>  [<key>] [<value>]   # inspect/edit config
+calibr install / uninstall # add or remove this dir from user PATH
+calibr help [<command>]    # general help, or detail for one command
+calibr get-sample-models   # curated reference shelf (see below)
 ```
 
-Run `.\llm-lab.ps1 help <command>` for the usage block + flags + examples of
+Run `.\calibr.ps1 help <command>` for the usage block + flags + examples of
 any subcommand (e.g. `help bench`, `help config`).
 
 ### Filters
 
 | Flag | Effect |
 |------|--------|
-| `-Family <regex>` | Only operate on models whose family name matches |
+| `-Model <regex>` | Only operate on models whose name matches |
 | `-Tier {A,B,C}`   | Only operate on the selected tier |
 | `-Id <pattern>`   | Only run configs whose test ID matches (wildcards ok) |
 | `-DryRun`         | Print what would be done; don't run llama-server |
@@ -191,12 +191,12 @@ any subcommand (e.g. `help bench`, `help config`).
 |------|---------|--------|
 | `-ScanPath <path[,path,...]>` | `discover`, `init`, `all` | Replaces `scan_paths` for this run |
 | `-LlamaServer <path>`         | `bench`, `report`, `init`, `all` | Replaces `llama_server_exe` for this run |
-| `-GroupBy {family,family+quant}` | `report`, `all` | How to group results when picking winners. Default `family`. With `family+quant` you get a separate winner (and `.bat`) per quantization. |
-| `-DownloadSamples`            | `all` | Run `get-sample-models` before the pipeline. Without a filter implies "download everything"; combine with `-SampleId` or `-Family` to narrow. |
+| `-GroupBy {model,model+variant}` | `report`, `all` | How to group results when picking winners. Default `model`. With `model+variant` you get a separate winner (and `.bat`) per variant. |
+| `-DownloadSamples`            | `all` | Run `get-sample-models` before the pipeline. Without a filter implies "download everything"; combine with `-SampleId` or `-Model` to narrow. |
 
 ```powershell
-# Compare Q4 vs Q8 of the same family by giving them separate winners
-.\llm-lab.ps1 all -GroupBy family+quant
+# Compare Q4 vs Q8 of the same model by giving them separate winners
+.\calibr.ps1 all -GroupBy model+variant
 # -> data/bats/Qwen3.5-9B_Q4_K_M.bat
 # -> data/bats/Qwen3.5-9B_Q8_0.bat
 ```
@@ -205,17 +205,17 @@ any subcommand (e.g. `help bench`, `help config`).
 
 ```powershell
 # A. You already have .gguf files on disk
-.\llm-lab.ps1 init      # one-time setup, writes config.json
-.\llm-lab.ps1 all       # discover -> plan -> bench -> report
+.\calibr.ps1 init      # one-time setup, writes config.json
+.\calibr.ps1 all       # discover -> plan -> bench -> report
 
 # B. Start fresh with the curated reference set (one shot, download + bench)
-.\llm-lab.ps1 all -DownloadSamples                            # ~100 GB; prompts to confirm
-.\llm-lab.ps1 all -DownloadSamples -SampleId qwen3.5-9b-q4km  # one model, ~5 GB
-.\llm-lab.ps1 all -DownloadSamples -Family "Qwen3.5"          # one family
+.\calibr.ps1 all -DownloadSamples                            # ~100 GB; prompts to confirm
+.\calibr.ps1 all -DownloadSamples -SampleId qwen3.5-9b-q4km  # one model, ~5 GB
+.\calibr.ps1 all -DownloadSamples -Model "Qwen3.5"           # one model
 
 # C. Pure CLI, no config.json (CI / try-and-throw-away)
-.\llm-lab.ps1 get-sample-models -SampleId qwen3.5-0.8b-q4xl -Destination .\models
-.\llm-lab.ps1 all -ScanPath .\models -LlamaServer "C:\bin\llama-server.exe"
+.\calibr.ps1 get-sample-models -SampleId qwen3.5-0.8b-q4xl -Destination .\models
+.\calibr.ps1 all -ScanPath .\models -LlamaServer "C:\bin\llama-server.exe"
 ```
 
 ### Editing config from the CLI
@@ -224,13 +224,13 @@ You don't have to open `config.json` to tweak settings. Four sub-actions cover
 the common workflow:
 
 ```powershell
-.\llm-lab.ps1 config list                                         # all keys, type, [default] vs [local]
-.\llm-lab.ps1 config get hardware.vram_total_mib                  # one value
-.\llm-lab.ps1 config get hardware                                 # whole subtree
-.\llm-lab.ps1 config set hardware.vram_safety_budget_pct 0.92     # write to local override
-.\llm-lab.ps1 config set scan_paths "D:\models,E:\cache"          # CSV for arrays
-.\llm-lab.ps1 config set bench.warmup false                       # bools: true/false/1/0/yes/no
-.\llm-lab.ps1 config unset hardware.vram_safety_budget_pct        # remove override, default applies
+.\calibr.ps1 config list                                         # all keys, type, [default] vs [local]
+.\calibr.ps1 config get hardware.vram_total_mib                  # one value
+.\calibr.ps1 config get hardware                                 # whole subtree
+.\calibr.ps1 config set hardware.vram_safety_budget_pct 0.92     # write to local override
+.\calibr.ps1 config set scan_paths "D:\models,E:\cache"          # CSV for arrays
+.\calibr.ps1 config set bench.warmup false                       # bools: true/false/1/0/yes/no
+.\calibr.ps1 config unset hardware.vram_safety_budget_pct        # remove override, default applies
 ```
 
 - Types are inferred from `config.default.json` (so `... vram_total_mib 8192`
@@ -244,7 +244,7 @@ the common workflow:
   `config.default.json` directly.
 
 When `-DownloadSamples` runs without a configured scan path (no `config.json`,
-no `-ScanPath`), llm-lab puts the files in `./downloaded-models/` under the
+no `-ScanPath`), calibr puts the files in `./downloaded-models/` under the
 project root and points `discover` there automatically.
 
 ## Reference dataset — `get-sample-models`
@@ -256,18 +256,18 @@ gets the same dataset, so reported tokens/s on different hardware can be
 compared directly.
 
 ```powershell
-.\llm-lab.ps1 get-sample-models                                    # list (OK = on disk)
-.\llm-lab.ps1 get-sample-models -SampleId qwen3.5-9b-q4km          # download one
-.\llm-lab.ps1 get-sample-models -Family "Gemma-4"                  # by family
-.\llm-lab.ps1 get-sample-models -DownloadAll                       # all (~100 GB, prompts to confirm)
-.\llm-lab.ps1 get-sample-models -DownloadAll -DryRun               # preview
-.\llm-lab.ps1 get-sample-models -SampleId qwen3.5-9b-q4km -Destination "D:\models"
+.\calibr.ps1 get-sample-models                                    # list (OK = on disk)
+.\calibr.ps1 get-sample-models -SampleId qwen3.5-9b-q4km          # download one
+.\calibr.ps1 get-sample-models -Model "Gemma-4"                   # by model
+.\calibr.ps1 get-sample-models -DownloadAll                       # all (~100 GB, prompts to confirm)
+.\calibr.ps1 get-sample-models -DownloadAll -DryRun               # preview
+.\calibr.ps1 get-sample-models -SampleId qwen3.5-9b-q4km -Destination "D:\models"
 ```
 
 Files land at `{scan_paths[0]}/{target_dir}/{hf_file}` so a subsequent
 `discover` picks them up automatically.
 
-| Tier hint | Family | Approx size | Why it's in the reference set |
+| Tier hint | Model | Approx size | Why it's in the reference set |
 |-----------|--------|-------------|-------------------------------|
 | A | Qwen3.5 0.8B Q8_0 + Q4_K_XL    | 0.5 - 0.8 GB | Bandwidth/sanity baseline |
 | A | Qwen3.5 2B UD-Q4_K_XL + BF16   | 1.3 - 3.5 GB | Multimodal small + quality reference |
@@ -284,7 +284,7 @@ fixing `samples.json`; flaky network = fall back to `huggingface-cli download`.
 
 ## How it works
 
-`llm-lab`'s pipeline is five sequential stages, each writing to a file the
+`calibr`'s pipeline is five sequential stages, each writing to a file the
 next one reads:
 
 ```
@@ -322,9 +322,10 @@ next one reads:
 Recursive glob of `scan_paths`, filtered by `exclude_patterns` (defaults skip
 `mmproj-*.gguf`, `ggml-vocab-*.gguf`, `*draft*.gguf`). For each surviving file:
 
-- **Family** is the filename stem stripped of the quant suffix, e.g.
-  `Qwen3.5-9B-Q4_K_M.gguf` → family `Qwen3.5-9B`, quant `Q4_K_M`.
-- **MoE detection** is regex on the family: matches `A\d+B` (e.g. `Qwen3.6-35B-A3B`)
+- **Model** is the filename stem stripped of the variant suffix, e.g.
+  `Qwen3.5-9B-Q4_K_M.gguf` → model `Qwen3.5-9B`, variant `Q4_K_M`.
+- **Series** is parsed from the model (e.g. `Qwen3.5-9B` → series `Qwen3.5`).
+- **MoE detection** is regex on the model: matches `A\d+B` (e.g. `Qwen3.6-35B-A3B`)
   or contains `MoE` / `Mixtral`. *(See [Known limitations](#known-limitations) for false-positive risk.)*
 - **mmproj pairing**: a sibling `mmproj-*.gguf` in the same directory is
   auto-paired by precision preference (F16 → BF16 → F32). Concrete example:
@@ -349,7 +350,7 @@ Each cataloged model produces N test configurations based on its tier:
 
 Two quants of the same model both get expanded — if you have
 `Qwen3.5-0.8B-Q8_0.gguf` and `Qwen3.5-0.8B-UD-Q4_K_XL.gguf`, plan generates
-12 configs (6 Tier A candidates × 2 quants). Both compete in the same family
+12 configs (6 Tier A candidates × 2 variants). Both compete in the same model
 pool when `report` picks winners.
 
 #### `vram_safety_budget` defined explicitly
@@ -402,7 +403,7 @@ For every config:
 
 ### Stage 4 — `report` picks winners and emits artifacts
 
-Results are grouped by `-GroupBy` (default `family`):
+Results are grouped by `-GroupBy` (default `model`):
 
 ```text
 for each result where ok == true:
@@ -417,7 +418,7 @@ Safety preference is intentional: a 30 t/s safe config is more useful than a
 50 t/s config that's one Chrome tab away from collapsing.
 
 Output:
-- `data/report.html` — sortable tables, per-family winner cards, charts, WDDM
+- `data/report.html` — sortable tables, per-model winner cards, charts, WDDM
   watchlist (configs where `shared_peak_mib > shared_delta_confirm_mib` or
   `vram_saturation > 0.92`).
 - `data/bats/{group_key}.bat` — one launcher per group with the winning
@@ -443,10 +444,10 @@ are treated as background drift.
 ## Output layout
 
 ```
-llm-lab/
+calibr/
 ├── config.default.json      # committed, no personal paths
 ├── config.json              # gitignored, written by `init`
-├── llm-lab.ps1              # the tool
+├── calibr.ps1              # the tool
 ├── samples.json             # committed, the reference shelf
 ├── report.template.html     # committed, HTML skeleton with %%placeholders%%
 ├── README.md
@@ -471,11 +472,11 @@ llm-lab/
   but not a 5 % regression. If you need stable numbers, the cleanest patch is
   a loop in `Invoke-OneBench` taking the median of 3 runs (the rest of the
   pipeline is unchanged). PRs welcome.
-- **MoE detection is a regex on the filename.** `family =~ /A\d+B/` correctly
+- **MoE detection is a regex on the filename.** `model =~ /A\d+B/` correctly
   matches `Qwen3.6-35B-A3B` and `Mixtral-8x7B`-style names but **a model
   innocently named `something-A100B-special.gguf` would be false-flagged as
   MoE** and routed to a `--n-cpu-moe` sweep that won't apply to it. If this
-  bites you, add the family to a manual `dense_overrides` list in
+  bites you, add the model to a manual `dense_overrides` list in
   `config.json` (not yet implemented; PR welcome) or rename the file.
 - **Single GPU only.** No `--tensor-split` planning or per-device VRAM
   tracking. Multi-GPU users have to point `-LlamaServer` at a build that
@@ -487,7 +488,7 @@ llm-lab/
   doesn't exist there.
 - **Winner picker doesn't model quality.** Q4 is preferred over BF16 if it
   generates faster, even though BF16 has higher fidelity. If you care about
-  the tradeoff, look at the report's per-family table and pick by hand —
+  the tradeoff, look at the report's per-model table and pick by hand —
   every number is preserved.
 - **No HuggingFace authentication for `get-sample-models`.** Models that
   require accepting a license (notably some Gemma variants) will return 401.
@@ -502,7 +503,7 @@ Things explicitly out of scope for v1 but reasonable next steps:
   picker (so a paging-but-faster config can win when you accept the risk).
 - Per-config N-run support with median + MAD for variance reduction.
 - `dense_overrides` list to bypass MoE filename regex false positives.
-- Speculative decoding planning: pair a small model in the same family
+- Speculative decoding planning: pair a small model in the same series
   (e.g. Qwen3.5-0.8B as draft for Qwen3.5-9B) and benchmark the
   `--draft-max` configurations.
 - Quality scoring: optionally run a small task suite (truthful-qa subset,

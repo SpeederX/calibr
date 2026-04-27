@@ -5,7 +5,7 @@ $report = Join-Path $root "data\report.html"
 $out = Join-Path $PSScriptRoot "screenshot.png"
 
 if (-not (Test-Path $report)) {
-    throw "report.html not found at $report. Run '.\llm-lab.ps1 report' first."
+    throw "report.html not found at $report. Run '.\calibr.ps1 report' first."
 }
 
 $edge = "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
