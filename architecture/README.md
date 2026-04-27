@@ -103,3 +103,35 @@ file there before the change merges.
 UX flows live under `architecture/ux/`. Each is the functional walk-through
 of one use case (first-time install, bench cycle, config management, etc.)
 written from the user's perspective: "the user types X, sees Y, then…".
+
+## Domain glossary
+
+`architecture/domain.md` is the authoritative source for project
+vocabulary (lineage / series / model / variant / run config, plus
+WDDM / saturation / headroom / winner / backend, etc.). New code,
+specs, and docs MUST use the terms in the sense defined there. If a
+term diverges, update `domain.md` first, then the code.
+
+## Memory snapshots
+
+`memories/memory-N.md` files (numbered 1, 2, 3, ...) freeze the
+state of the project at chosen moments — typically before a context
+compaction or a significant hand-off. Each is a stand-alone primer:
+an LLM (or human) starting from one should be able to resume the
+work without prior history.
+
+Conventions:
+
+- One file per snapshot, named `memory-<N>.md`. Increment monotonically.
+- Higher numbers are more recent; treat older files as historical, not
+  authoritative.
+- Each snapshot includes: date, version, active branch, methodology
+  recap, recent timeline, open work, reading-order pointers, caveats.
+- Take a snapshot when: about to compact a long agent conversation;
+  about to hand off to another contributor; just before a major
+  release; whenever the in-flight context is rich enough that losing
+  it would hurt.
+
+The root `README.md` points readers (and LLMs) at this file plus
+`memory-N.md` as the entry points to "what is this project, where is
+it going."

@@ -20,6 +20,14 @@ per-family optimized `.bat` launchers.
 > failure mode this tool primarily targets simply doesn't exist (CUDA OOMs
 > cleanly).
 
+> **For an LLM (or contributor) reading this**: skim the **architecture
+> docs** for the full picture before diving into the code.
+> Start with [`architecture/README.md`](architecture/README.md) for the
+> methodology and folder map, then
+> [`architecture/domain.md`](architecture/domain.md) for the vocabulary,
+> then the most recent file under [`memories/`](memories/) for a
+> point-in-time state-of-the-project primer.
+
 ---
 
 ## Contents

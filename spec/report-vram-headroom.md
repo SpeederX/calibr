@@ -11,8 +11,9 @@ follow-up: *could I push ctx higher on this config?*
 The bench measures `vram_peak_mib` and (on CUDA builds) the breakdown
 including `kv_cache_mib`. From those plus the run's `ctx_size` we can
 back out a per-token KV cost and project the spare VRAM into extra
-context. Item #3 in `ROADMAP.md`. Echoes the user's question:
-> "quanta vram resta libera e a quanto contesto corrisponde"
+context. Item #3 in `ROADMAP.md`. Echoes the user's follow-up after
+the first full run: *how much VRAM is left and how much additional
+context does that buy?*
 
 ## Behavior
 
