@@ -23,3 +23,5 @@ gets a plan in `../plans/`. See `../architecture/README.md`.
 - [dense-overrides.md](dense-overrides.md) — explicit list to override MoE filename false positives
 - [v1-taxonomy-rename.md](v1-taxonomy-rename.md) — `family` → `model`, add `series`
 - [v1-project-rename.md](v1-project-rename.md) — `llm-lab` → `calibr`
+- [v1.0.1-docs-and-roadmap-sync.md](v1.0.1-docs-and-roadmap-sync.md) — README positioning, competitor table, priority-ordered ROADMAP rewrite
+- [v1.0.1-strict-semver.md](v1.0.1-strict-semver.md) — remove pre-public-flexibility allowance, restore strict SemVer

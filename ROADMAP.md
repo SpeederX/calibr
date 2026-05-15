@@ -1,9 +1,12 @@
 # calibr roadmap
 
-> Project name was `llm-lab` through v0.3.2; renamed to `calibr` in v1.0.0.
+> calibr — measure, don't guess: benchmark llama.cpp on consumer GPUs.
 
-Concise. One line per item. The entire file should fit on a single screen.
-Mark items `[x]` when shipped. Move stale items to bottom or remove.
+Priority-ordered backlog grouped by target version. The top of each
+section is what's next. Rationale for the shape lives in
+[`architecture/design/roadmap-priorities.md`](architecture/design/roadmap-priorities.md).
+Concise — one line per item; the whole file should fit on a single
+screen. Mark items `[x]` when shipped.
 
 ## Done
 
@@ -34,21 +37,57 @@ Mark items `[x]` when shipped. Move stale items to bottom or remove.
 - [x] **v1.0.0**: taxonomy rename (`family` → `model`, `quant` → `variant`,
       add `series`); project rename (`llm-lab` → `calibr`); methodology
       doc allows MINOR breaking changes post-v1 while still offline.
+- [x] **v1.0.1**: documentation and methodology sync
 
-## Open — code & UX
+## Open
 
-- [ ] N-run with median for variance reduction (current ±5 % on `eval_tps`).
+### v1.1.0 — quick wins
 
-## Open — portability
+- Download rotation: bench one, delete, next. Working set ~100 GB → ~20 GB.
+- `localmaxxing-export` subcommand for the public leaderboard.
+- N-run with median for variance reduction (currently ±5 % on `eval_tps` at N=1).
 
-- [ ] **Linux/macOS port**: NVML-based equivalent of WDDM perf-counter heuristic.
-      `Get-LlamaBackends` to recognize `.so` / `.dylib`. `install/uninstall` to
-      write to shell rc files instead of Windows User PATH. Shell wrapper
-      `calibr` (no extension) mirroring `calibr.cmd`.
-- [ ] Android exploration (Termux + llama.cpp ARM64 builds).
-- [ ] Multi-GPU planning with `--tensor-split`.
+### v1.2.0 — report-interface overhaul
 
-## Open — process
+- Memory-tier reference lines on scatter (VRAM, +WDDM shared, +system RAM).
+- Bar charts grouped by model, collapse/expand.
+- Column-header tooltips and `?` overlays explaining each metric.
+- All-results table: sort, search, group-by-model toggle.
+- Frontend test harness via Edge headless.
 
-- [ ] GitHub remote + push (currently local-only).
-- [ ] Release automation (bump version, tag, generate changelog from commits).
+### v1.3.0 — KV-cache degradation, measured on hardware
+
+- Empirical quality test of KV-cache quantization (q8 / q4 / f16) on the user's hardware. Open: metric, dataset, report integration.
+- Cross-reference llmfit's theoretical estimates against measured numbers; report the delta.
+
+### v1.4.0 and later — incremental
+
+- Wattage tracking via `nvidia-smi`.
+- Efficiency metric (tokens per joule).
+- Accuracy task suite, 5–10 representative tasks (UI code, simple code gen).
+- Speculative-decoding planning.
+- Surface project version in `calibr.ps1` (help banner plus a `--version` flag). Source of truth stays the git tag; the engine reads it at build/install time or via a generated constant.
+
+### v2.0.0 — programming-interface layer (landmark)
+
+- Decide the form: local C library, local C++ library, local web service, or other.
+- Refactor `calibr.ps1` into an engine library + CLI shell.
+- First reference client (likely the CLI itself).
+- Opens the way for the future `calibr-ui` repository and a possible web dashboard.
+
+### v3.0.0 — multi-GPU planning (landmark, long shot)
+
+- Planning with `--tensor-split` across more than one card.
+- Per-card VRAM accounting and paging detection.
+
+### Cross-cutting (no version pin)
+
+- Linux/macOS port: NVML in place of the WDDM heuristic; shell rc files in place of Windows user PATH; a `calibr` shell wrapper (no extension).
+- Android exploration (Termux + llama.cpp ARM64 builds).
+- Release automation (version bump, tag, changelog from commits).
+
+## Architectural notes
+
+- **Two audiences, two interfaces.** Technical users stay on the command-line interface offered by `calibr.ps1`. Less technical users will be served by a future graphical interface in its own repository, `calibr-ui`, built on top of this tool's programming interface. Same engine, two surfaces — not two versions of the tool, and not maintained in this repository.
+- **GUI / web dashboard lands at v2.0.0 or later, never before.** Both depend on the programming interface shipped in v2.0.0. The form of that interface (local C library, local C++ library, local web service, or another) is undecided and is part of the v2.0.0 planning work itself.
+- **The accuracy task suite stays narrow:** 5–10 representative tasks. It is not a general evaluation framework, and avoiding that scope creep is the explicit choice.

@@ -52,7 +52,7 @@ per-model optimized `.bat` launchers.
 ## Quickstart
 
 ```powershell
-git clone https://github.com/your-username/calibr.git    # replace with your fork
+git clone https://github.com/SpeederX/calibr.git    # or your fork
 cd calibr
 .\calibr.ps1 init      # detect HW + write config.json
 .\calibr.ps1 all       # discover -> plan -> bench -> report
@@ -78,12 +78,24 @@ Or you can just try out with one sample:
 
 ## Why not just …?
 
-| You might be thinking | Why this exists anyway |
-|-----------------------|------------------------|
-| **`llama-bench`** | That's a single-config micro-benchmark. `calibr` is the harness around it: cataloging your models, planning a sweep, executing it, picking winners, generating launchers. |
-| **LM Studio / Ollama** | Those are runtimes. They run a model; they don't measure across configurations to find your hardware's optimum. |
-| **"I'll just try `-ngl 20` and `-ngl 24`"** | That's a guess. With `calibr` you measure all reasonable values, in batch, with WDDM-paging detection so the result you ship isn't the one quietly using system RAM. |
-| **HuggingFace's leaderboards** | Those rank model *quality*. `calibr` ranks *configurations* on **your** GPU. |
+Several tools sit nearby in this space, mostly doing different things
+from `calibr`. Some **estimate from hardware constants** without ever
+running the model. Some **measure runtime parameters** (prompt size,
+batch size, concurrency) rather than launch-time flags. Some
+**aggregate community submissions** without measuring on your machine
+at all. `calibr`'s slice is narrower and concrete: it measures
+launch-flag configurations on **your own hardware** and reports which
+one wins.
+
+| Tool | Approach | Gap (relative to calibr) |
+|---|---|---|
+| llmfit | Pure estimation, hardcoded hardware constants | Does not measure on hardware; mixture-of-experts models treated as dense. TBD — pending hands-on test. |
+| llm-checker | Ollama-focused, deterministic scoring, `ai-run` subcommand measures tokens per second | No mixture-of-experts support; Ollama only; no launch-flag sweep. TBD — pending hands-on test. |
+| llama-benchy | Sweep over runtime parameters (prompt processing, token generation, depth, concurrency) | Sweeps runtime, not launch flags. TBD — pending hands-on test. |
+| llama-bench (built-in to llama.cpp) | Single-configuration benchmark | No sweep across launch flags. |
+| llama-sweep-bench | Sweep over performance parameters | Fork-specific to ik_llama; not applicable to mainline llama.cpp. |
+| LocalMaxxing | Community leaderboard aggregator | Depends on third-party submissions; no measurement on the user's own hardware. |
+| Bench360 | Academic benchmark framework | Not consumer-facing. |
 
 ## Want comparable numbers across machines?
 
