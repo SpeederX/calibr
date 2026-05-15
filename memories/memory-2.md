@@ -39,6 +39,10 @@ Two bundled refactors, both BREAKING:
    v1.0.0 may ship as MINOR at maintainer discretion. Strict SemVer
    resumes when the project is published.
 
+> Note (added 2026-05-13): the relaxed-versioning allowance applied
+> to v1.0.0 only. From v1.0.1 onward, strict semantic versioning is
+> in effect; see `memories/memory-3.md`.
+
 Migration: pre-v1 `data/results/*.json` files (with `family`/`quant`
 keys) get auto-migrated to the new schema on first `calibr report`
 invocation. Idempotent.
