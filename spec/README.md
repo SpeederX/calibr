@@ -25,3 +25,6 @@ gets a plan in `../plans/`. See `../architecture/README.md`.
 - [v1-project-rename.md](v1-project-rename.md) — `llm-lab` → `calibr`
 - [v1.0.1-docs-and-roadmap-sync.md](v1.0.1-docs-and-roadmap-sync.md) — README positioning, competitor table, priority-ordered ROADMAP rewrite
 - [v1.0.1-strict-semver.md](v1.0.1-strict-semver.md) — remove pre-public-flexibility allowance, restore strict SemVer
+- [download-rotation.md](download-rotation.md) — `-Rotate` flag: delete each downloaded model after bench, working set drops from ~100 GB to ~20 GB
+- [localmaxxing-export.md](localmaxxing-export.md) — `localmaxxing-export` subcommand, bearer-auth submission to the public leaderboard
+- [n-run-median.md](n-run-median.md) — N-run median per config (default 3) for variance reduction on the noisy metrics
