@@ -87,24 +87,44 @@ reads today. Only `bench` changes, and only by writing more data.
 
 ### Cache invalidation
 
-- When `bench` finds an existing `data/results/{TestID}.json`
-  whose `runs` array has a length different from the requested N
-  (whether shorter or longer), the file is treated as invalid and
-  all N runs re-execute. No append, no truncate, no merge.
-- A pre-N-run-median result file (no `runs` array at all) is
-  treated as length-zero and re-executes.
-- `-Force` retains its existing meaning (re-run even if a
-  length-matching result exists).
+- Successful results require a complete `runs` array of length N
+  to be cache-hits. When `bench` finds an existing
+  `data/results/{TestID}.json` whose `runs` array has a length
+  different from the requested N (whether shorter or longer), the
+  file is treated as invalid and all N runs re-execute. No append,
+  no truncate, no merge.
+- Failed results — those with `ok: false` and a recorded failure
+  reason (`unsupported_architecture`, server-startup timeout,
+  completion failure) — are cached as-is and skip the runs-array
+  check. A definitive negative result is not a transient failure
+  to capture variance over; replaying it on every bench wastes
+  wall-time without changing the answer.
+- Migration shim for pre-v1.1.0 successful results (no `runs`
+  array at all): treated as a length-one cache for cache-hit
+  purposes. They hit the cache when `-Runs 1` is requested and
+  invalidate for any larger N. The shim is path-dependent on the
+  legacy shape — once a config is re-benched under v1.1.0, the
+  new write includes the `runs` array and the legacy path no
+  longer applies. The shim dies at the next breaking schema
+  change.
+- `-Force` retains its existing meaning (re-run even if a cache
+  hit would otherwise apply).
 
 ### Failure handling
 
-- A result file is only written after all N runs complete
-  successfully. Partial state (one out of three runs done, the
-  process killed) is not persisted. The next bench call sees no
-  file and re-runs all N.
-- If any individual run fails (llama-server crash, timeout, OOM),
-  the whole test id is marked failed in the existing way; no
-  median is computed; no `runs` array is partially written.
+- A successful result file (`ok: true`, complete `runs` array) is
+  only written after all N runs complete. Partial state (one out
+  of three runs done, the process killed) is not persisted as a
+  successful result. The next bench call sees no successful file
+  and re-runs all N.
+- If any individual run fails (llama-server crash, timeout, OOM,
+  `unknown model architecture`), the existing single-record
+  failure JSON is written: `ok: false`, `error` or
+  `unsupported_architecture` populated, no `runs` array. This
+  preserves the model-skip optimization shipped in v1.0.0: a
+  config that fails for a deterministic reason (e.g. the build
+  doesn't support a model's architecture) is cached and
+  short-circuited on subsequent bench sessions.
 
 ### Report and `.bat` launcher
 
@@ -123,8 +143,15 @@ reads today. Only `bench` changes, and only by writing more data.
 - [ ] `-Runs 1` produces results with a `runs` array of length
       one and top-level fields equal to `runs[0]`. Report and
       `.bat` generation work unchanged.
-- [ ] An existing pre-N-run-median result file (no `runs`
-      array) re-runs all N when the user requests `-Runs 3`.
+- [ ] An existing pre-v1.1.0 successful result file (no `runs`
+      array): treated as length-one cache for `-Runs 1` (cache
+      hit, no re-run); invalidated for `-Runs 3` (re-runs all
+      three).
+- [ ] An existing failed result file (`ok: false`, no `runs`
+      array): cached as-is regardless of the requested N; not
+      re-run unless `-Force` is passed. Applies to
+      `unsupported_architecture` failures and any other
+      `ok: false` record.
 - [ ] An existing N=3 result file: a subsequent `-Runs 3` skips
       it (cache hit); a subsequent `-Runs 5` invalidates and
       re-runs all five.
