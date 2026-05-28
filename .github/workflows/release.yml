@@ -1,0 +1,70 @@
+name: Release
+
+# Triggered only by pushing a tag like v0.1.0 / v1.2.3. Plain commits do
+# not publish. Use `npm version <patch|minor|major>` inside cli/ to bump
+# the version and create the matching git tag in one step.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# id-token is required so `npm publish --provenance` can mint an OIDC
+# token that links the published tarball to this exact workflow run.
+# contents:read is the default; making it explicit for clarity.
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish CLI to npm
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node + npmjs registry
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      # Fail fast if someone tagged vX.Y.Z but forgot to bump
+      # cli/package.json (or vice versa). npm version handles this for
+      # you when run inside cli/, but a hand-pushed tag can drift.
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart("v")
+          $pkg = (Get-Content package.json | ConvertFrom-Json).version
+          if ($tag -ne $pkg) {
+            Write-Error "tag $tag does not match package.json version $pkg"
+            exit 1
+          }
+          Write-Host "tag $tag matches package.json version"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+
+      - name: Smoke install test
+        run: npm test
+
+      # --provenance attaches a signed attestation linking this tarball
+      # to this exact commit + workflow. Visible on the npm package page.
+      # NPM_TOKEN must be a granular access token with publish rights to
+      # the `calibr` package. Set it under repo settings -> Secrets.
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public

@@ -136,6 +136,45 @@ The menu exposes the engine verbs verbatim. Brief summary:
   <https://github.com/SpeederX/calibr>
 - Issues: <https://github.com/SpeederX/calibr/issues>
 
+## Development
+
+```bash
+cd cli
+npm install
+npm run dev          # tsx watch-free, attaches to your TTY
+npm run build        # tsc -> dist/
+npm test             # install smoke test: npm pack -> install in tempdir -> assert
+```
+
+The `npm test` command exercises the full publish path: it runs
+`npm pack` (which copies `calibr.ps1` into `engine/` via the prepack
+script), installs the tarball into a clean temp dir, and asserts the
+bundled engine resolves to the right paths and `readStatus()` loads
+the bundled default config. Anything that breaks packaging fails the
+smoke test before it can ship.
+
+## Release
+
+Maintainer flow:
+
+1. From `cli/`: `npm version <patch|minor|major>` bumps
+   `package.json` and creates a matching git tag.
+2. `git push --follow-tags origin <branch>` — push the branch and
+   the tag.
+3. GitHub Actions runs `.github/workflows/release.yml` on the tag.
+   It re-runs the smoke test and then publishes to npm with
+   `--provenance` (signed attestation linking the tarball to the
+   commit).
+
+Requires a repo secret `NPM_TOKEN` with publish rights to the
+`calibr` package on npmjs.org. Set it under **Settings → Secrets and
+variables → Actions → New repository secret**. Use a *Granular
+Access Token* scoped to the `calibr` package, with **read and write**
+permissions, expiring no later than you intend to re-issue it.
+
+Plain commits to any branch run `.github/workflows/ci.yml` only
+(build + smoke test on `windows-latest`). They do not publish.
+
 ## License
 
 MIT — see [LICENSE](./LICENSE).

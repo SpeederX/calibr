@@ -35,5 +35,6 @@ for (const { src } of sources) {
   if (!existsSync(src)) continue;
   const dest = join(engineDir, src.split(/[\\/]/).pop());
   copyFileSync(src, dest);
-  console.log(`bundle-engine: ${src} -> ${dest}`);
+  // Log to stderr: npm pack --json captures stdout and chokes on prose.
+  console.error(`bundle-engine: ${src} -> ${dest}`);
 }

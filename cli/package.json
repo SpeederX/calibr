@@ -1,8 +1,29 @@
 {
   "name": "calibr",
   "version": "0.1.0",
-  "description": "Interactive console for calibr — wraps the calibr.ps1 engine.",
+  "description": "Interactive console for calibr — measure what your local llama.cpp configurations actually do on your hardware.",
   "type": "module",
+  "license": "MIT",
+  "author": "SpeederX",
+  "homepage": "https://github.com/SpeederX/calibr#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpeederX/calibr.git",
+    "directory": "cli"
+  },
+  "bugs": {
+    "url": "https://github.com/SpeederX/calibr/issues"
+  },
+  "keywords": [
+    "llama.cpp",
+    "benchmark",
+    "gguf",
+    "cli",
+    "ink",
+    "wddm",
+    "vram",
+    "llm"
+  ],
   "bin": {
     "calibr": "dist/index.js"
   },
@@ -20,7 +41,8 @@
     "bundle-engine": "node scripts/bundle-engine.js",
     "prepack": "node scripts/bundle-engine.js && tsc",
     "dev": "tsx src/index.tsx",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "node scripts/smoke-install.js"
   },
   "engines": {
     "node": ">=18"
