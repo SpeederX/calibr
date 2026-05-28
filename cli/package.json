@@ -1,6 +1,6 @@
 {
   "name": "calibr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Interactive console for calibr — measure what your local llama.cpp configurations actually do on your hardware.",
   "type": "module",
   "license": "MIT",
