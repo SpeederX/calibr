@@ -1,0 +1,337 @@
+import { spawn, ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Locate the PowerShell engine. Two modes:
+//   bundled: running from an npm install — calibr.ps1 sits next to dist/
+//            inside our own package (cli/engine/calibr.ps1).
+//   dev:     running from the repo — walk up until we find calibr.ps1 at
+//            the project root.
+// Dev mode takes priority so a developer with a checkout sees their own
+// engine + data even if an older bundled copy exists.
+function findEngineLocation(): { root: string; bundled: boolean } {
+  const envRoot = process.env.CALIBR_ROOT;
+  if (envRoot && existsSync(join(envRoot, "calibr.ps1"))) {
+    return { root: envRoot, bundled: false };
+  }
+
+  // Walk up first so a repo checkout always wins over the bundled copy.
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    if (existsSync(join(dir, "calibr.ps1"))) return { root: dir, bundled: false };
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  const bundled = resolve(__dirname, "..", "engine");
+  if (existsSync(join(bundled, "calibr.ps1"))) return { root: bundled, bundled: true };
+
+  if (existsSync(join(process.cwd(), "calibr.ps1"))) {
+    return { root: process.cwd(), bundled: false };
+  }
+
+  throw new Error(
+    "Could not locate calibr.ps1. Set CALIBR_ROOT, run from the project directory, or reinstall calibr."
+  );
+}
+
+const { root: ENGINE_ROOT, bundled: IS_BUNDLED } = findEngineLocation();
+
+function defaultDataDir(): string {
+  if (process.env.CALIBR_DATA_DIR) return process.env.CALIBR_DATA_DIR;
+  if (IS_BUNDLED) {
+    const base = process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE;
+    if (!base) {
+      throw new Error("Cannot determine data directory: LOCALAPPDATA, APPDATA, and USERPROFILE are all unset.");
+    }
+    return join(base, "calibr");
+  }
+  return join(ENGINE_ROOT, "data");
+}
+
+export const CALIBR_ROOT = ENGINE_ROOT;
+export const CALIBR_BUNDLED = IS_BUNDLED;
+export const CALIBR_DATA_DIR = defaultDataDir();
+mkdirSync(CALIBR_DATA_DIR, { recursive: true });
+
+function defaultConfigPath(): string {
+  if (process.env.CALIBR_CONFIG) return process.env.CALIBR_CONFIG;
+  if (IS_BUNDLED) return join(CALIBR_DATA_DIR, "config.json");
+  return join(ENGINE_ROOT, "config.json");
+}
+
+export const CALIBR_CATALOG = join(CALIBR_DATA_DIR, "catalog.json");
+export const CALIBR_PLAN = join(CALIBR_DATA_DIR, "plan.json");
+export const CALIBR_RESULTS_DIR = join(CALIBR_DATA_DIR, "results");
+export const CALIBR_REPORT = join(CALIBR_DATA_DIR, "report.html");
+export const CALIBR_DEFAULT_CFG = join(ENGINE_ROOT, "config.default.json");
+export const CALIBR_LOCAL_CFG = defaultConfigPath();
+export const CALIBR_PS1 = join(ENGINE_ROOT, "calibr.ps1");
+
+function readJsonSafe<T>(path: string, fallback: T): T {
+  try {
+    if (!existsSync(path)) return fallback;
+    let raw = readFileSync(path, "utf8");
+    // PowerShell writes JSON with a UTF-8 BOM; JSON.parse rejects it.
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function deepMerge<T extends Record<string, any>>(base: T, over: any): T {
+  if (!over || typeof over !== "object") return base;
+  const out: any = Array.isArray(base) ? [...(base as any)] : { ...base };
+  for (const k of Object.keys(over)) {
+    const bv = (base as any)[k];
+    const ov = over[k];
+    if (
+      bv && ov &&
+      typeof bv === "object" && typeof ov === "object" &&
+      !Array.isArray(bv) && !Array.isArray(ov)
+    ) {
+      out[k] = deepMerge(bv, ov);
+    } else {
+      out[k] = ov;
+    }
+  }
+  return out;
+}
+
+export interface Config {
+  llama_server_exe?: string;
+  scan_paths?: string[];
+  hardware?: {
+    vram_total_mib?: number;
+    vram_safety_budget_mib?: number;
+    vram_safety_budget_pct?: number;
+    gpu_name?: string;
+  };
+  [k: string]: any;
+}
+
+export function loadConfig(): Config {
+  const def = readJsonSafe<Config>(CALIBR_DEFAULT_CFG, {});
+  const loc = readJsonSafe<Config>(CALIBR_LOCAL_CFG, {});
+  return deepMerge(def, loc);
+}
+
+export interface Status {
+  config: Config;
+  catalogCount: number;
+  planCount: number;
+  resultsCount: number;
+  hasReport: boolean;
+  hasLocalConfig: boolean;
+  bundled: boolean;
+  dataDir: string;
+}
+
+export function readStatus(): Status {
+  const config = loadConfig();
+  const catalog = readJsonSafe<any[]>(CALIBR_CATALOG, []);
+  const plan = readJsonSafe<any[]>(CALIBR_PLAN, []);
+  let resultsCount = 0;
+  if (existsSync(CALIBR_RESULTS_DIR) && statSync(CALIBR_RESULTS_DIR).isDirectory()) {
+    resultsCount = readdirSync(CALIBR_RESULTS_DIR).filter(f => f.endsWith(".json")).length;
+  }
+  return {
+    config,
+    catalogCount: Array.isArray(catalog) ? catalog.length : 0,
+    planCount: Array.isArray(plan) ? plan.length : 0,
+    resultsCount,
+    hasReport: existsSync(CALIBR_REPORT),
+    hasLocalConfig: existsSync(CALIBR_LOCAL_CFG),
+    bundled: IS_BUNDLED,
+    dataDir: CALIBR_DATA_DIR,
+  };
+}
+
+export interface Result {
+  id: string;
+  label: string;
+  tier: "A" | "B" | "C" | string;
+  model: string;
+  variant: string;
+  series?: string;
+  ok: boolean;
+  ready?: boolean;
+  error?: string | null;
+  prompt_tps?: number;
+  eval_tps?: number;
+  vram_peak_mib?: number;
+  shared_peak_mib?: number;
+  wddm_vram_saturation?: number;
+  fit_status?: string;
+  unsupported_architecture?: string | null;
+  extra_args?: string;
+  timestamp?: string;
+  [k: string]: any;
+}
+
+export function readResults(): Result[] {
+  if (!existsSync(CALIBR_RESULTS_DIR)) return [];
+  const out: Result[] = [];
+  for (const f of readdirSync(CALIBR_RESULTS_DIR)) {
+    if (!f.endsWith(".json")) continue;
+    const r = readJsonSafe<Result | null>(join(CALIBR_RESULTS_DIR, f), null);
+    if (r && typeof r === "object") out.push(r);
+  }
+  return out;
+}
+
+// Same rule the engine uses: safety beats speed; among equally-safe, higher eval_tps wins.
+// Threshold matches calibr.ps1 winner picker: shared_peak_mib <= shared_delta_confirm_mib.
+function sharedConfirmMib(cfg: Config): number {
+  const v = cfg?.wddm_detection?.shared_delta_confirm_mib;
+  return typeof v === "number" ? v : 500;
+}
+
+export function isSafe(r: Result, threshold: number): boolean {
+  return (r.shared_peak_mib ?? 0) <= threshold;
+}
+
+export type ResultStatus = "safe" | "wddm" | "high" | "fail" | "noload" | "na";
+
+export function classifyResult(r: Result, threshold: number): ResultStatus {
+  if (r.ok) {
+    if ((r.shared_peak_mib ?? 0) > threshold) return "wddm";
+    if ((r.wddm_vram_saturation ?? 0) > 0.92) return "high";
+    return "safe";
+  }
+  if (r.unsupported_architecture) return "na";
+  if (r.ready === false) return "noload";
+  return "fail";
+}
+
+function beats(a: Result, b: Result, threshold: number): boolean {
+  const sa = isSafe(a, threshold), sb = isSafe(b, threshold);
+  if (sa !== sb) return sa;
+  return (a.eval_tps ?? -1) > (b.eval_tps ?? -1);
+}
+
+export interface ModelGroup {
+  model: string;
+  series?: string;
+  winner: Result;
+  configs: Result[];
+  successCount: number;
+  totalCount: number;
+}
+
+export function groupByModel(results: Result[], cfg?: Config): ModelGroup[] {
+  const threshold = sharedConfirmMib(cfg ?? loadConfig());
+  const groups = new Map<string, Result[]>();
+  for (const r of results) {
+    const key = r.model ?? r.id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(r);
+  }
+  const out: ModelGroup[] = [];
+  for (const [model, configs] of groups) {
+    const oks = configs.filter(c => c.ok);
+    if (oks.length === 0) continue;
+    let winner = oks[0];
+    for (const c of oks.slice(1)) if (beats(c, winner, threshold)) winner = c;
+    out.push({
+      model,
+      series: winner.series,
+      winner,
+      configs: configs.sort((a, b) => (b.eval_tps ?? -1) - (a.eval_tps ?? -1)),
+      successCount: oks.length,
+      totalCount: configs.length,
+    });
+  }
+  return out.sort((a, b) => (b.winner.eval_tps ?? 0) - (a.winner.eval_tps ?? 0));
+}
+
+export function getSharedThreshold(cfg?: Config): number {
+  return sharedConfirmMib(cfg ?? loadConfig());
+}
+
+export interface EngineRun {
+  proc: ChildProcess;
+  // Resolves to exit code.
+  done: Promise<number>;
+}
+
+// Inject data dir + local config path so the engine writes to the same
+// place the CLI reads from. Without these, a bundled install would read
+// from %LOCALAPPDATA%\calibr but the PowerShell engine would still write
+// next to its own script (inside node_modules).
+function buildEngineEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    NO_COLOR: "1",
+    CALIBR_DATA_DIR: CALIBR_DATA_DIR,
+  };
+}
+
+function injectConfigArg(args: string[]): string[] {
+  if (args.includes("-Config")) return args;
+  // First arg is the verb (status / bench / etc.) — keep it leading.
+  const [verb, ...rest] = args;
+  return [verb, "-Config", CALIBR_LOCAL_CFG, ...rest];
+}
+
+/**
+ * Shell out to calibr.ps1 with the given engine arguments.
+ * stdout/stderr are streamed to the caller via the child process.
+ */
+export function runEngine(args: string[]): EngineRun {
+  const psArgs = [
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", CALIBR_PS1,
+    ...injectConfigArg(args),
+  ];
+  const proc = spawn("powershell", psArgs, {
+    cwd: ENGINE_ROOT,
+    windowsHide: true,
+    env: buildEngineEnv(),
+  });
+  const done = new Promise<number>((res) => {
+    proc.on("close", (code) => res(code ?? -1));
+    proc.on("error", () => res(-1));
+  });
+  return { proc, done };
+}
+
+/**
+ * Open the generated HTML report with the OS default browser.
+ * Returns true if the report exists and the open command was launched,
+ * false if the report has not been generated yet.
+ */
+export function openReport(): boolean {
+  if (!existsSync(CALIBR_REPORT)) return false;
+  const child = spawn("cmd", ["/c", "start", "", CALIBR_REPORT], {
+    cwd: ENGINE_ROOT,
+    windowsHide: true,
+    detached: true,
+    stdio: "ignore",
+  });
+  child.unref();
+  return true;
+}
+
+export interface EngineCommand {
+  id: string;
+  label: string;
+  description: string;
+  args: string[];
+}
+
+export const ENGINE_COMMANDS: EngineCommand[] = [
+  { id: "status",   label: "status",   description: "show current state",                   args: ["status"] },
+  { id: "init",     label: "init",     description: "detect hardware, write config.json",   args: ["init", "-NonInteractive"] },
+  { id: "discover", label: "discover", description: "scan scan_paths for .gguf files",      args: ["discover"] },
+  { id: "plan",     label: "plan",     description: "expand catalog into a test plan",      args: ["plan"] },
+  { id: "bench",    label: "bench",    description: "run pending bench configs",            args: ["bench"] },
+  { id: "report",   label: "report",   description: "build HTML report + .bat launchers",   args: ["report"] },
+  { id: "all",      label: "all",      description: "discover -> plan -> bench -> report",  args: ["all"] },
+];

@@ -36,7 +36,9 @@
     "port": 18080,
     "wait_sec_ready": 180,
     "warmup": true,
-    "_comment_warmup": "Run one small completion with identical prompt and cache_prompt=true before the real bench, to compile CUDA graphs for all batch sizes in use. Without this the first run has a 10-20s compile penalty that pollutes prompt_per_second."
+    "_comment_warmup": "Run one small completion with identical prompt and cache_prompt=true before the real bench, to compile CUDA graphs for all batch sizes in use. Without this the first run has a 10-20s compile penalty that pollutes prompt_per_second.",
+    "runs_per_config": 3,
+    "_comment_runs": "Number of times each configuration is benched. The top-level result records the median for varying metrics (prompt_tps, eval_tps, vram_peak_mib, shared_peak_mib, wddm_vram_saturation); raw per-run values live in a `runs` array. Set to 1 to disable variance reduction (the pre-v1.1.0 behavior). The CLI flag -Runs N overrides this for a single invocation."
   },
 
   "base_args": "--flash-attn auto --parallel 1 --batch-size 2048 --ubatch-size 512 --no-mmap --prio 2",

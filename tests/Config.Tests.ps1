@@ -105,6 +105,30 @@ Describe "config set type coercion" {
     }
 }
 
+Describe "bench.runs_per_config roundtrip (v1.1.0)" {
+    It "default is 3" {
+        $r = Invoke-Lab -LabArgs @("config", "get", "bench.runs_per_config")
+        Assert-Equal 0 $r.exit
+        Assert-True ($r.stdout -match "= 3")
+        Assert-True ($r.stdout -match "\[default\]")
+    }
+    It "set + get + unset roundtrip" {
+        $r = Invoke-Lab -LabArgs @("config", "set", "bench.runs_per_config", "5")
+        Assert-Equal 0 $r.exit
+        $cfg = Read-TmpCfg
+        Assert-Equal 5 $cfg.bench.runs_per_config
+
+        $r = Invoke-Lab -LabArgs @("config", "get", "bench.runs_per_config")
+        Assert-True ($r.stdout -match "= 5")
+        Assert-True ($r.stdout -match "\[local\]")
+
+        Invoke-Lab -LabArgs @("config", "unset", "bench.runs_per_config") | Out-Null
+        $r = Invoke-Lab -LabArgs @("config", "get", "bench.runs_per_config")
+        Assert-True ($r.stdout -match "= 3")
+        Assert-True ($r.stdout -match "\[default\]")
+    }
+}
+
 Describe "config error cases" {
     It "rejects an unknown key" {
         $r = Invoke-Lab -LabArgs @("config", "set", "nope.does_not_exist", "1")

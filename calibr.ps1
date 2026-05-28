@@ -73,7 +73,13 @@ param(
 
     # Used by report (and `all`): pick the highest-eval_tps config per group,
     # ignoring WDDM-paging safety. Default off — safety wins ties.
-    [switch]$PreferSpeed
+    [switch]$PreferSpeed,
+
+    # Used by bench (and `all`): how many runs to execute per config when
+    # gathering measurements. The top-level result records the median over the
+    # N runs for varying metrics; raw per-run values live in a `runs` array.
+    # 0 means "use bench.runs_per_config from config" (default 3).
+    [int]$Runs = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -84,7 +90,7 @@ $ErrorActionPreference = "Stop"
 $script:CALIBR_ROOT = $PSScriptRoot
 $script:CALIBR_DEFAULT_CFG = Join-Path $CALIBR_ROOT "config.default.json"
 $script:CALIBR_LOCAL_CFG   = if ($Config) { $Config } else { Join-Path $CALIBR_ROOT "config.json" }
-$script:CALIBR_DATA_DIR    = Join-Path $CALIBR_ROOT "data"
+$script:CALIBR_DATA_DIR    = if ($env:CALIBR_DATA_DIR) { $env:CALIBR_DATA_DIR } else { Join-Path $CALIBR_ROOT "data" }
 $script:CALIBR_CATALOG     = Join-Path $CALIBR_DATA_DIR "catalog.json"
 $script:CALIBR_PLAN        = Join-Path $CALIBR_DATA_DIR "plan.json"
 $script:CALIBR_RESULTS_DIR = Join-Path $CALIBR_DATA_DIR "results"
@@ -612,18 +618,104 @@ function Get-SharedGPUMemoryMib {
 # ============================================================================
 # SUBCOMMAND: bench
 # ============================================================================
-function Invoke-OneBench {
-    param($item, $cfg)
+function Get-Median {
+    # Median of a numeric collection. Pure: no I/O, no globals. Tested in
+    # tests/Helpers.Tests.ps1.
+    #
+    # - Odd N: middle element after sort.
+    # - Even N: lower of the two middle elements (no averaging). The metrics
+    #   this is used on (vram_peak_mib, shared_peak_mib) are integer-valued;
+    #   an averaged median would introduce non-integer values that mislead
+    #   a reader scanning the report.
+    # - N = 1: the single element.
+    # - Empty / all-null input: $null.
+    # - Nulls are filtered before sorting so callers don't have to pre-filter.
+    param($values)
+    if ($null -eq $values) { return $null }
+    $nums = @($values | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    if ($nums.Count -eq 0) { return $null }
+    $sorted = $nums | Sort-Object
+    return $sorted[[int]([math]::Floor(($sorted.Count - 1) / 2))]
+}
 
-    $logFile  = Join-Path $CALIBR_LOGS_DIR    "$($item.id).log"
-    $jsonFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
+function New-AggregatedBenchResult {
+    # Combine N per-run hashtables (from Invoke-OneBenchRun) plus the
+    # planning $item metadata into a single top-level successful result.
+    # Varying metrics carry the median over runs; deterministic metrics
+    # carry the value from runs[0]. WDDM-derived flags are recomputed
+    # from the medians so the top-level reflects median behavior, not
+    # run-by-run noise. Pure: no I/O, no globals. Tested in
+    # tests/Helpers.Tests.ps1. See spec/n-run-median.md.
+    param($item, $cfg, $runs)
 
-    if ((Test-Path $jsonFile) -and (-not $Force)) {
-        Write-Host ("[{0}] cached (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
-        return Get-Content $jsonFile -Raw | ConvertFrom-Json
+    $first = $runs[0]
+    $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
+    $confirmThresh = if ($null -ne $cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
+    $satThresh = if ($null -ne $cfg.wddm_detection.vram_saturation_threshold) { [double]$cfg.wddm_detection.vram_saturation_threshold } else { 0.92 }
+
+    $vramPeakMed   = [int](Get-Median -values @($runs | ForEach-Object { $_.vram_peak_mib }))
+    $sharedPeakMed = [int](Get-Median -values @($runs | ForEach-Object { $_.shared_peak_mib }))
+    $promptTpsMed  = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.prompt_tps })), 2)
+    $evalTpsMed    = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.eval_tps })),   2)
+
+    $satRatio = if ($vramTotal -gt 0) { [math]::Round($vramPeakMed / $vramTotal, 3) } else { 0 }
+    $flagHighVram  = ($satRatio -gt $satThresh)
+    $flagSharedPos = ($sharedPeakMed -gt $confirmThresh)
+
+    $result = [ordered]@{
+        id              = $item.id
+        label           = $item.label
+        model           = $item.model
+        variant         = $item.variant
+        series          = $item.series
+        tier            = $item.tier
+        timestamp       = $first.timestamp
+        model_path      = $item.model_path
+        mmproj_path     = $item.mmproj_path
+        extra_args      = $item.extra_args
+
+        # Deterministic / first-run fields
+        vram_before_mib  = $first.vram_before_mib
+        load_sec         = $first.load_sec
+        ready            = $first.ready
+        prompt_n         = $first.prompt_n
+        eval_n           = $first.eval_n
+        cpu_model_mib    = $first.cpu_model_mib
+        cuda_model_mib   = $first.cuda_model_mib
+        kv_cache_mib     = $first.kv_cache_mib
+        compute_cuda_mib = $first.compute_cuda_mib
+        compute_host_mib = $first.compute_host_mib
+        layers_offloaded = $first.layers_offloaded
+        fit_status       = $first.fit_status
+
+        # Median over runs for varying metrics
+        vram_peak_mib    = $vramPeakMed
+        shared_peak_mib  = $sharedPeakMed
+        prompt_tps       = $promptTpsMed
+        eval_tps         = $evalTpsMed
+
+        # WDDM-derived recomputed from the medians (not the raw runs)
+        wddm_vram_saturation = $satRatio
+        wddm_flag_high_vram  = $flagHighVram
+        wddm_flag_shared_pos = $flagSharedPos
+
+        ok    = $true
+        error = $null
+
+        # Raw per-run records for audit (full schema-of-record for variance work)
+        runs  = @($runs)
     }
+    return $result
+}
 
-    # Kill any leftover server
+function Invoke-OneBenchRun {
+    # Execute one warmup-then-bench cycle for $item: spawn llama-server,
+    # wait for ready, optional warmup, bench, parse stderr, tear down.
+    # Returns a per-run hashtable (measurements + parsed-stderr fields).
+    # No caching, no top-level identity fields, no JSON write. Appends to
+    # $logFile so a multi-run session has a single log with run delimiters.
+    param($item, $cfg, [int]$runIndex, [string]$logFile)
+
     Get-Process llama-server -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 400
 
@@ -640,7 +732,8 @@ function Invoke-OneBench {
     $sharedBaseline = if ($cfg.wddm_detection.enable_shared_mem_counter) { Get-SharedGPUMemoryMib } else { 0 }
     if ($sharedBaseline -lt 0) { $sharedBaseline = 0 }
 
-    "[CMD] $exe $argStr" | Out-File -Encoding utf8 $logFile
+    "===== RUN $runIndex =====" | Out-File -Encoding utf8 -Append $logFile
+    "[CMD] $exe $argStr" | Out-File -Encoding utf8 -Append $logFile
     "[VRAM before: $vramBefore MiB; shared baseline: $sharedBaseline MiB]" | Out-File -Encoding utf8 -Append $logFile
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -680,17 +773,9 @@ function Invoke-OneBench {
     $wc.Dispose()
     $loadSec = [math]::Round(((Get-Date) - $loadStart).TotalSeconds, 2)
 
-    $result = [ordered]@{
-        id              = $item.id
-        label           = $item.label
-        model           = $item.model
-        variant         = $item.variant
-        series          = $item.series
-        tier            = $item.tier
+    $run = [ordered]@{
+        run_index       = $runIndex
         timestamp       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
-        model_path      = $item.model_path
-        mmproj_path     = $item.mmproj_path
-        extra_args      = $item.extra_args
         vram_before_mib = $vramBefore
         vram_peak_mib   = $peakVram
         shared_peak_mib = $peakShared
@@ -701,7 +786,6 @@ function Invoke-OneBench {
     }
 
     if ($ready) {
-        # Warmup (compile CUDA graphs)
         if ($cfg.bench.warmup) {
             try {
                 $wBody = @{ prompt=$prompt; n_predict=8; temperature=0.0; cache_prompt=$true; stream=$false } | ConvertTo-Json -Compress
@@ -709,39 +793,36 @@ function Invoke-OneBench {
             } catch { }
         }
 
-        # Real bench
         $body = @{ prompt=$prompt; n_predict=$nPred; temperature=0.0; cache_prompt=$false; stream=$false } | ConvertTo-Json -Compress
         try {
             $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/completion" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
-            $result.ok = $true
+            $run.ok = $true
             if ($resp.timings) {
-                $result.prompt_n   = $resp.timings.prompt_n
-                $result.prompt_tps = [math]::Round($resp.timings.prompt_per_second, 2)
-                $result.eval_n     = $resp.timings.predicted_n
-                $result.eval_tps   = [math]::Round($resp.timings.predicted_per_second, 2)
+                $run.prompt_n   = $resp.timings.prompt_n
+                $run.prompt_tps = [math]::Round($resp.timings.prompt_per_second, 2)
+                $run.eval_n     = $resp.timings.predicted_n
+                $run.eval_tps   = [math]::Round($resp.timings.predicted_per_second, 2)
             }
-        } catch { $result.error = $_.Exception.Message }
+        } catch { $run.error = $_.Exception.Message }
 
         $v = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
-        if ($v -gt $peakVram) { $result.vram_peak_mib = $v }
+        if ($v -gt $run.vram_peak_mib) { $run.vram_peak_mib = $v }
         if ($cfg.wddm_detection.enable_shared_mem_counter) {
             $s = Get-SharedGPUMemoryMib
             if ($s -ge 0) {
                 $delta = $s - $sharedBaseline
-                if ($delta -gt $result.shared_peak_mib) { $result.shared_peak_mib = $delta }
+                if ($delta -gt $run.shared_peak_mib) { $run.shared_peak_mib = $delta }
             }
         }
     }
 
-    # Cleanup
     if (-not $p.HasExited) { try { $p.Kill() } catch { } }
     Start-Sleep -Milliseconds 700
     try { $err = $errTask.GetAwaiter().GetResult() } catch { $err = "" }
 
-    "`n===== STDERR =====" | Out-File -Encoding utf8 -Append $logFile
+    "`n===== STDERR (run $runIndex) =====" | Out-File -Encoding utf8 -Append $logFile
     $err | Out-File -Encoding utf8 -Append $logFile
 
-    # Parse memory fields from stderr
     $patterns = @{
         cpu_model_mib    = 'CPU model buffer size\s*=\s*([\d\.]+)'
         cuda_model_mib   = 'CUDA0 model buffer size\s*=\s*([\d\.]+)'
@@ -753,28 +834,130 @@ function Invoke-OneBench {
     foreach ($k in $patterns.Keys) {
         $m = [regex]::Match($err, $patterns[$k])
         if ($m.Success) {
-            if ($k -eq 'layers_offloaded') { $result[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
-            else { $result[$k] = [double]$m.Groups[1].Value }
+            if ($k -eq 'layers_offloaded') { $run[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
+            else { $run[$k] = [double]$m.Groups[1].Value }
         }
     }
     # Trap llama.cpp builds that don't recognize a model's architecture (e.g.
     # an older build vs. a brand-new lineage). Surface the architecture name
     # so the caller can short-circuit further tests on the same model.
     $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
-    if ($mArch.Success) { $result.unsupported_architecture = $mArch.Groups[1].Value }
-    if ($err -match 'successfully fit params') { $result.fit_status = "success" }
-    elseif ($err -match 'failed to fit params') { $result.fit_status = "failed_but_running" }
-    else { $result.fit_status = "unknown" }
+    if ($mArch.Success) { $run.unsupported_architecture = $mArch.Groups[1].Value }
+    if ($err -match 'successfully fit params') { $run.fit_status = "success" }
+    elseif ($err -match 'failed to fit params') { $run.fit_status = "failed_but_running" }
+    else { $run.fit_status = "unknown" }
 
-    # WDDM detection flags
-    $satRatio = if ($cfg.hardware.vram_total_mib) { $result.vram_peak_mib / $cfg.hardware.vram_total_mib } else { 0 }
-    $result.wddm_vram_saturation = [math]::Round($satRatio, 3)
-    $result.wddm_flag_high_vram  = ($satRatio -gt $cfg.wddm_detection.vram_saturation_threshold)
+    $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
+    $satRatio = if ($vramTotal -gt 0) { $run.vram_peak_mib / $vramTotal } else { 0 }
+    $run.wddm_vram_saturation = [math]::Round($satRatio, 3)
+    $run.wddm_flag_high_vram  = ($satRatio -gt $cfg.wddm_detection.vram_saturation_threshold)
     $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
-    $result.wddm_flag_shared_pos = ($result.shared_peak_mib -gt $confirmThresh)
+    $run.wddm_flag_shared_pos = ($run.shared_peak_mib -gt $confirmThresh)
 
-    $result | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
+    return $run
+}
 
+function Invoke-OneBench {
+    # Drive N runs of a single planning $item and persist one result file.
+    # Cache check follows spec/n-run-median.md "Cache invalidation": failed
+    # results are cached as-is (definitive negative); successful results
+    # need a `runs` array of length N to be cache-hits; pre-v1.1.0 success
+    # files (no `runs` array) are treated as length-one for `-Runs 1` only.
+    # On any single-run failure, writes the existing single-record failure
+    # JSON (no `runs` array) and returns immediately; preserves the v1.0.0
+    # unsupported_architecture short-circuit.
+    param($item, $cfg)
+
+    $jsonFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
+    $logFile  = Join-Path $CALIBR_LOGS_DIR    "$($item.id).log"
+
+    # Resolve N: CLI flag > config > default 3. Minimum 1.
+    $N = if ($Runs -gt 0) { $Runs }
+         elseif ($null -ne $cfg.bench.runs_per_config) { [int]$cfg.bench.runs_per_config }
+         else { 3 }
+    if ($N -lt 1) { $N = 1 }
+
+    # Cache check
+    if ((Test-Path $jsonFile) -and (-not $Force)) {
+        $cached = Get-Content $jsonFile -Raw | ConvertFrom-Json
+        if (-not $cached.ok) {
+            Write-Host ("[{0}] cached failure (use -Force to retry)" -f $item.id) -ForegroundColor DarkGray
+            return $cached
+        }
+        if ($null -ne $cached.runs -and $cached.runs.Count -eq $N) {
+            Write-Host ("[{0}] cached N={1} (use -Force to rerun)" -f $item.id, $N) -ForegroundColor DarkGray
+            return $cached
+        }
+        if ($null -eq $cached.runs -and $N -eq 1) {
+            Write-Host ("[{0}] cached legacy N=1 (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
+            return $cached
+        }
+        $haveN = if ($null -ne $cached.runs) { $cached.runs.Count } else { 0 }
+        Write-Host ("[{0}] cache miss (have N={1}, want N={2}) - re-running" -f $item.id, $haveN, $N) -ForegroundColor DarkGray
+    }
+
+    # Fresh log for this bench session
+    Set-Content -Encoding utf8 -Path $logFile -Value ""
+
+    $runs = @()
+    for ($i = 0; $i -lt $N; $i++) {
+        if ($N -gt 1) {
+            Write-Host ("  run {0}/{1}" -f ($i + 1), $N) -ForegroundColor DarkGray
+        }
+        $r = Invoke-OneBenchRun -item $item -cfg $cfg -runIndex $i -logFile $logFile
+
+        if (-not $r.ok) {
+            # Single-record failure shape (no `runs` array): definitive
+            # negative cached as-is. Preserves the v1.0.0 model-skip path.
+            $failResult = [ordered]@{
+                id              = $item.id
+                label           = $item.label
+                model           = $item.model
+                variant         = $item.variant
+                series          = $item.series
+                tier            = $item.tier
+                timestamp       = $r.timestamp
+                model_path      = $item.model_path
+                mmproj_path     = $item.mmproj_path
+                extra_args      = $item.extra_args
+                vram_before_mib = $r.vram_before_mib
+                vram_peak_mib   = $r.vram_peak_mib
+                shared_peak_mib = $r.shared_peak_mib
+                load_sec        = $r.load_sec
+                ready           = $r.ready
+                ok              = $false
+                error           = $r.error
+                cpu_model_mib   = $r.cpu_model_mib
+                cuda_model_mib  = $r.cuda_model_mib
+                kv_cache_mib    = $r.kv_cache_mib
+                compute_cuda_mib = $r.compute_cuda_mib
+                compute_host_mib = $r.compute_host_mib
+                layers_offloaded = $r.layers_offloaded
+                fit_status      = $r.fit_status
+                unsupported_architecture = $r.unsupported_architecture
+                wddm_vram_saturation = $r.wddm_vram_saturation
+                wddm_flag_high_vram  = $r.wddm_flag_high_vram
+                wddm_flag_shared_pos = $r.wddm_flag_shared_pos
+            }
+            $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
+            Write-BenchStatusLine -item $item -result $failResult
+            return $failResult
+        }
+
+        $runs += $r
+    }
+
+    $aggregated = New-AggregatedBenchResult -item $item -cfg $cfg -runs $runs
+    $aggregated | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
+    Write-BenchStatusLine -item $item -result $aggregated
+    return $aggregated
+}
+
+function Write-BenchStatusLine {
+    # Print the per-config result line. Identical wording to v1.0.x; the
+    # numbers shown are now medians for successful N>1 results. Pure
+    # presentation; no return value.
+    param($item, $result)
     $tag = if ($result.ok) { "[OK]  " } else { "[FAIL]" }
     $tagColor = if ($result.ok) { 'Green' } else { 'Red' }
     if ($result.ok) {
@@ -789,8 +972,6 @@ function Invoke-OneBench {
         $detail = "(completion failed)"
     }
     Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
-
-    return $result
 }
 
 function Invoke-Bench {

@@ -15,3 +15,4 @@ plan is bigger. See `../architecture/README.md` for the distinction.
 - [2026-04-26 — pipeline polish (log-scale, dense_overrides, -PreferSpeed)](2026-04-26-pipeline-polish.md)
 - [2026-04-27 — v1.0.0 rename (taxonomy + project)](2026-04-27-v1-rename.md)
 - [2026-05-13 — v1.0.1 post-v1 documentation and methodology sync](2026-05-13-post-v1-sync.md)
+- [2026-05-15 — v1.1.0 quick wins (download rotation, localmaxxing-export, N-run median)](2026-05-15-v1.1-quick-wins.md)

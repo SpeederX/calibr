@@ -304,4 +304,146 @@ Describe "Get-ResultDerivedFields" {
     }
 }
 
+Describe "Get-Median" {
+    It "returns the single value for N = 1" {
+        Assert-Equal 42 (Get-Median -values @(42))
+    }
+    It "returns the middle element for odd N" {
+        # Sorted: 7, 10, 12 -> middle = 10
+        Assert-Equal 10 (Get-Median -values @(12, 7, 10))
+    }
+    It "returns the lower of two middles for even N (no averaging)" {
+        # Sorted: 1, 2, 3, 4 -> lower middle = 2 (not 2.5)
+        Assert-Equal 2 (Get-Median -values @(3, 1, 4, 2))
+    }
+    It "returns null for empty input" {
+        Assert-Equal $null (Get-Median -values @())
+    }
+    It "returns null for null input" {
+        Assert-Equal $null (Get-Median -values $null)
+    }
+    It "filters nulls and computes median over the remainder" {
+        # After filtering nulls: 5, 10, 15 -> middle = 10
+        Assert-Equal 10 (Get-Median -values @(5, $null, 15, $null, 10))
+    }
+    It "returns null when every value is null" {
+        Assert-Equal $null (Get-Median -values @($null, $null, $null))
+    }
+    It "handles float values" {
+        # Sorted: 1.1, 2.2, 3.3 -> middle = 2.2
+        Assert-Equal 2.2 (Get-Median -values @(3.3, 1.1, 2.2))
+    }
+}
+
+Describe "New-AggregatedBenchResult" {
+    # Minimal fixtures: planning item + config + N per-run hashtables.
+    # The aggregator is pure, so we hand-roll exactly what Invoke-OneBenchRun
+    # would produce on a synthetic Tier A config.
+    function _item {
+        return @{
+            id = "qwen3.5-9b-q4km__ctx16384_q8"
+            label = "Qwen3.5-9B Q4_K_M @ ctx=16384 / kv=q8_0"
+            model = "Qwen3.5-9B"; variant = "Q4_K_M"; series = "Qwen3.5"; tier = "A"
+            model_path = "C:\models\Qwen3.5-9B-Q4_K_M.gguf"
+            mmproj_path = $null
+            extra_args = "--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0"
+        }
+    }
+    function _cfg {
+        return @{
+            hardware = @{ vram_total_mib = 8192 }
+            wddm_detection = @{
+                vram_saturation_threshold = 0.92
+                shared_delta_confirm_mib  = 500
+            }
+        }
+    }
+    function _run([int]$i, [int]$vramPeak, [int]$sharedPeak, [double]$promptTps, [double]$evalTps) {
+        return @{
+            run_index       = $i
+            timestamp       = "2026-05-16T10:00:0$i"
+            vram_before_mib = 1200
+            vram_peak_mib   = $vramPeak
+            shared_peak_mib = $sharedPeak
+            load_sec        = 6.5
+            ready           = $true
+            ok              = $true
+            error           = $null
+            prompt_n        = 80
+            prompt_tps      = $promptTps
+            eval_n          = 128
+            eval_tps        = $evalTps
+            cpu_model_mib   = 0
+            cuda_model_mib  = 5200
+            kv_cache_mib    = 1024
+            compute_cuda_mib = 360
+            compute_host_mib = 80
+            layers_offloaded = "33/33"
+            fit_status      = "success"
+        }
+    }
+
+    It "takes the median of the varying metrics across N=3 runs" {
+        $runs = @(
+            (_run 0 7000 30  410.0  40.0),
+            (_run 1 7200 50  430.0  42.0),   # median sample
+            (_run 2 7100 40  420.0  41.0)
+        )
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        # Sorted vram_peak: 7000, 7100, 7200 -> 7100
+        Assert-Equal 7100  $r.vram_peak_mib
+        # Sorted shared_peak: 30, 40, 50 -> 40
+        Assert-Equal 40    $r.shared_peak_mib
+        # Sorted prompt_tps: 410, 420, 430 -> 420
+        Assert-Equal 420.0 $r.prompt_tps
+        # Sorted eval_tps: 40, 41, 42 -> 41
+        Assert-Equal 41.0  $r.eval_tps
+    }
+    It "preserves identity fields from `$item and deterministic fields from runs[0]" {
+        $runs = @((_run 0 7000 30 410.0 40.0), (_run 1 7200 50 430.0 42.0), (_run 2 7100 40 420.0 41.0))
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal "qwen3.5-9b-q4km__ctx16384_q8" $r.id
+        Assert-Equal "Qwen3.5-9B" $r.model
+        Assert-Equal "A" $r.tier
+        Assert-Equal 80 $r.prompt_n          # runs[0]
+        Assert-Equal 128 $r.eval_n           # runs[0]
+        Assert-Equal "33/33" $r.layers_offloaded
+        Assert-Equal "success" $r.fit_status
+        Assert-Equal 5200 $r.cuda_model_mib  # buffer fields are deterministic
+    }
+    It "recomputes WDDM-derived flags from the median vram_peak and shared_peak" {
+        # Median vram_peak = 7100; 7100/8192 = 0.867 -> below 0.92 threshold
+        # Median shared_peak = 40 -> below 500 mib confirm threshold
+        $runs = @((_run 0 7000 30 410.0 40.0), (_run 1 7200 50 430.0 42.0), (_run 2 7100 40 420.0 41.0))
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal 0.867 $r.wddm_vram_saturation
+        Assert-False $r.wddm_flag_high_vram
+        Assert-False $r.wddm_flag_shared_pos
+    }
+    It "flags WDDM paging when the median shared_peak exceeds the confirm threshold" {
+        # Median shared_peak = 800 > 500 -> wddm_flag_shared_pos true
+        $runs = @((_run 0 7000 600 410.0 40.0), (_run 1 7200 800 430.0 42.0), (_run 2 7100 1000 420.0 41.0))
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal 800 $r.shared_peak_mib
+        Assert-True $r.wddm_flag_shared_pos
+    }
+    It "carries the full per-run array in `runs` for audit" {
+        $runs = @((_run 0 7000 30 410.0 40.0), (_run 1 7200 50 430.0 42.0), (_run 2 7100 40 420.0 41.0))
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal 3 $r.runs.Count
+        Assert-Equal 7000 $r.runs[0].vram_peak_mib
+        Assert-Equal 7200 $r.runs[1].vram_peak_mib
+        Assert-Equal 7100 $r.runs[2].vram_peak_mib
+    }
+    It "handles N=1 (median is the single value; runs array has length one)" {
+        $runs = @((_run 0 5500 100 380.0 35.0))
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal 5500  $r.vram_peak_mib
+        Assert-Equal 100   $r.shared_peak_mib
+        Assert-Equal 380.0 $r.prompt_tps
+        Assert-Equal 35.0  $r.eval_tps
+        Assert-Equal 1 $r.runs.Count
+    }
+}
+
 Exit-WithResults
