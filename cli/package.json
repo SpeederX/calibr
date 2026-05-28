@@ -1,0 +1,40 @@
+{
+  "name": "calibr",
+  "version": "0.1.0",
+  "description": "Interactive console for calibr — wraps the calibr.ps1 engine.",
+  "type": "module",
+  "bin": {
+    "calibr": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "engine",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": [
+    "win32"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "bundle-engine": "node scripts/bundle-engine.js",
+    "prepack": "node scripts/bundle-engine.js && tsc",
+    "dev": "tsx src/index.tsx",
+    "start": "node dist/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ink": "^5.0.1",
+    "ink-select-input": "^6.0.0",
+    "ink-spinner": "^5.0.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
