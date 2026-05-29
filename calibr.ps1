@@ -1138,13 +1138,22 @@ function Select-PlanForBench {
 
 function Invoke-RotationCheck {
     # Called once per config-iteration in Invoke-Bench. If $item's model_path
-    # has reached its expected config count, decides whether to rotate (delete
-    # the .gguf and possibly its mmproj) and emits a host line either way.
+    # has reached its expected config count, deletes the .gguf and possibly
+    # its mmproj and emits a host line, or keeps and skips silently.
     #
-    # Reasons we KEEP a file:
-    #   - $KeepDownloads flag set
-    #   - file is not in the download manifest (user-owned)
-    #   - one or more configs for the model failed (incl. abandoned-as-skip)
+    # Policy is intentionally simple: a file calibr fetched into a temporary
+    # location lives only as long as we need it for the bench. Once every
+    # config for that model has been accounted for (ok, fail, or skip), we
+    # delete the file regardless of outcome. Reasons:
+    #   - the per-config result JSONs (and logs) are persisted separately
+    #     and are the actual evidence the user might want for debugging;
+    #     the .gguf itself has no diagnostic value
+    #   - keeping a file that's never going to be benched again wastes disk
+    #     for nothing (the original peak-bounded promise of rotation)
+    #
+    # The only reasons we KEEP are still:
+    #   - $KeepDownloads flag set (user opted out explicitly)
+    #   - file is not in the download manifest (user-owned; never touched)
     #
     # mmproj is deleted only when no other not-yet-rotated model in $filtered
     # still references it on disk. Avoids breaking a later same-bench config
@@ -1173,16 +1182,8 @@ function Invoke-RotationCheck {
         $keptRef.Value++
         return
     }
-    if ($st.fail -gt 0 -or $st.skip -gt 0) {
-        $reasonParts = @()
-        if ($st.fail -gt 0) { $reasonParts += "$($st.fail) failed" }
-        if ($st.skip -gt 0) { $reasonParts += "$($st.skip) skipped" }
-        Write-Host ("[rotate] kept {0} ({1})" -f $mp, ($reasonParts -join ", ")) -ForegroundColor Yellow
-        $keptRef.Value++
-        return
-    }
 
-    # All clean. Delete model file.
+    # Delete model file.
     if (Test-Path -LiteralPath $mp) {
         try {
             Remove-Item -LiteralPath $mp -Force -ErrorAction Stop

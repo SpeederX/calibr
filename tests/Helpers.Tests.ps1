@@ -762,7 +762,14 @@ Describe "Invoke-RotationCheck" {
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
     }
 
-    It "keeps the file when at least one config failed" {
+    It "deletes the file even when some configs failed (simple-rotation policy)" {
+        # Per the simple-rotation policy: bench has finished for this model
+        # (done == needed), the file is calibr-downloaded, KeepDownloads is
+        # off → delete. Failure is irrelevant: the per-config result JSONs
+        # are persisted separately and are the actual debug evidence; the
+        # .gguf itself has no diagnostic value beyond the bench. Keeping it
+        # would waste disk for a file that's never going to be benched again
+        # without an explicit user action.
         $script:KeepDownloads = $false
         $gguf = _newTempGguf "had-failure"
         $tmp = _useFreshManifest @($gguf)
@@ -770,14 +777,18 @@ Describe "Invoke-RotationCheck" {
         $item = _item $gguf
         $r = 0; $k = 0
         Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
-        Assert-Equal 0 $r
-        Assert-Equal 1 $k
-        Assert-True (Test-Path $gguf)  "file with failed configs must survive for re-run"
-        if (Test-Path $gguf) { Remove-Item $gguf -Force }
+        Assert-Equal 1 $r
+        Assert-Equal 0 $k
+        Assert-False (Test-Path $gguf)  "rotation must clean up regardless of fail count"
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
     }
 
-    It "keeps the file when at least one config was skipped (abandoned model)" {
+    It "deletes the file even when configs were skipped via abandonment" {
+        # Same policy: the model abandonment path (unsupported_arch, or the
+        # tier-aware vram_overflow abandon) leaves skip > 0 on the modelStatus.
+        # We still delete: keeping the file 'just in case the user updates
+        # llama.cpp / buys more VRAM' would accumulate dead files forever.
+        # If the user wants to bench it again, they can re-fetch in seconds.
         $script:KeepDownloads = $false
         $gguf = _newTempGguf "had-skip"
         $tmp = _useFreshManifest @($gguf)
@@ -785,10 +796,9 @@ Describe "Invoke-RotationCheck" {
         $item = _item $gguf
         $r = 0; $k = 0
         Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
-        Assert-Equal 0 $r
-        Assert-Equal 1 $k
-        Assert-True (Test-Path $gguf)
-        if (Test-Path $gguf) { Remove-Item $gguf -Force }
+        Assert-Equal 1 $r
+        Assert-Equal 0 $k
+        Assert-False (Test-Path $gguf)
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
     }
 
