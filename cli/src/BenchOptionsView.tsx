@@ -138,7 +138,9 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>
-          tip: close non-essential apps for less variance (±2% instead of ±10%).
+          tip: close other apps before launching. results are not reliable when heavy workloads
+          (video rendering, builds, games, large downloads) run in parallel, and the bench
+          can freeze the system if VRAM is already tight.
         </Text>
         <Text dimColor>
           calibr uses ~150 MB RAM and 1–3% CPU on a polling thread, and does NOT touch the GPU.
