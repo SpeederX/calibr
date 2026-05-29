@@ -8,6 +8,7 @@ import {
   downloadDestination,
   formatBytes,
   loadConfig,
+  cachedResultsCount,
 } from "./engine.js";
 
 interface Props {
@@ -40,11 +41,18 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const samples = useMemo(readSamples, []);
   const cfg = useMemo(loadConfig, []);
   const destination = useMemo(() => downloadDestination(cfg), [cfg]);
+  const cachedCount = useMemo(cachedResultsCount, []);
+
+  const forceLabel = force
+    ? "yes (re-run completed configs)"
+    : (cachedCount > 0
+        ? `no (will skip ${cachedCount} cached result${cachedCount === 1 ? "" : "s"})`
+        : "no (skip cached)");
 
   const rows = [
     { kind: "download" as const, label: `samples:  ${downloadSamples ? "download curated set first (-DownloadSamples)" : "off (use catalog as-is)"}` },
     { kind: "rotate"   as const, label: `rotate:   ${keepDownloads ? "no (keep downloaded files after bench)" : "yes (default — delete each model after success)"}` },
-    { kind: "force"    as const, label: `force:    ${force ? "yes (re-run completed configs)" : "no (skip cached)"}` },
+    { kind: "force"    as const, label: `force:    ${forceLabel}` },
     { kind: "prefer"   as const, label: `picker:   ${preferSpeed ? "speed (ignore WDDM safety)" : "safety (default — non-paging wins ties)"}` },
     { kind: "run"      as const, label: "> start all" },
     { kind: "cancel"   as const, label: "  cancel" },

@@ -9,7 +9,8 @@ interface Props {
   onExit: () => void;
 }
 
-const MAX_LINES = 200;
+const MAX_LINES = 500;
+const VIEWPORT = 30;
 
 // Match the engine's `Write-Host "[X/Y] <label>"` progress lines.
 // Source: calibr.ps1 Invoke-Bench inner loop.
@@ -57,6 +58,11 @@ export function RunView({ args, label, onExit }: Props) {
   const [sampleProgress, setSampleProgress] = useState<SampleProgress | null>(null);
   const [rotation, setRotation] = useState<RotationStats>({ deleted: 0, kept: 0, failed: 0, lastEvent: null });
   const [exitCode, setExitCode] = useState<number | null>(null);
+  // Scroll offset measured from the bottom of the buffer in lines. 0 means
+  // 'follow the tail'; positive values mean 'show N lines up from the
+  // bottom'. When the user scrolls up we stop auto-following so new output
+  // doesn't yank them back. End key resumes follow.
+  const [scrollOffset, setScrollOffset] = useState(0);
   const procRef = useRef<ReturnType<typeof runEngine> | null>(null);
   const isBench = useMemo(() => args[0] === "bench" || args[0] === "all", [args]);
 
@@ -128,6 +134,14 @@ export function RunView({ args, label, onExit }: Props) {
   }, []);
 
   useInput((input, key) => {
+    // Scroll bindings work whether the run is live or finished.
+    if (key.upArrow)   { setScrollOffset(o => Math.min(Math.max(0, lines.length - VIEWPORT), o + 1)); return; }
+    if (key.downArrow) { setScrollOffset(o => Math.max(0, o - 1)); return; }
+    if (key.pageUp)    { setScrollOffset(o => Math.min(Math.max(0, lines.length - VIEWPORT), o + VIEWPORT)); return; }
+    if (key.pageDown)  { setScrollOffset(o => Math.max(0, o - VIEWPORT)); return; }
+    if (input === "g") { setScrollOffset(Math.max(0, lines.length - VIEWPORT)); return; }  // top
+    if (input === "G") { setScrollOffset(0); return; }                                       // bottom (resume tail)
+
     if (exitCode !== null && (key.return || input === "q" || key.escape)) {
       onExit();
     }
@@ -136,9 +150,18 @@ export function RunView({ args, label, onExit }: Props) {
     }
   });
 
-  const tail = lines.slice(-30);
+  // Slice the visible window. When scrollOffset is 0, end == lines.length
+  // (live tail). When scrolled up by N, the window slides up by N lines.
+  const end = Math.max(VIEWPORT, lines.length - scrollOffset);
+  const start = Math.max(0, end - VIEWPORT);
+  const tail = lines.slice(start, end);
+  const isTailing = scrollOffset === 0;
+
   const showProgress = isBench && progress !== null;
-  const pct = showProgress ? Math.round((progress!.current / Math.max(1, progress!.total)) * 100) : 0;
+  const configPct = showProgress ? Math.round((progress!.current / Math.max(1, progress!.total)) * 100) : 0;
+  const samplePct = sampleProgress !== null
+    ? Math.round((sampleProgress.current / Math.max(1, sampleProgress.total)) * 100)
+    : 0;
 
   return (
     <Box flexDirection="column">
@@ -154,14 +177,14 @@ export function RunView({ args, label, onExit }: Props) {
       {sampleProgress !== null && (
         <Box marginTop={1}>
           <Text color="cyan" bold>
-            sample {sampleProgress.current}/{sampleProgress.total} · {sampleProgress.sampleId}
+            sample {sampleProgress.current}/{sampleProgress.total} · {samplePct}% · {sampleProgress.sampleId}
           </Text>
         </Box>
       )}
       {showProgress && (
         <Box {...(sampleProgress === null ? { marginTop: 1 } : {})}>
           <Text color="cyan">
-            config [{progress!.current}/{progress!.total}] {pct}% — {progress!.label}
+            config [{progress!.current}/{progress!.total}] {configPct}% — {progress!.label}
           </Text>
         </Box>
       )}
@@ -178,13 +201,18 @@ export function RunView({ args, label, onExit }: Props) {
           <Text dimColor>(no output yet)</Text>
         ) : (
           tail.map((line, i) => (
-            <Text key={i}>{line || " "}</Text>
+            <Text key={start + i}>{line || " "}</Text>
           ))
         )}
       </Box>
-      <Box marginTop={1}>
+      <Box marginTop={1} flexDirection="column">
+        {!isTailing && (
+          <Text color="yellow">
+            ↑ scrolled up {scrollOffset} line{scrollOffset === 1 ? "" : "s"} · new output paused · press G to resume tail
+          </Text>
+        )}
         <Text dimColor>
-          {exitCode === null ? "press q or esc to cancel" : "press enter, q, or esc to go back"}
+          ↑/↓ scroll · PgUp/PgDn page · g top · G bottom · {exitCode === null ? "q/esc cancel" : "enter/q/esc back"}
         </Text>
       </Box>
     </Box>

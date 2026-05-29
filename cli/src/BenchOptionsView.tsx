@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { existsSync, readFileSync } from "node:fs";
-import { CALIBR_CATALOG, loadConfig } from "./engine.js";
+import { CALIBR_CATALOG, loadConfig, cachedResultsCount } from "./engine.js";
 
 interface Props {
   onRun: (args: string[], label: string) => void;
@@ -58,6 +58,7 @@ function fmt(s: string | null, fallback: string): string {
 export function BenchOptionsView({ onRun, onCancel }: Props) {
   const models = useMemo(readCatalogModels, []);
   const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
+  const cachedCount = useMemo(cachedResultsCount, []);
   // Read the engine's default runs-per-config so the form shows the actual
   // value (e.g. 3) instead of just saying 'default (config)'.
   const configRunsDefault = useMemo<number>(() => {
@@ -76,11 +77,17 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
     ? `default (${configRunsDefault} from config)`
     : String(runs);
 
+  const forceLabel = force
+    ? "yes (re-run completed configs)"
+    : (cachedCount > 0
+        ? `no (will skip ${cachedCount} cached result${cachedCount === 1 ? "" : "s"})`
+        : "no (skip cached)");
+
   const rows = [
     { kind: "model" as const,    label: `model:   ${fmt(model, "all (no filter)")}` },
     { kind: "tier" as const,     label: `tier:    ${TIER_DESCRIPTIONS[tier] ?? tier}` },
     { kind: "runs" as const,     label: `runs:    ${runsLabel}` },
-    { kind: "force" as const,    label: `force:   ${force ? "yes (re-run completed configs)" : "no (skip cached)"}` },
+    { kind: "force" as const,    label: `force:   ${forceLabel}` },
     { kind: "rotate" as const,   label: `rotate:  ${keepDownloads ? "no (keep downloaded files)" : "yes (delete each model after its configs succeed)"}` },
     { kind: "run" as const,      label: "> start bench" },
     { kind: "cancel" as const,   label: "  cancel" },

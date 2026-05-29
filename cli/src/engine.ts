@@ -174,6 +174,20 @@ export interface Result {
   [k: string]: any;
 }
 
+export function cachedResultsCount(): number {
+  // Number of result JSON files currently in data/results/. Used by the
+  // form footers to warn the user that some configs will be skipped unless
+  // -Force is set. We intentionally don't try to match each file against a
+  // would-be plan — for the user this rough count answers the actually
+  // useful question 'is there any cache state on disk?'.
+  if (!existsSync(CALIBR_RESULTS_DIR)) return 0;
+  try {
+    return readdirSync(CALIBR_RESULTS_DIR).filter(f => f.endsWith(".json")).length;
+  } catch {
+    return 0;
+  }
+}
+
 export function readResults(): Result[] {
   if (!existsSync(CALIBR_RESULTS_DIR)) return [];
   const out: Result[] = [];
