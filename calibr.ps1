@@ -605,6 +605,38 @@ function New-PlanItem {
     }
 }
 
+function Get-SampleMaxContextMap {
+    # Builds a hashtable {hf_file.ToLower() -> max_context (int)} from
+    # samples.json. Used by Invoke-Plan to skip Tier A candidates above
+    # the model's officially-supported ctx. User-owned models (not in
+    # samples.json by basename) fall through to the global max_context_cap
+    # only — a per-model cap for those would require reading GGUF metadata,
+    # which is a separate (larger) piece of work.
+    $samples = Get-SampleList
+    $map = @{}
+    foreach ($s in $samples) {
+        if ($null -ne $s.max_context -and $s.hf_file) {
+            $map[$s.hf_file.ToLower()] = [int]$s.max_context
+        }
+    }
+    return $map
+}
+
+function Test-CtxAllowedForModel {
+    # Pure predicate: returns $true iff $ctx is allowed by both caps.
+    # 0 disables either cap (matches Invoke-Plan's existing convention
+    # for max_context_cap). Both caps are upper bounds; <=  passes,
+    # > fails.
+    param(
+        [Parameter(Mandatory)][int]$Ctx,
+        [int]$GlobalCap = 0,
+        [int]$PerModelCap = 0
+    )
+    if ($GlobalCap   -gt 0 -and $Ctx -gt $GlobalCap)   { return $false }
+    if ($PerModelCap -gt 0 -and $Ctx -gt $PerModelCap) { return $false }
+    return $true
+}
+
 function Invoke-Plan {
     $cfg = Get-Config
     Write-Host "=== plan ===" -ForegroundColor Cyan
@@ -618,6 +650,9 @@ function Invoke-Plan {
     }
     $base = $cfg.base_args + $threadsArg
 
+    $globalCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
+    $perModelCaps = Get-SampleMaxContextMap
+
     $plan = @()
     $idx = 1
     foreach ($m in $catalog) {
@@ -625,17 +660,28 @@ function Invoke-Plan {
         $tier = Get-Tier -meta $m -cfg $cfg
         if ($Tier -and $tier -ne $Tier) { continue }
 
+        # Per-model ctx cap if the .gguf basename matches a curated sample.
+        # User-owned files won't match → $perModelCap stays 0 → only the
+        # global cap applies.
+        $perModelCap = 0
+        $bname = [System.IO.Path]::GetFileName($m.path)
+        if ($bname -and $perModelCaps.ContainsKey($bname.ToLower())) {
+            $perModelCap = $perModelCaps[$bname.ToLower()]
+        }
+
         switch ($tier) {
             "A" {
-                # Honor max_context_cap as a global ceiling so we never schedule a
-                # context size larger than any current GGUF supports (default 256k).
-                # 0 disables the cap. Per-model caps are a separate concern handled
-                # via samples.json max_context (TODO: not yet wired).
-                $ctxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
+                $skipped = 0
                 foreach ($c in $cfg.tier_a_candidates) {
-                    if ($ctxCap -gt 0 -and [int]$c.ctx -gt $ctxCap) { continue }
+                    if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $globalCtxCap -PerModelCap $perModelCap)) {
+                        $skipped++
+                        continue
+                    }
                     $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base"
                     $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
+                }
+                if ($skipped -gt 0 -and $perModelCap -gt 0) {
+                    Write-Host ("  skipped {0} tier-A candidates above {1}'s max_context ({2})" -f $skipped, $m.model, $perModelCap) -ForegroundColor DarkGray
                 }
             }
             "B" {

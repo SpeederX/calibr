@@ -6,7 +6,8 @@
     "target_dir is relative to scan_paths[0] in config.json. Files land at {scan_paths[0]}/{target_dir}/{hf_file}.",
     "hf_file matches an existing path inside the hf_repo. If a repo is taken down or renamed, edit this file and submit a PR.",
     "Some Gemma-series models require accepting a license on HuggingFace; download may fail with 401 until you do.",
-    "size_bytes is informational (used for skip-if-complete); it is not verified against the server."
+    "size_bytes is informational (used for skip-if-complete); it is not verified against the server.",
+    "max_context is the model's officially-supported context length, scraped from HuggingFace model cards. Invoke-Plan uses it to skip Tier A candidates above this ceiling (no point benching ctx=160k on a model that maxes at 128k)."
   ],
 
   "samples": [
@@ -20,6 +21,7 @@
       "hf_file": "Qwen3.5-0.8B-Q8_0.gguf",
       "target_dir": "Qwen3.5-0.8B",
       "size_bytes": 811843840,
+      "max_context": 262144,
       "notes": "Smallest Qwen3.5 variant. 8-bit, near-lossless. Good warm-up model."
     },
     {
@@ -32,6 +34,7 @@
       "hf_file": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
       "target_dir": "Qwen3.5-0.8B",
       "size_bytes": 558772480,
+      "max_context": 262144,
       "notes": "Unsloth Dynamic 4-bit. Fastest small model in benchmarks."
     },
     {
@@ -45,6 +48,7 @@
       "target_dir": "Qwen3.5-2B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 1339752704,
+      "max_context": 262144,
       "notes": "Multimodal (vision). Pair with mmproj-F16."
     },
     {
@@ -58,6 +62,7 @@
       "target_dir": "Qwen3.5-2B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 3775709216,
+      "max_context": 262144,
       "notes": "Full precision 2B. Quality reference for the model."
     },
     {
@@ -70,6 +75,7 @@
       "hf_file": "Qwen3.5-4B-Q4_K_M.gguf",
       "target_dir": "Qwen3.5-4B",
       "size_bytes": 2740937888,
+      "max_context": 262144,
       "notes": "Mid-size dense. No mmproj in this release."
     },
     {
@@ -83,6 +89,7 @@
       "target_dir": "Qwen3.5-9B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 5627040640,
+      "max_context": 262144,
       "notes": "The 8GB-VRAM sweet spot. Hybrid SSM+attention, 32 layers, only 8 with KV cache."
     },
     {
@@ -96,6 +103,7 @@
       "target_dir": "Qwen3.5-27B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 15769159584,
+      "max_context": 262144,
       "notes": "Smallest 27B quant. Partial GPU offload required on <= 16GB VRAM."
     },
     {
@@ -108,6 +116,7 @@
       "hf_file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "target_dir": "Qwen3.6-35B-A3B",
       "size_bytes": 22134528992,
+      "max_context": 262144,
       "notes": "MoE with ~3B active params. Runs in 8GB VRAM with --n-cpu-moe 34."
     },
 
@@ -122,6 +131,7 @@
       "target_dir": "Gemma-4-E2B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 2500000000,
+      "max_context": 128000,
       "notes": "Smaller Gemma 4 Effective 2B. Multimodal (vision + audio). Lives in its own folder because its mmproj (n_embd=1536) is incompatible with the E4B sibling's mmproj (n_embd=2560) despite sharing the filename mmproj-F16.gguf."
     },
     {
@@ -135,6 +145,7 @@
       "target_dir": "Gemma-4-E4B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 4977169088,
+      "max_context": 128000,
       "notes": "Effective 4B. Vision + audio encoders; 43 layers fully on GPU in 8GB. Lives in its own folder because its mmproj (n_embd=2560) is incompatible with the E2B sibling's mmproj despite sharing the filename mmproj-F16.gguf."
     },
     {
@@ -147,6 +158,7 @@
       "hf_file": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
       "target_dir": "Gemma 4-26B-A4B",
       "size_bytes": 16000000000,
+      "max_context": 256000,
       "notes": "MoE ~4B active. Comparable to Qwen3.6-35B-A3B routing strategy."
     },
     {
@@ -160,6 +172,7 @@
       "target_dir": "Gemma 4-31B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 18500000000,
+      "max_context": 256000,
       "notes": "Dense 31B. Requires partial offload on < 20GB VRAM."
     }
   ]
