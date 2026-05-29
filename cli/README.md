@@ -122,11 +122,14 @@ The menu exposes the engine verbs verbatim. Brief summary:
 
 - **Windows only.** See Requirements. Cross-platform support is on the
   roadmap when the PowerShell engine is rewritten in TypeScript.
-- **`discover` pairs mmproj by directory.** Two model variants in the
-  same folder that ship the same `mmproj-F16.gguf` filename but with
-  different `n_embd` (Gemma 4 E2B vs E4B is the known case) will
-  cross-pair and the wrong one fails at load. Workaround: put each
-  multimodal variant in its own subfolder.
+- **`discover` pairs mmproj by directory.** If two model variants live
+  in the same folder and physically share one `mmproj-*.gguf` file but
+  the projector is only valid for one of them (different vision
+  `n_embd`), bench will fail at load on the other. The curated samples
+  set keeps Gemma 4 E2B and E4B in separate folders for this reason;
+  for your own models, keep each multimodal variant in its own
+  subfolder. `discover` now emits a `WARNING` whenever it sees one
+  mmproj paired with multiple distinct text models.
 - **No re-run-single-config from the results screen** yet. Use the
   bench screen with a tight `-Model` filter and `-Force` instead.
 

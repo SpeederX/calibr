@@ -519,6 +519,31 @@ function Invoke-Discover {
 
     $catalog | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_CATALOG
     Write-Host ("Catalog: {0} models -> {1}" -f $catalog.Count, $CALIBR_CATALOG) -ForegroundColor Green
+
+    # Defensive ambiguity check: surface the case where a single mmproj file
+    # on disk is paired with multiple distinct text models. The historical
+    # symptom is Gemma 4 E2B and E4B both shipping mmproj-F16.gguf with
+    # different vision n_embd (1536 vs 2560); if they're downloaded into the
+    # same folder the second overwrites the first and the remaining model
+    # fails at load. We can't read GGUF metadata cheaply from PowerShell, so
+    # we warn here instead of letting bench discover it the hard way.
+    $byMmproj = @{}
+    foreach ($e in $catalog) {
+        if (-not $e.mmproj) { continue }
+        if (-not $byMmproj.ContainsKey($e.mmproj)) { $byMmproj[$e.mmproj] = @() }
+        $byMmproj[$e.mmproj] += $e.model
+    }
+    foreach ($kv in $byMmproj.GetEnumerator()) {
+        $distinctModels = @($kv.Value | Sort-Object -Unique)
+        if ($distinctModels.Count -gt 1) {
+            Write-Host ""
+            Write-Host ("WARNING: mmproj shared across {0} distinct models:" -f $distinctModels.Count) -ForegroundColor Yellow
+            Write-Host ("  mmproj: {0}" -f $kv.Key) -ForegroundColor Yellow
+            Write-Host ("  models: {0}" -f ($distinctModels -join ', ')) -ForegroundColor Yellow
+            Write-Host  "  If these models have different vision n_embd, bench will fail at load." -ForegroundColor Yellow
+            Write-Host  "  Workaround: move each variant into its own subfolder so the mmproj files do not collide." -ForegroundColor Yellow
+        }
+    }
 }
 
 # ============================================================================
