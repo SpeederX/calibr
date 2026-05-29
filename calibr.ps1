@@ -1678,6 +1678,11 @@ function Invoke-GetSampleModels {
         Write-Host ("`n[{0}] {1} ({2})" -f $s.id, $s.model, (Format-HumanSize ([long]$s.size_bytes))) -ForegroundColor Cyan
         $dest = Get-SampleDestination -sample $s -cfg $cfg
         $modelPath = Join-Path $dest $s.hf_file
+        # Remember whether the file was already there before the call. If
+        # Invoke-HFDownload returns OK because the file existed, we treat it
+        # as user-owned and skip the manifest tag — rotation must never
+        # delete files calibr didn't actually fetch.
+        $modelExistedBefore = Test-Path -LiteralPath $modelPath
         $ok = Invoke-HFDownload -Repo $s.hf_repo -File $s.hf_file -DestPath $modelPath -ExpectedBytes ([long]$s.size_bytes)
         if ($ok) { $okCount++ } else { $failCount++ }
 
@@ -1688,9 +1693,12 @@ function Invoke-GetSampleModels {
             Invoke-HFDownload -Repo $s.hf_repo -File $s.mmproj_file -DestPath $mmPath -ExpectedBytes 0 | Out-Null
         }
 
-        # Record in the download manifest so post-bench rotation knows the
-        # file is calibr-managed and safe to delete after a clean bench run.
-        if ($ok) {
+        # Record in the download manifest only when we actually fetched the
+        # file in this call (it didn't already exist). This guarantees that
+        # files the user pre-downloaded — even into the same curated path
+        # samples.json points to — are never tagged calibr-owned and never
+        # rotated.
+        if ($ok -and -not $modelExistedBefore) {
             $modelAbs = (Get-Item -LiteralPath $modelPath).FullName
             $mmAbs = if ($mmPath -and (Test-Path $mmPath)) { (Get-Item -LiteralPath $mmPath).FullName } else { "" }
             Add-DownloadManifestEntry -SampleId $s.id -Model $s.model -ModelPath $modelAbs -MmprojPath $mmAbs -SizeBytes ([long]$s.size_bytes)
@@ -2190,7 +2198,10 @@ function Invoke-Help {
         "all" = @{
             Usage    = "calibr all [-DownloadSamples [-SampleId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-KeepDownloads]"
             Flags    = @(
-                "-DownloadSamples         Run get-sample-models before the pipeline"
+                "-DownloadSamples         Interleaved mode: walk samples one-by-one, download"
+                "                         -> discover -> plan -> bench -> rotate per sample so"
+                "                         peak disk stays bounded to one model. Pre-existing"
+                "                         models in scan_paths are benched first (phase 0)."
                 "-SampleId <id>           (with -DownloadSamples) only fetch the matching sample"
                 "-Model <regex>           Filter download AND bench by model name"
                 "-Force                   Re-run all benchmarks (skip cache)"
@@ -2345,22 +2356,84 @@ switch ($Command) {
     "get-sample-models"  { Invoke-GetSampleModels }
     "all"                {
         if ($DownloadSamples) {
-            # Without an explicit filter (-SampleId / -Model / -DownloadAll), default to "all samples".
-            if (-not ($DownloadAll -or $SampleId -or $Model)) { $script:DownloadAll = $true }
-            Invoke-GetSampleModels
+            # Interleaved rotation: instead of fetching the entire curated set
+            # up-front (~88 GB peak) and benching afterwards, we walk one
+            # sample at a time — download → discover → plan → bench just this
+            # model → rotation deletes it — so the working set on disk stays
+            # bounded to one model. This is what makes -KeepDownloads=off
+            # actually deliver the 'peak ~ largest single file' promise the
+            # CLI's pre-flight gate shows.
+            $samples = Get-SampleList
+            if ($SampleId) { $samples = $samples | Where-Object { $_.id -like $SampleId } }
+            if ($Model)    { $samples = $samples | Where-Object { $_.model -match $Model } }
+            $samples = @($samples)
+            if ($samples.Count -eq 0) {
+                Write-Host "No samples match the current -SampleId / -Model filters. Nothing to do." -ForegroundColor Yellow
+                return
+            }
 
-            # If neither config.json nor -ScanPath set scan_paths, point discover at the
-            # directory the samples just landed in, otherwise it'd throw "scan_paths is empty".
-            $cfgAfter = Get-Config
-            $scanEmpty = (-not $cfgAfter.scan_paths -or $cfgAfter.scan_paths.Count -eq 0)
+            # Point scan_paths at the download destination if the user hasn't
+            # configured it; otherwise discover would later throw 'scan_paths
+            # is empty'.
+            $cfgInit = Get-Config
+            $scanEmpty = (-not $cfgInit.scan_paths -or $cfgInit.scan_paths.Count -eq 0)
             $cliEmpty  = (-not $script:ScanPath  -or $script:ScanPath.Count  -eq 0)
             if ($scanEmpty -and $cliEmpty) {
                 $defaultDl = if ($Destination) { $Destination } else { Join-Path $CALIBR_ROOT "downloaded-models" }
                 $script:ScanPath = @($defaultDl)
-                Write-Host "[all] No scan_paths configured. Will scan $defaultDl (where samples landed)." -ForegroundColor Cyan
+                Write-Host "[all] No scan_paths configured. Will scan $defaultDl." -ForegroundColor Cyan
             }
+
+            Write-Host ""
+            Write-Host ("=== all -DownloadSamples : {0} sample(s), rotated ===" -f $samples.Count) -ForegroundColor Cyan
+
+            # Phase 0: bench whatever is already on disk so existing models
+            # don't get orphaned by the per-sample loop (each iteration's
+            # bench is narrowed to the current sample's model). Skipped if
+            # the user explicitly scoped with -SampleId or -Model — then
+            # they want a narrow run, not a sweep over everything.
+            if (-not $SampleId -and -not $Model) {
+                Write-Host ""
+                Write-Host "--- pre-existing models ---" -ForegroundColor DarkCyan
+                Invoke-Discover
+                Invoke-Plan
+                Invoke-Bench
+            }
+
+            # Phase 1+: per-sample download + bench + rotate.
+            $savedSampleId = $script:SampleId
+            $savedModel    = $script:Model
+            $idx = 0
+            foreach ($s in $samples) {
+                $idx++
+                Write-Host ""
+                Write-Host ("--- sample {0}/{1} : {2} ({3}) ---" -f $idx, $samples.Count, $s.id, $s.model) -ForegroundColor Cyan
+
+                $script:SampleId = $s.id
+                $script:Model    = ""   # SampleId narrows enough on its own
+                Invoke-GetSampleModels
+
+                # Re-discover so the freshly-downloaded file enters the catalog;
+                # re-plan because the catalog grew.
+                $script:SampleId = $savedSampleId
+                Invoke-Discover
+                Invoke-Plan
+
+                # Bench narrows to this sample's model — Invoke-RotationCheck
+                # then has a chance to delete the .gguf the moment its last
+                # config finishes successfully.
+                $script:Model = $s.model
+                Invoke-Bench
+            }
+            $script:SampleId = $savedSampleId
+            $script:Model    = $savedModel
+
+            Write-Host ""
+            Write-Host "--- final report ---" -ForegroundColor DarkCyan
+            Invoke-Report
+        } else {
+            Invoke-Discover; Invoke-Plan; Invoke-Bench; Invoke-Report
         }
-        Invoke-Discover; Invoke-Plan; Invoke-Bench; Invoke-Report
     }
     default              { Invoke-Help }
 }
