@@ -79,7 +79,16 @@ param(
     # gathering measurements. The top-level result records the median over the
     # N runs for varying metrics; raw per-run values live in a `runs` array.
     # 0 means "use bench.runs_per_config from config" (default 3).
-    [int]$Runs = 0
+    [int]$Runs = 0,
+
+    # Used by bench (and `all`): opt out of post-bench rotation. By default,
+    # when a model's .gguf was downloaded by calibr (recorded in the download
+    # manifest at data/downloads.json) and every config for that model
+    # finished successfully, the .gguf and its auto-paired mmproj are deleted
+    # to keep peak working-set bounded to one model. -KeepDownloads disables
+    # the cleanup so files survive the bench. User-owned files (those not in
+    # the manifest) are never touched regardless of this flag.
+    [switch]$KeepDownloads
 )
 
 $ErrorActionPreference = "Stop"
@@ -97,6 +106,7 @@ $script:CALIBR_RESULTS_DIR = Join-Path $CALIBR_DATA_DIR "results"
 $script:CALIBR_LOGS_DIR    = Join-Path $CALIBR_DATA_DIR "logs"
 $script:CALIBR_BATS_DIR    = Join-Path $CALIBR_DATA_DIR "bats"
 $script:CALIBR_REPORT      = Join-Path $CALIBR_DATA_DIR "report.html"
+$script:CALIBR_DOWNLOADS   = Join-Path $CALIBR_DATA_DIR "downloads.json"
 
 foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
@@ -999,6 +1009,91 @@ function Write-BenchStatusLine {
     Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
 }
 
+function Invoke-RotationCheck {
+    # Called once per config-iteration in Invoke-Bench. If $item's model_path
+    # has reached its expected config count, decides whether to rotate (delete
+    # the .gguf and possibly its mmproj) and emits a host line either way.
+    #
+    # Reasons we KEEP a file:
+    #   - $KeepDownloads flag set
+    #   - file is not in the download manifest (user-owned)
+    #   - one or more configs for the model failed (incl. abandoned-as-skip)
+    #
+    # mmproj is deleted only when no other not-yet-rotated model in $filtered
+    # still references it on disk. Avoids breaking a later same-bench config
+    # of a sibling variant that happens to share the projector file.
+    param(
+        $item,
+        [hashtable]$modelStatus,
+        $filtered,
+        [ref]$rotatedRef,
+        [ref]$keptRef
+    )
+    $mp = $item.model_path
+    $st = $modelStatus[$mp]
+    if (-not $st) { return }
+    if ($st.done -ne $st.needed) { return }
+    if ($st.rotated) { return }
+    $st.rotated = $true
+
+    if ($KeepDownloads) {
+        Write-Host ("[rotate] kept {0} (-KeepDownloads)" -f $mp) -ForegroundColor DarkGray
+        $keptRef.Value++
+        return
+    }
+    if (-not (Test-DownloadedByCalibr -Path $mp)) {
+        # Silent for user-owned files; printing for every model would spam.
+        $keptRef.Value++
+        return
+    }
+    if ($st.fail -gt 0 -or $st.skip -gt 0) {
+        $reasonParts = @()
+        if ($st.fail -gt 0) { $reasonParts += "$($st.fail) failed" }
+        if ($st.skip -gt 0) { $reasonParts += "$($st.skip) skipped" }
+        Write-Host ("[rotate] kept {0} ({1})" -f $mp, ($reasonParts -join ", ")) -ForegroundColor Yellow
+        $keptRef.Value++
+        return
+    }
+
+    # All clean. Delete model file.
+    if (Test-Path -LiteralPath $mp) {
+        try {
+            Remove-Item -LiteralPath $mp -Force -ErrorAction Stop
+            Write-Host ("[rotate] deleted {0}" -f $mp) -ForegroundColor DarkCyan
+            $rotatedRef.Value++
+        } catch {
+            Write-Host ("[rotate] FAILED to delete {0}: {1}" -f $mp, $_.Exception.Message) -ForegroundColor Red
+            return
+        }
+    } else {
+        # File already gone (e.g. user moved it mid-bench). Nothing to do.
+    }
+
+    # Maybe delete mmproj. Only if no other not-yet-rotated model in $filtered
+    # still references the same projector path.
+    if ($st.mmprojPath) {
+        $stillNeeded = $false
+        foreach ($other in $filtered) {
+            if ($other.model_path -eq $mp) { continue }
+            if ($other.mmproj_path -ieq $st.mmprojPath) {
+                $otherSt = $modelStatus[$other.model_path]
+                if ($otherSt -and -not $otherSt.rotated) {
+                    $stillNeeded = $true
+                    break
+                }
+            }
+        }
+        if (-not $stillNeeded -and (Test-Path -LiteralPath $st.mmprojPath)) {
+            try {
+                Remove-Item -LiteralPath $st.mmprojPath -Force -ErrorAction Stop
+                Write-Host ("[rotate] deleted {0} (mmproj)" -f $st.mmprojPath) -ForegroundColor DarkCyan
+            } catch {
+                Write-Host ("[rotate] FAILED to delete mmproj {0}: {1}" -f $st.mmprojPath, $_.Exception.Message) -ForegroundColor Red
+            }
+        }
+    }
+}
+
 function Invoke-Bench {
     $cfg = Get-Config
     if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
@@ -1043,13 +1138,41 @@ function Invoke-Bench {
     $skipCount  = 0
     $i = 0
 
+    # Rotation context: per-distinct-model_path tracking so we know when every
+    # config touching a given .gguf is accounted for and can decide whether to
+    # delete the file. We index by model_path (not model name) because the same
+    # name could theoretically resolve to different files across scan paths.
+    $modelStatus = @{}
+    foreach ($item in $filtered) {
+        $mp = $item.model_path
+        if (-not $modelStatus.ContainsKey($mp)) {
+            $modelStatus[$mp] = @{
+                needed      = 0
+                ok          = 0
+                fail        = 0
+                skip        = 0
+                done        = 0
+                modelName   = $item.model
+                mmprojPath  = $item.mmproj_path
+                rotated     = $false
+            }
+        }
+        $modelStatus[$mp].needed++
+    }
+    $rotatedCount = 0
+    $keptCount    = 0
+
     foreach ($item in $filtered) {
         $i++
+        $mp = $item.model_path
 
         if ($abandoned.ContainsKey($item.model)) {
             $reason = $abandoned[$item.model]
             Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkYellow
             $skipCount++
+            $modelStatus[$mp].skip++
+            $modelStatus[$mp].done++
+            Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
             continue
         }
 
@@ -1068,12 +1191,21 @@ function Invoke-Bench {
 
         Write-Host ("`n[$i/$total] $($item.label)") -ForegroundColor Cyan
         $r = Invoke-OneBench -item $item -cfg $cfg
-        if ($r.ok) { $okCount++ } else { $failCount++ }
+        if ($r.ok) {
+            $okCount++
+            $modelStatus[$mp].ok++
+        } else {
+            $failCount++
+            $modelStatus[$mp].fail++
+        }
+        $modelStatus[$mp].done++
 
         if (-not $r.ok -and $r.unsupported_architecture) {
             $abandoned[$item.model] = "unsupported architecture '$($r.unsupported_architecture)'"
             Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
         }
+
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
     }
 
     Write-Progress -Activity "calibr bench" -Completed
@@ -1090,6 +1222,9 @@ function Invoke-Bench {
         Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
         $reasons = @($abandoned.Values | Sort-Object -Unique)
         Write-Host ("   reason: {0}" -f ($reasons -join '; ')) -ForegroundColor DarkYellow
+    }
+    if ($rotatedCount -gt 0 -or ($keptCount -gt 0 -and -not $KeepDownloads)) {
+        Write-Host ("   rotated: {0} deleted . {1} kept" -f $rotatedCount, $keptCount) -ForegroundColor DarkCyan
     }
     Write-Host $bar -ForegroundColor Cyan
 }
@@ -1293,6 +1428,77 @@ function Get-SampleList {
     return $raw.samples
 }
 
+# Download manifest: records which .gguf files calibr itself fetched. Used by
+# bench's post-config rotation step to decide whether a file is safe to delete
+# (entries in the manifest = downloaded by calibr; absence = user-owned, never
+# touched). Manifest entries are kept after the file is rotated off disk so a
+# re-download via `get-sample-models -SampleId` is one command.
+function Get-DownloadManifest {
+    # Returns the parsed manifest, or nothing (no value emitted) when the
+    # file is missing/empty/corrupt. Returning nothing rather than $null is
+    # important: @(Get-DownloadManifest) collapses a no-value result to @()
+    # (empty array) whereas @($null) yields @($null), a 1-element array
+    # containing $null which would look like a phantom manifest entry.
+    # Callers wrap with @() to normalize: when the file holds a single
+    # entry, ConvertFrom-Json unwraps the JSON array to a bare PSCustomObject
+    # and @() re-wraps. The comma-trick and Write-Output -NoEnumerate were
+    # both considered and rejected — they inject phantoms when piped.
+    if (-not (Test-Path $CALIBR_DOWNLOADS)) { return }
+    $raw = Get-Content $CALIBR_DOWNLOADS -Raw -ErrorAction SilentlyContinue
+    if (-not $raw) { return }
+    try {
+        return $raw | ConvertFrom-Json
+    } catch {
+        Write-Warning "downloads.json is corrupt; treating as empty. ($($_.Exception.Message))"
+        return
+    }
+}
+
+function Add-DownloadManifestEntry {
+    # Idempotent on $ModelPath: replaces an existing entry rather than duplicating
+    # so re-running `get-sample-models` for the same sample updates the timestamp
+    # in place.
+    param(
+        [Parameter(Mandatory)][string]$SampleId,
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][string]$ModelPath,
+        [string]$MmprojPath = "",
+        [long]$SizeBytes = 0
+    )
+    # @(...) normalizes Get's possibly-$null / possibly-single-object return
+    # into an array. Where-Object on $null would otherwise pipe one $null
+    # item through and we'd serialize it as a phantom manifest entry.
+    $existing = @(@(Get-DownloadManifest) | Where-Object { $_ -and $_.model_path -ne $ModelPath })
+    $entry = [ordered]@{
+        sample_id     = $SampleId
+        model         = $Model
+        model_path    = $ModelPath
+        mmproj_path   = if ($MmprojPath) { $MmprojPath } else { $null }
+        size_bytes    = $SizeBytes
+        downloaded_at = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $manifest = @($existing + $entry)
+    # -InputObject (rather than pipeline) keeps a 1-element array serialized
+    # as [{...}] instead of the bare object {...} that the pipeline form
+    # would emit. Round-tripping stays an array either way (Get's caller @()
+    # wrap handles the bare-object case) but writing a real JSON array is
+    # less surprising for anyone who opens the file by hand.
+    ConvertTo-Json -InputObject $manifest -Depth 5 | Out-File -Encoding utf8 $CALIBR_DOWNLOADS
+}
+
+function Test-DownloadedByCalibr {
+    # Returns $true iff the given absolute path is recorded in the download
+    # manifest. Paths are compared case-insensitively to match Windows
+    # filesystem semantics.
+    param([Parameter(Mandatory)][string]$Path)
+    $manifest = @(Get-DownloadManifest)
+    if ($manifest.Count -eq 0) { return $false }
+    foreach ($e in $manifest) {
+        if ($e -and $e.model_path -and $e.model_path -ieq $Path) { return $true }
+    }
+    return $false
+}
+
 function Format-HumanSize {
     param([long]$bytes)
     if ($bytes -ge 1GB) { return "{0:N2} GB" -f ($bytes / 1GB) }
@@ -1434,9 +1640,18 @@ function Invoke-GetSampleModels {
         if ($ok) { $okCount++ } else { $failCount++ }
 
         # mmproj if present
+        $mmPath = $null
         if ($ok -and $s.mmproj_file) {
             $mmPath = Join-Path $dest $s.mmproj_file
             Invoke-HFDownload -Repo $s.hf_repo -File $s.mmproj_file -DestPath $mmPath -ExpectedBytes 0 | Out-Null
+        }
+
+        # Record in the download manifest so post-bench rotation knows the
+        # file is calibr-managed and safe to delete after a clean bench run.
+        if ($ok) {
+            $modelAbs = (Get-Item -LiteralPath $modelPath).FullName
+            $mmAbs = if ($mmPath -and (Test-Path $mmPath)) { (Get-Item -LiteralPath $mmPath).FullName } else { "" }
+            Add-DownloadManifestEntry -SampleId $s.id -Model $s.model -ModelPath $modelAbs -MmprojPath $mmAbs -SizeBytes ([long]$s.size_bytes)
         }
     }
 
@@ -1900,18 +2115,24 @@ function Invoke-Help {
             Examples = @( "calibr plan", "calibr plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "calibr bench [-Model <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun]"
+            Usage    = "calibr bench [-Model <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun] [-KeepDownloads]"
             Flags    = @(
                 "-Model <regex>    Only run configs whose model name matches"
                 "-Tier {A|B|C}     Only run configs for this tier"
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
                 "-DryRun           List configs that would run, don't execute"
+                "-KeepDownloads    Opt out of post-bench rotation. By default, any model whose"
+                "                  .gguf is recorded in data/downloads.json (i.e. calibr"
+                "                  downloaded it) is deleted from disk after every config for"
+                "                  that model finishes successfully. User-owned files are"
+                "                  never touched regardless of this flag."
             )
             Examples = @(
                 "calibr bench"
                 "calibr bench -Model Qwen3.5-9B"
                 "calibr bench -Tier A -Force"
+                "calibr bench -KeepDownloads"
             )
         }
         "report" = @{
@@ -1925,18 +2146,22 @@ function Invoke-Help {
             Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "calibr all [-DownloadSamples [-SampleId <id>] [-Model <regex>]] [-Force] [-PreferSpeed]"
+            Usage    = "calibr all [-DownloadSamples [-SampleId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-KeepDownloads]"
             Flags    = @(
                 "-DownloadSamples         Run get-sample-models before the pipeline"
                 "-SampleId <id>           (with -DownloadSamples) only fetch the matching sample"
                 "-Model <regex>           Filter download AND bench by model name"
                 "-Force                   Re-run all benchmarks (skip cache)"
                 "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
+                "-KeepDownloads           Opt out of post-bench rotation. By default with"
+                "                         -DownloadSamples, calibr-downloaded files are deleted"
+                "                         after a clean bench to bound peak disk to one model."
             )
             Examples = @(
                 "calibr all"
                 "calibr all -DownloadSamples"
                 "calibr all -DownloadSamples -SampleId qwen3.5-9b-q4km"
+                "calibr all -DownloadSamples -KeepDownloads"
                 "calibr all -PreferSpeed"
             )
         }

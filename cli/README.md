@@ -77,6 +77,7 @@ installed package. Your own data goes to:
 ├── config.json          your overrides
 ├── catalog.json         models discovered on disk
 ├── plan.json            test plan expanded from catalog
+├── downloads.json       which .gguf files calibr downloaded (rotation manifest)
 ├── results\*.json       one file per bench config
 ├── logs\*.log           full llama-server stderr per config
 ├── bats\*.bat           per-config launch scripts
@@ -105,7 +106,7 @@ The menu exposes the engine verbs verbatim. Brief summary:
 | `init` | Detect hardware, write `config.json` with sane defaults. |
 | `discover` | Scan `scan_paths` for `*.gguf`, build the model catalog. |
 | `plan` | Expand the catalog into a sweep of bench configurations per tier. |
-| `bench` | Run each pending plan entry, write a result JSON per config. |
+| `bench` | Run each pending plan entry, write a result JSON per config. When models came from `get-sample-models`, each model's .gguf is deleted from disk after its configs all finish (use `-KeepDownloads` to opt out). |
 | `report` | Build the HTML dashboard and per-config `.bat` launchers. |
 | `all` | discover → plan → bench → report, end to end. |
 | `status` | Print current config + counts (also shown as a card in the menu). |
