@@ -929,6 +929,9 @@ function Invoke-OneBench {
 
     $jsonFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
     $logFile  = Join-Path $CALIBR_LOGS_DIR    "$($item.id).log"
+    $confirmMibLocal = if ($cfg.wddm_detection -and $null -ne $cfg.wddm_detection.shared_delta_confirm_mib) {
+        [int]$cfg.wddm_detection.shared_delta_confirm_mib
+    } else { 500 }
 
     # Resolve N: CLI flag > config > default 3. Minimum 1.
     $N = if ($Runs -gt 0) { $Runs }
@@ -998,6 +1001,7 @@ function Invoke-OneBench {
                 wddm_flag_high_vram  = $r.wddm_flag_high_vram
                 wddm_flag_shared_pos = $r.wddm_flag_shared_pos
             }
+            $failResult.failure_reason = Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
             Write-BenchStatusLine -item $item -result $failResult
             return $failResult
@@ -1007,6 +1011,10 @@ function Invoke-OneBench {
     }
 
     $aggregated = New-AggregatedBenchResult -item $item -cfg $cfg -runs $runs
+    # All N runs succeeded so failure_reason is unset (null). Recording it as
+    # null (rather than omitting) keeps every result's schema identical, which
+    # simplifies report.template.html's column rendering.
+    $aggregated.failure_reason = Get-FailureReason -result $aggregated -sharedConfirmMib $confirmMibLocal
     $aggregated | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
     Write-BenchStatusLine -item $item -result $aggregated
     return $aggregated
@@ -1031,6 +1039,34 @@ function Write-BenchStatusLine {
         $detail = "(completion failed)"
     }
     Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
+}
+
+function Get-FailureReason {
+    # Classify why a bench result is not ok into one of four buckets so
+    # downstream code (rotation, abandonment, reports) can act on it
+    # without re-parsing scattered signals. Returns one of:
+    #   vram_overflow      - WDDM paged into shared memory; the model
+    #                        couldn't fit in real VRAM. fit_status said
+    #                        'failed_but_running' OR shared_peak crossed
+    #                        the confirm threshold.
+    #   server_timeout     - llama-server never became ready in time, but
+    #                        no VRAM-pressure signal fired. Build/CUDA bug,
+    #                        broken model file, port conflict, etc.
+    #   unsupported_arch   - the v1.0 short-circuit: llama.cpp doesn't
+    #                        know this architecture yet (update llama.cpp).
+    #   other              - catch-all for $result.ok=false without any
+    #                        of the above signals.
+    # Returns $null when $result.ok is true (no failure to classify).
+    param($result, [int]$sharedConfirmMib = 500)
+    if ($null -eq $result) { return $null }
+    if ($result.ok) { return $null }
+    if ($result.unsupported_architecture) { return "unsupported_arch" }
+    $shared = if ($null -ne $result.shared_peak_mib) { [int]$result.shared_peak_mib } else { 0 }
+    if ($result.fit_status -eq "failed_but_running" -or $shared -gt $sharedConfirmMib) {
+        return "vram_overflow"
+    }
+    if ($result.ready -eq $false) { return "server_timeout" }
+    return "other"
 }
 
 function Select-PlanForBench {
@@ -1202,6 +1238,12 @@ function Invoke-Bench {
     $failCount  = 0
     $skipCount  = 0
     $i = 0
+    # Threshold used by Get-FailureReason to decide vram_overflow vs other.
+    # Mirrors the value used in Invoke-OneBenchRun / New-AggregatedBenchResult
+    # for the WDDM flag so all three views agree.
+    $confirmThresh = if ($cfg.wddm_detection -and $null -ne $cfg.wddm_detection.shared_delta_confirm_mib) {
+        [int]$cfg.wddm_detection.shared_delta_confirm_mib
+    } else { 500 }
 
     # Rotation context: per-distinct-model_path tracking so we know when every
     # config touching a given .gguf is accounted for and can decide whether to
@@ -1268,6 +1310,21 @@ function Invoke-Bench {
         if (-not $r.ok -and $r.unsupported_architecture) {
             $abandoned[$item.model] = "unsupported architecture '$($r.unsupported_architecture)'"
             Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
+        }
+
+        # Tier-aware abandonment on VRAM overflow. Tier A sweeps ctx
+        # ascending: if the smallest ctx already pages, larger ctxs make
+        # it worse. Tier C sweeps gpu-layers ascending: if 20 already
+        # pages, 24..36 push even more onto GPU. Tier B sweeps
+        # n-cpu-moe ascending = MORE on CPU = LESS GPU pressure, so a
+        # failure on 28 (most-on-GPU) does NOT predict failure on 36;
+        # do not abandon Tier B on vram_overflow.
+        if (-not $r.ok -and -not $abandoned.ContainsKey($item.model)) {
+            $reason = Get-FailureReason -result $r -sharedConfirmMib $confirmThresh
+            if ($reason -eq "vram_overflow" -and ($item.tier -eq "A" -or $item.tier -eq "C")) {
+                $abandoned[$item.model] = "vram overflow at smallest config in tier $($item.tier) sweep; larger configs will be worse"
+                Write-Host ("  -> abandoning remaining tier {0} tests for model '{1}' (vram overflow detected; bigger ctx/ngl can only worsen it)" -f $item.tier, $item.model) -ForegroundColor DarkYellow
+            }
         }
 
         Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)

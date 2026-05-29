@@ -515,6 +515,33 @@ Describe "Download manifest helpers" {
     $script:CALIBR_DOWNLOADS = $script:_origDownloads
 }
 
+Describe "Get-FailureReason" {
+    It "returns \$null when the result succeeded" {
+        $r = Get-FailureReason -result @{ ok = $true }
+        Assert-Equal $null $r
+    }
+    It "returns 'unsupported_arch' when llama.cpp didn't recognize the model" {
+        $r = Get-FailureReason -result @{ ok = $false; unsupported_architecture = "qwen-new"; shared_peak_mib = 0; ready = $false }
+        Assert-Equal "unsupported_arch" $r
+    }
+    It "returns 'vram_overflow' when fit_status flagged failed_but_running" {
+        $r = Get-FailureReason -result @{ ok = $false; fit_status = "failed_but_running"; shared_peak_mib = 12000; ready = $false; unsupported_architecture = $null }
+        Assert-Equal "vram_overflow" $r
+    }
+    It "returns 'vram_overflow' on high shared_peak even without fit flag (defensive)" {
+        $r = Get-FailureReason -result @{ ok = $false; fit_status = "unknown"; shared_peak_mib = 900; ready = $false; unsupported_architecture = $null } -sharedConfirmMib 500
+        Assert-Equal "vram_overflow" $r
+    }
+    It "returns 'server_timeout' when ready was false with low shared_peak" {
+        $r = Get-FailureReason -result @{ ok = $false; fit_status = "success"; shared_peak_mib = 50; ready = $false; unsupported_architecture = $null } -sharedConfirmMib 500
+        Assert-Equal "server_timeout" $r
+    }
+    It "returns 'other' as the catch-all when ok is false but no signal fired" {
+        $r = Get-FailureReason -result @{ ok = $false; fit_status = "success"; shared_peak_mib = 50; ready = $true; unsupported_architecture = $null } -sharedConfirmMib 500
+        Assert-Equal "other" $r
+    }
+}
+
 Describe "Select-PlanForBench" {
     It "returns empty when the plan is empty" {
         $r = Select-PlanForBench -plan @()
