@@ -26,7 +26,11 @@ type Phase =
   | { kind: "gate"; required: number; available: number; sampleCount: number; sufficient: boolean };
 
 export function AllOptionsView({ onRun, onCancel }: Props) {
-  const [downloadSamples, setDownloadSamples] = useState<boolean>(false);
+  // 'all' is the typical "I want everything" path; defaulting samples on
+  // matches what most users want (download the curated set + bench it).
+  // Users with their own .gguf collections in scan_paths toggle it off
+  // in one keystroke.
+  const [downloadSamples, setDownloadSamples] = useState<boolean>(true);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [force, setForce] = useState<boolean>(false);
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
@@ -160,6 +164,14 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
             </Text>
           );
         })}
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        <Text dimColor>
+          tip: close non-essential apps for less variance (±2% instead of ±10%).
+        </Text>
+        <Text dimColor>
+          calibr uses ~150 MB RAM and 1–3% CPU on a polling thread, and does NOT touch the GPU.
+        </Text>
       </Box>
       <Box marginTop={1}><Text dimColor>↑/↓ move · enter cycles or runs · q/esc back</Text></Box>
     </Box>

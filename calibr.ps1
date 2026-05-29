@@ -627,7 +627,13 @@ function Invoke-Plan {
 
         switch ($tier) {
             "A" {
+                # Honor max_context_cap as a global ceiling so we never schedule a
+                # context size larger than any current GGUF supports (default 256k).
+                # 0 disables the cap. Per-model caps are a separate concern handled
+                # via samples.json max_context (TODO: not yet wired).
+                $ctxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
                 foreach ($c in $cfg.tier_a_candidates) {
+                    if ($ctxCap -gt 0 -and [int]$c.ctx -gt $ctxCap) { continue }
                     $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base"
                     $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
                 }
@@ -1131,6 +1137,23 @@ function Invoke-RotationCheck {
             }
         }
     }
+
+    # Cleanup the now-empty parent directory the .gguf lived in. Use
+    # System.IO.Path.GetDirectoryName instead of Split-Path: PS 5.1's
+    # Split-Path -LiteralPath -Parent triggers a parameter-set ambiguity.
+    # We use DirectoryInfo for the empty-check + delete to make the
+    # 'only if empty' intent explicit and to avoid Remove-Item's own
+    # parameter-set quirks on directories. If anything is still in the
+    # dir (user files, sibling .gguf, hidden files), we leave it alone.
+    $parentDir = [System.IO.Path]::GetDirectoryName($mp)
+    if ($parentDir -and (Test-Path -LiteralPath $parentDir)) {
+        try {
+            $info = New-Object System.IO.DirectoryInfo($parentDir)
+            if ($info.GetFileSystemInfos().Length -eq 0) {
+                $info.Delete()
+            }
+        } catch { }
+    }
 }
 
 function Invoke-Bench {
@@ -1454,7 +1477,12 @@ function Invoke-Report {
     $now = (Get-Date).ToString("yyyy-MM-dd HH:mm")
     $templatePath = Join-Path $CALIBR_ROOT "report.template.html"
     if (-not (Test-Path $templatePath)) { throw "Missing report.template.html" }
-    $html = Get-Content $templatePath -Raw
+    # -Encoding UTF8 is required: the template contains characters outside
+    # ASCII (e.g. the ≈ glyph in the headroom annotation). PS 5.1's default
+    # is the system code page (Windows-1252 on Italian Windows), which would
+    # silently mojibake those bytes on read and then re-encode the garbage
+    # as 'valid' UTF-8 on write.
+    $html = Get-Content $templatePath -Raw -Encoding UTF8
     $html = $html.Replace("%%NOW%%", $now).Replace("%%DATA%%", $resJson).Replace("%%WINNERS%%", $winJson).Replace("%%CFG%%", $cfgJson)
     $html | Out-File -Encoding utf8 $CALIBR_REPORT
     Write-Host "Report: $CALIBR_REPORT" -ForegroundColor Green
@@ -2407,6 +2435,10 @@ switch ($Command) {
             foreach ($s in $samples) {
                 $idx++
                 Write-Host ""
+                # Two prefixes: the bracketed [sample X/N] is CLI-parseable
+                # (RunView surfaces it as the outer progress strip); the
+                # second line is human-readable.
+                Write-Host ("[sample {0}/{1}] {2}" -f $idx, $samples.Count, $s.id)
                 Write-Host ("--- sample {0}/{1} : {2} ({3}) ---" -f $idx, $samples.Count, $s.id, $s.model) -ForegroundColor Cyan
 
                 $script:SampleId = $s.id

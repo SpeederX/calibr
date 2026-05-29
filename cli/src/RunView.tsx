@@ -15,6 +15,12 @@ const MAX_LINES = 200;
 // Source: calibr.ps1 Invoke-Bench inner loop.
 const PROGRESS_RE = /^\s*\[(\d+)\/(\d+)\]\s+(.+?)\s*$/;
 
+// Outer-level progress emitted by the 'all -DownloadSamples' per-sample
+// loop in calibr.ps1: `[sample X/N] sampleId`. Lets us show two-level
+// progress so the inner [config X/Y] doesn't look like it 'reset' every
+// time a new sample's bench begins.
+const SAMPLE_RE = /^\s*\[sample\s+(\d+)\/(\d+)\]\s+(.+?)\s*$/;
+
 // Rotation events emitted by Invoke-RotationCheck in the engine.
 // Examples:
 //   [rotate] deleted C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf
@@ -32,6 +38,12 @@ interface Progress {
   label: string;
 }
 
+interface SampleProgress {
+  current: number;
+  total: number;
+  sampleId: string;
+}
+
 interface RotationStats {
   deleted: number;
   kept: number;
@@ -42,6 +54,7 @@ interface RotationStats {
 export function RunView({ args, label, onExit }: Props) {
   const [lines, setLines] = useState<string[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [sampleProgress, setSampleProgress] = useState<SampleProgress | null>(null);
   const [rotation, setRotation] = useState<RotationStats>({ deleted: 0, kept: 0, failed: 0, lastEvent: null });
   const [exitCode, setExitCode] = useState<number | null>(null);
   const procRef = useRef<ReturnType<typeof runEngine> | null>(null);
@@ -61,12 +74,30 @@ export function RunView({ args, label, onExit }: Props) {
         for (let i = 1; i < incoming.length; i++) merged.push(incoming[i]);
         return merged.length > MAX_LINES ? merged.slice(-MAX_LINES) : merged;
       });
-      // Scan all incoming lines for the most recent [X/Y] marker.
-      for (let i = incoming.length - 1; i >= 0; i--) {
-        const m = incoming[i].match(PROGRESS_RE);
-        if (m) {
-          setProgress({ current: Number(m[1]), total: Number(m[2]), label: m[3] });
-          break;
+      // Scan all incoming lines for the most recent [X/Y] config marker
+      // and the most recent [sample X/N] outer marker. Scanning newest-first
+      // lets us pick the latest event from a chunk that bundles many lines.
+      let foundConfig = false;
+      let foundSample = false;
+      for (let i = incoming.length - 1; i >= 0 && (!foundConfig || !foundSample); i--) {
+        if (!foundConfig) {
+          const m = incoming[i].match(PROGRESS_RE);
+          if (m) {
+            setProgress({ current: Number(m[1]), total: Number(m[2]), label: m[3] });
+            foundConfig = true;
+            continue;
+          }
+        }
+        if (!foundSample) {
+          const s = incoming[i].match(SAMPLE_RE);
+          if (s) {
+            setSampleProgress({ current: Number(s[1]), total: Number(s[2]), sampleId: s[3] });
+            // When a new sample starts, the inner [X/Y] from a previous
+            // sample is stale; clear it so the display doesn't show
+            // last-sample's config strip while the new sample is downloading.
+            setProgress(null);
+            foundSample = true;
+          }
         }
       }
       // Accumulate rotation events from every incoming line.
@@ -120,10 +151,17 @@ export function RunView({ args, label, onExit }: Props) {
           <Text color="red">[err] calibr {label} failed (exit {exitCode})</Text>
         )}
       </Box>
-      {showProgress && (
+      {sampleProgress !== null && (
         <Box marginTop={1}>
+          <Text color="cyan" bold>
+            sample {sampleProgress.current}/{sampleProgress.total} · {sampleProgress.sampleId}
+          </Text>
+        </Box>
+      )}
+      {showProgress && (
+        <Box {...(sampleProgress === null ? { marginTop: 1 } : {})}>
           <Text color="cyan">
-            [{progress!.current}/{progress!.total}] {pct}% — {progress!.label}
+            config [{progress!.current}/{progress!.total}] {pct}% — {progress!.label}
           </Text>
         </Box>
       )}

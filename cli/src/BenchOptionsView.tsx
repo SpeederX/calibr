@@ -136,6 +136,14 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
           );
         })}
       </Box>
+      <Box marginTop={1} flexDirection="column">
+        <Text dimColor>
+          tip: close non-essential apps for less variance (±2% instead of ±10%).
+        </Text>
+        <Text dimColor>
+          calibr uses ~150 MB RAM and 1–3% CPU on a polling thread, and does NOT touch the GPU.
+        </Text>
+      </Box>
       <Box marginTop={1}><Text dimColor>↑/↓ move · enter cycles or runs · q/esc back</Text></Box>
     </Box>
   );
