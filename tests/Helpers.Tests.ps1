@@ -515,4 +515,285 @@ Describe "Download manifest helpers" {
     $script:CALIBR_DOWNLOADS = $script:_origDownloads
 }
 
+Describe "Select-PlanForBench" {
+    It "returns empty when the plan is empty" {
+        $r = Select-PlanForBench -plan @()
+        Assert-Equal 0 $r.Count
+    }
+    It "returns the single matching entry when no filters are set" {
+        $plan = @(@{ model = "Qwen3.5-9B"; tier = "A"; id = "T001" })
+        $r = Select-PlanForBench -plan $plan
+        Assert-Equal 1 $r.Count
+        Assert-Equal "Qwen3.5-9B" $r[0].model
+    }
+    It "applies ModelFilter as a regex match" {
+        $plan = @(
+            @{ model = "Qwen3.5-9B"; tier = "A" }
+            @{ model = "Gemma-4-E2B"; tier = "A" }
+        )
+        $r = Select-PlanForBench -plan $plan -ModelFilter "Qwen"
+        Assert-Equal 1 $r.Count
+        Assert-Equal "Qwen3.5-9B" $r[0].model
+    }
+    It "drops phantom \$null entries from the input (regression: empty-plan ContainsKey crash)" {
+        # When $plan is empty in PowerShell, `$plan | Where-Object` actually
+        # pipes one $null item through; @() then wraps it to a 1-element
+        # array, which downstream then crashed Invoke-Bench's rotation
+        # context build with `ContainsKey($null)`. The leading `$_ -and`
+        # in Select-PlanForBench filters those nulls back out.
+        $r = Select-PlanForBench -plan @($null)
+        Assert-Equal 0 $r.Count
+    }
+}
+
+Describe "Find-MmprojSharedAcrossModels" {
+    It "returns no warnings for an empty catalog" {
+        $r = Find-MmprojSharedAcrossModels -catalog @()
+        Assert-Equal 0 $r.Count
+    }
+    It "returns no warnings when a single model has its own mmproj" {
+        $cat = @(@{ model = "A"; mmproj = "C:\m\mmproj.gguf" })
+        $r = Find-MmprojSharedAcrossModels -catalog $cat
+        Assert-Equal 0 $r.Count
+    }
+    It "flags two distinct models that share the same mmproj path" {
+        # The historical Gemma 4 E2B vs E4B clash. Both .gguf land in the
+        # same folder, both reference 'mmproj-F16.gguf', and only one is
+        # physically present on disk after the second download overwrites
+        # the first.
+        $cat = @(
+            @{ model = "Gemma-4-E2B"; mmproj = "C:\g\mmproj.gguf" }
+            @{ model = "Gemma-4-E4B"; mmproj = "C:\g\mmproj.gguf" }
+        )
+        $r = Find-MmprojSharedAcrossModels -catalog $cat
+        Assert-Equal 1 $r.Count
+        Assert-Equal "C:\g\mmproj.gguf" $r[0].mmproj
+        Assert-Equal 2 $r[0].models.Count
+    }
+    It "does NOT flag two variants of the same model sharing an mmproj" {
+        # e.g. Qwen3.5-2B-UD-Q4_K_XL and Qwen3.5-2B-BF16 in the same folder.
+        # Both have model='Qwen3.5-2B' (variant differs but model name is
+        # the same), so the mmproj IS valid for both — same vision encoder.
+        # Flagging this would spam the user about a non-bug.
+        $cat = @(
+            @{ model = "Qwen3.5-2B"; variant = "UD-Q4_K_XL"; mmproj = "C:\q\mmproj.gguf" }
+            @{ model = "Qwen3.5-2B"; variant = "BF16";       mmproj = "C:\q\mmproj.gguf" }
+        )
+        $r = Find-MmprojSharedAcrossModels -catalog $cat
+        Assert-Equal 0 $r.Count
+    }
+    It "flags only the shared group in a mixed catalog" {
+        $cat = @(
+            @{ model = "Gemma-4-E2B"; mmproj = "C:\shared\mmproj.gguf" }
+            @{ model = "Gemma-4-E4B"; mmproj = "C:\shared\mmproj.gguf" }
+            @{ model = "Solo";        mmproj = "C:\solo\mmproj.gguf" }
+        )
+        $r = Find-MmprojSharedAcrossModels -catalog $cat
+        Assert-Equal 1 $r.Count
+        Assert-Equal "C:\shared\mmproj.gguf" $r[0].mmproj
+    }
+}
+
+Describe "Invoke-RotationCheck" {
+    # Each It manipulates two script vars: $script:KeepDownloads (matches the
+    # CLI-level -KeepDownloads switch) and $script:CALIBR_DOWNLOADS (so the
+    # manifest lookup hits a per-test temp file). Saved here, restored after.
+    $script:_origKeep   = $script:KeepDownloads
+    $script:_origDlPath = $script:CALIBR_DOWNLOADS
+
+    function _modelStatus {
+        param([int]$needed, [int]$ok, [int]$fail = 0, [int]$skip = 0, [string]$mmproj = "")
+        $done = $ok + $fail + $skip
+        $mp = if ($mmproj) { $mmproj } else { $null }
+        return @{
+            needed     = $needed
+            ok         = $ok
+            fail       = $fail
+            skip       = $skip
+            done       = $done
+            modelName  = "TestModel"
+            mmprojPath = $mp
+            rotated    = $false
+        }
+    }
+    function _item {
+        param([string]$path, [string]$mmproj = "")
+        return @{
+            model_path  = $path
+            mmproj_path = if ($mmproj) { $mmproj } else { $null }
+            model       = "TestModel"
+            label       = "test"
+        }
+    }
+    function _newTempGguf {
+        param([string]$base = "test")
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-rot-test-{0}-{1}.gguf" -f $base, ([guid]::NewGuid()))
+        Set-Content -LiteralPath $tmp -Value "binary" -NoNewline
+        return $tmp
+    }
+    function _useFreshManifest {
+        param([string[]]$tracked = @())
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-rot-manifest-{0}.json" -f ([guid]::NewGuid()))
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+        $script:CALIBR_DOWNLOADS = $tmp
+        foreach ($p in $tracked) {
+            Add-DownloadManifestEntry -SampleId "s" -Model "M" -ModelPath $p
+        }
+        return $tmp
+    }
+
+    It "is a no-op when the item's model_path is not in modelStatus" {
+        $script:KeepDownloads = $false
+        $tmp = _useFreshManifest @()
+        $item = _item "C:\not-tracked.gguf"
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus @{} -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 0 $r
+        Assert-Equal 0 $k
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "is a no-op when done < needed (more configs still to run)" {
+        $script:KeepDownloads = $false
+        $tmp = _useFreshManifest @()
+        $mp = "C:\partial.gguf"
+        $modelStatus = @{ $mp = (_modelStatus -needed 3 -ok 1) }
+        $item = _item $mp
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 0 $r
+        Assert-Equal 0 $k
+        Assert-False $modelStatus[$mp].rotated
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "is idempotent on a second call (rotated flag already set)" {
+        $script:KeepDownloads = $true   # quickest path to setting rotated=true without deleting a real file
+        $tmp = _useFreshManifest @()
+        $mp = "C:\idem.gguf"
+        $modelStatus = @{ $mp = (_modelStatus -needed 2 -ok 2) }
+        $item = _item $mp
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 1 $k
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 1 $k  "second call must not increment kept again"
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "keeps the file when -KeepDownloads is set, even with a clean run" {
+        $script:KeepDownloads = $true
+        $gguf = _newTempGguf "keep-flag"
+        $tmp = _useFreshManifest @($gguf)
+        $modelStatus = @{ $gguf = (_modelStatus -needed 1 -ok 1) }
+        $item = _item $gguf
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 0 $r
+        Assert-Equal 1 $k
+        Assert-True (Test-Path $gguf)
+        if (Test-Path $gguf) { Remove-Item $gguf -Force }
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "keeps the file when it is not in the manifest (user-owned)" {
+        $script:KeepDownloads = $false
+        $gguf = _newTempGguf "user-owned"
+        $tmp = _useFreshManifest @()   # nothing tracked
+        $modelStatus = @{ $gguf = (_modelStatus -needed 1 -ok 1) }
+        $item = _item $gguf
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 0 $r
+        Assert-Equal 1 $k
+        Assert-True (Test-Path $gguf)
+        if (Test-Path $gguf) { Remove-Item $gguf -Force }
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "keeps the file when at least one config failed" {
+        $script:KeepDownloads = $false
+        $gguf = _newTempGguf "had-failure"
+        $tmp = _useFreshManifest @($gguf)
+        $modelStatus = @{ $gguf = (_modelStatus -needed 3 -ok 2 -fail 1) }
+        $item = _item $gguf
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 0 $r
+        Assert-Equal 1 $k
+        Assert-True (Test-Path $gguf)  "file with failed configs must survive for re-run"
+        if (Test-Path $gguf) { Remove-Item $gguf -Force }
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "keeps the file when at least one config was skipped (abandoned model)" {
+        $script:KeepDownloads = $false
+        $gguf = _newTempGguf "had-skip"
+        $tmp = _useFreshManifest @($gguf)
+        $modelStatus = @{ $gguf = (_modelStatus -needed 3 -ok 1 -skip 2) }
+        $item = _item $gguf
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 0 $r
+        Assert-Equal 1 $k
+        Assert-True (Test-Path $gguf)
+        if (Test-Path $gguf) { Remove-Item $gguf -Force }
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "deletes the .gguf when everything is clean and the file is calibr-managed" {
+        $script:KeepDownloads = $false
+        $gguf = _newTempGguf "clean-delete"
+        $tmp = _useFreshManifest @($gguf)
+        $modelStatus = @{ $gguf = (_modelStatus -needed 1 -ok 1) }
+        $item = _item $gguf
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 1 $r
+        Assert-Equal 0 $k
+        Assert-False (Test-Path $gguf)  "clean rotation should have removed the .gguf"
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "deletes mmproj alongside .gguf when no other model in filtered references it" {
+        $script:KeepDownloads = $false
+        $gguf   = _newTempGguf "with-mmproj-gguf"
+        $mmproj = _newTempGguf "with-mmproj-mmproj"
+        $tmp = _useFreshManifest @($gguf)
+        $modelStatus = @{ $gguf = (_modelStatus -needed 1 -ok 1 -mmproj $mmproj) }
+        $item = _item $gguf $mmproj
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 1 $r
+        Assert-False (Test-Path $gguf)
+        Assert-False (Test-Path $mmproj)
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "preserves mmproj when another not-yet-rotated model in filtered shares it" {
+        $script:KeepDownloads = $false
+        $gguf    = _newTempGguf "shared-a"
+        $sibling = _newTempGguf "shared-b"
+        $mmproj  = _newTempGguf "shared-mmproj"
+        $tmp = _useFreshManifest @($gguf, $sibling)
+        $modelStatus = @{
+            $gguf    = (_modelStatus -needed 1 -ok 1 -mmproj $mmproj)
+            $sibling = @{ needed=2; ok=1; fail=0; skip=0; done=1; modelName="Sibling"; mmprojPath=$mmproj; rotated=$false }
+        }
+        $item        = _item $gguf    $mmproj
+        $siblingItem = _item $sibling $mmproj
+        $r = 0; $k = 0
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered @($item, $siblingItem) -rotatedRef ([ref]$r) -keptRef ([ref]$k)
+        Assert-Equal 1 $r
+        Assert-False (Test-Path $gguf)   "first model's .gguf should be deleted"
+        Assert-True  (Test-Path $mmproj) "shared mmproj must survive while sibling still needs it"
+        if (Test-Path $sibling) { Remove-Item $sibling -Force }
+        if (Test-Path $mmproj)  { Remove-Item $mmproj  -Force }
+        if (Test-Path $tmp)     { Remove-Item $tmp     -Force }
+    }
+
+    $script:KeepDownloads    = $script:_origKeep
+    $script:CALIBR_DOWNLOADS = $script:_origDlPath
+}
+
 Exit-WithResults

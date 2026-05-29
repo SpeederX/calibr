@@ -535,30 +535,43 @@ function Invoke-Discover {
     $catalog | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_CATALOG
     Write-Host ("Catalog: {0} models -> {1}" -f $catalog.Count, $CALIBR_CATALOG) -ForegroundColor Green
 
-    # Defensive ambiguity check: surface the case where a single mmproj file
-    # on disk is paired with multiple distinct text models. The historical
-    # symptom is Gemma 4 E2B and E4B both shipping mmproj-F16.gguf with
-    # different vision n_embd (1536 vs 2560); if they're downloaded into the
-    # same folder the second overwrites the first and the remaining model
-    # fails at load. We can't read GGUF metadata cheaply from PowerShell, so
-    # we warn here instead of letting bench discover it the hard way.
+    # Surface the case where a single mmproj file on disk is paired with
+    # multiple distinct text models (historical Gemma 4 E2B vs E4B clash,
+    # different vision n_embd but same filename). The detection logic itself
+    # lives in Find-MmprojSharedAcrossModels so it can be unit-tested without
+    # a real filesystem walk; this loop just renders the warnings.
+    foreach ($warn in (Find-MmprojSharedAcrossModels -catalog $catalog)) {
+        Write-Host ""
+        Write-Host ("WARNING: mmproj shared across {0} distinct models:" -f $warn.models.Count) -ForegroundColor Yellow
+        Write-Host ("  mmproj: {0}" -f $warn.mmproj) -ForegroundColor Yellow
+        Write-Host ("  models: {0}" -f ($warn.models -join ', ')) -ForegroundColor Yellow
+        Write-Host  "  If these models have different vision n_embd, bench will fail at load." -ForegroundColor Yellow
+        Write-Host  "  Workaround: move each variant into its own subfolder so the mmproj files do not collide." -ForegroundColor Yellow
+    }
+}
+
+function Find-MmprojSharedAcrossModels {
+    # Pure: groups catalog entries by their paired mmproj path; returns an
+    # array of @{mmproj; models} for every mmproj seen with more than one
+    # distinct `model` name. Returns @() when nothing is shared. Two variants
+    # of the same model (e.g. Qwen3.5-2B Q4_K_XL + BF16) that share an
+    # mmproj are NOT flagged because the `model` field is identical — they
+    # genuinely use the same projector.
+    param($catalog)
     $byMmproj = @{}
     foreach ($e in $catalog) {
-        if (-not $e.mmproj) { continue }
+        if (-not $e -or -not $e.mmproj) { continue }
         if (-not $byMmproj.ContainsKey($e.mmproj)) { $byMmproj[$e.mmproj] = @() }
         $byMmproj[$e.mmproj] += $e.model
     }
+    $warnings = @()
     foreach ($kv in $byMmproj.GetEnumerator()) {
         $distinctModels = @($kv.Value | Sort-Object -Unique)
         if ($distinctModels.Count -gt 1) {
-            Write-Host ""
-            Write-Host ("WARNING: mmproj shared across {0} distinct models:" -f $distinctModels.Count) -ForegroundColor Yellow
-            Write-Host ("  mmproj: {0}" -f $kv.Key) -ForegroundColor Yellow
-            Write-Host ("  models: {0}" -f ($distinctModels -join ', ')) -ForegroundColor Yellow
-            Write-Host  "  If these models have different vision n_embd, bench will fail at load." -ForegroundColor Yellow
-            Write-Host  "  Workaround: move each variant into its own subfolder so the mmproj files do not collide." -ForegroundColor Yellow
+            $warnings += [pscustomobject]@{ mmproj = $kv.Key; models = $distinctModels }
         }
     }
+    return ,$warnings
 }
 
 # ============================================================================
@@ -1014,6 +1027,27 @@ function Write-BenchStatusLine {
     Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
 }
 
+function Select-PlanForBench {
+    # Pure filter: applies the same -Model/-Tier/-Id rules Invoke-Bench uses,
+    # returns an array (possibly empty). The leading `$_ -and` is load-bearing:
+    # PowerShell's `$null | Where-Object` yields one $null item, and @() wraps
+    # it to a 1-element array, which would then crash the rotation context
+    # build with ContainsKey($null). The same pattern protects against any
+    # other malformed plan entry that managed to become $null mid-pipeline.
+    param(
+        $plan,
+        [string]$ModelFilter = "",
+        [string]$TierFilter = "",
+        [string]$IdFilter = ""
+    )
+    return ,@($plan | Where-Object {
+        $_ -and
+        (-not $ModelFilter -or $_.model -match $ModelFilter) -and
+        (-not $TierFilter  -or $_.tier  -eq $TierFilter) -and
+        (-not $IdFilter    -or $_.id    -like $IdFilter)
+    })
+}
+
 function Invoke-RotationCheck {
     # Called once per config-iteration in Invoke-Bench. If $item's model_path
     # has reached its expected config count, decides whether to rotate (delete
@@ -1120,18 +1154,7 @@ function Invoke-Bench {
         Write-Host "WARNING: $w" -ForegroundColor Yellow
     }
 
-    # @(...) ensures a single match still surfaces as a 1-element array; otherwise
-    # PowerShell unwraps to the bare hashtable and $filtered.Count returns the
-    # number of keys (8) instead of 1, which throws the [i/total] display off.
-    # The leading `$_ -and` filters out the phantom $null that an empty $plan
-    # produces when piped (PS treats `$null | Where-Object` as one $null item,
-    # which would then crash the rotation context with ContainsKey($null)).
-    $filtered = @($plan | Where-Object {
-        $_ -and
-        (-not $Model -or $_.model -match $Model) -and
-        (-not $Tier   -or $_.tier  -eq $Tier) -and
-        (-not $Id     -or $_.id    -like $Id)
-    })
+    $filtered = Select-PlanForBench -plan $plan -ModelFilter $Model -TierFilter $Tier -IdFilter $Id
     $planCount = if ($plan) { @($plan).Count } else { 0 }
     Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $planCount)
 
@@ -1453,23 +1476,22 @@ function Get-SampleList {
 # touched). Manifest entries are kept after the file is rotated off disk so a
 # re-download via `get-sample-models -SampleId` is one command.
 function Get-DownloadManifest {
-    # Returns the parsed manifest, or nothing (no value emitted) when the
-    # file is missing/empty/corrupt. Returning nothing rather than $null is
-    # important: @(Get-DownloadManifest) collapses a no-value result to @()
-    # (empty array) whereas @($null) yields @($null), a 1-element array
-    # containing $null which would look like a phantom manifest entry.
-    # Callers wrap with @() to normalize: when the file holds a single
-    # entry, ConvertFrom-Json unwraps the JSON array to a bare PSCustomObject
-    # and @() re-wraps. The comma-trick and Write-Output -NoEnumerate were
-    # both considered and rejected — they inject phantoms when piped.
+    # Emits each manifest entry as its own pipeline value (or no values if
+    # the file is missing/empty/corrupt). Enumerating here, instead of
+    # returning the parsed array as a single pipeline value, is what lets
+    # callers do `@(Get-DownloadManifest)` and get a flat array — otherwise
+    # the @() would wrap the entire parsed array as a single element, and
+    # downstream Where-Object/foreach would treat the whole manifest as
+    # one item. PS 5.1's ConvertFrom-Json returns the JSON array as one
+    # pipeline value, so we re-enumerate explicitly.
     if (-not (Test-Path $CALIBR_DOWNLOADS)) { return }
     $raw = Get-Content $CALIBR_DOWNLOADS -Raw -ErrorAction SilentlyContinue
     if (-not $raw) { return }
     try {
-        return $raw | ConvertFrom-Json
+        $parsed = $raw | ConvertFrom-Json
+        foreach ($entry in $parsed) { $entry }
     } catch {
         Write-Warning "downloads.json is corrupt; treating as empty. ($($_.Exception.Message))"
-        return
     }
 }
 
@@ -1484,10 +1506,11 @@ function Add-DownloadManifestEntry {
         [string]$MmprojPath = "",
         [long]$SizeBytes = 0
     )
-    # @(...) normalizes Get's possibly-$null / possibly-single-object return
-    # into an array. Where-Object on $null would otherwise pipe one $null
-    # item through and we'd serialize it as a phantom manifest entry.
-    $existing = @(@(Get-DownloadManifest) | Where-Object { $_ -and $_.model_path -ne $ModelPath })
+    # Get-DownloadManifest emits one entry per pipeline value; piping to
+    # Where-Object filters by path, @() collects into an array (empty if
+    # no entries match). $_ -and guards against phantom $null entries that
+    # an empty/corrupt manifest could otherwise let through.
+    $existing = @(Get-DownloadManifest | Where-Object { $_ -and $_.model_path -ne $ModelPath })
     $entry = [ordered]@{
         sample_id     = $SampleId
         model         = $Model
