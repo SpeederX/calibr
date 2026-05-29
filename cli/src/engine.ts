@@ -279,6 +279,17 @@ function injectConfigArg(args: string[]): string[] {
   return [verb, "-Config", CALIBR_LOCAL_CFG, ...rest];
 }
 
+// All engine invocations from the CLI are non-interactive: the CLI has no
+// way to forward keystrokes to a Read-Host prompt in the child PowerShell
+// (stdin isn't wired through Ink), so a prompt would hang forever. Any
+// confirmation the engine would have asked for is collected by the CLI
+// up front (see AllOptionsView's pre-flight gate). Idempotent so callers
+// that pre-set the flag (e.g. ENGINE_COMMANDS init) don't double it.
+function injectNonInteractive(args: string[]): string[] {
+  if (args.includes("-NonInteractive")) return args;
+  return [...args, "-NonInteractive"];
+}
+
 /**
  * Shell out to calibr.ps1 with the given engine arguments.
  * stdout/stderr are streamed to the caller via the child process.
@@ -288,7 +299,7 @@ export function runEngine(args: string[]): EngineRun {
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", CALIBR_PS1,
-    ...injectConfigArg(args),
+    ...injectNonInteractive(injectConfigArg(args)),
   ];
   const proc = spawn("powershell", psArgs, {
     cwd: ENGINE_ROOT,
