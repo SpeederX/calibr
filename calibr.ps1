@@ -512,7 +512,12 @@ function Invoke-Discover {
     $catalog = @()
     foreach ($base in $cfg.scan_paths) {
         if (-not (Test-Path $base)) { Write-Warning "scan path not found: $base"; continue }
-        Write-Host "Scanning $base"
+        $abs = (Resolve-Path -LiteralPath $base -ErrorAction SilentlyContinue).Path
+        $display = if ($abs -and $abs -ne $base) { "$base  ->  $abs" } else { $base }
+        Write-Host "Scanning $display"
+        if ($base -eq "." -or $base -eq ".\") {
+            Write-Host "  (relative path; resolves against the current working directory)" -ForegroundColor DarkYellow
+        }
         $ggufs = Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue
         foreach ($f in $ggufs) {
             $skip = $false
@@ -1118,12 +1123,26 @@ function Invoke-Bench {
     # @(...) ensures a single match still surfaces as a 1-element array; otherwise
     # PowerShell unwraps to the bare hashtable and $filtered.Count returns the
     # number of keys (8) instead of 1, which throws the [i/total] display off.
+    # The leading `$_ -and` filters out the phantom $null that an empty $plan
+    # produces when piped (PS treats `$null | Where-Object` as one $null item,
+    # which would then crash the rotation context with ContainsKey($null)).
     $filtered = @($plan | Where-Object {
+        $_ -and
         (-not $Model -or $_.model -match $Model) -and
         (-not $Tier   -or $_.tier  -eq $Tier) -and
         (-not $Id     -or $_.id    -like $Id)
     })
-    Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $plan.Count)
+    $planCount = if ($plan) { @($plan).Count } else { 0 }
+    Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $planCount)
+
+    if ($filtered.Count -eq 0) {
+        if ($planCount -eq 0) {
+            Write-Host "Plan is empty. Run 'calibr discover' (with .gguf files in scan_paths) then 'calibr plan' first." -ForegroundColor Yellow
+        } else {
+            Write-Host "No configs match the current filter (-Model / -Tier / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
+        }
+        return
+    }
 
     if ($DryRun) {
         $filtered | ForEach-Object { Write-Host ("  [{0}] {1}" -f $_.tier, $_.label) }

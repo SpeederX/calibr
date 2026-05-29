@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { existsSync, readFileSync } from "node:fs";
-import { CALIBR_CATALOG } from "./engine.js";
+import { CALIBR_CATALOG, loadConfig } from "./engine.js";
 
 interface Props {
   onRun: (args: string[], label: string) => void;
@@ -37,6 +37,15 @@ function readCatalogModels(): string[] {
 const TIERS: Array<"" | "A" | "B" | "C"> = ["", "A", "B", "C"];
 const RUNS_VALUES: number[] = [0, 1, 3, 5];
 
+// Short summary of what each tier means; mirrors the engine's tier
+// classification in calibr.ps1 Get-Tier and Invoke-Plan.
+const TIER_DESCRIPTIONS: Record<string, string> = {
+  "":  "all tiers",
+  "A": "A — fits fully on GPU; sweep (ctx_size, KV quant) pairs",
+  "B": "B — MoE; sweep --n-cpu-moe values",
+  "C": "C — partial offload required; sweep --gpu-layers values",
+};
+
 function next<T>(values: T[], current: T): T {
   const i = values.indexOf(current);
   return values[(i + 1) % values.length];
@@ -49,6 +58,13 @@ function fmt(s: string | null, fallback: string): string {
 export function BenchOptionsView({ onRun, onCancel }: Props) {
   const models = useMemo(readCatalogModels, []);
   const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
+  // Read the engine's default runs-per-config so the form shows the actual
+  // value (e.g. 3) instead of just saying 'default (config)'.
+  const configRunsDefault = useMemo<number>(() => {
+    const cfg = loadConfig();
+    const v = cfg?.bench?.runs_per_config;
+    return typeof v === "number" && v > 0 ? v : 3;
+  }, []);
   const [model, setModel] = useState<string | null>(null);
   const [tier, setTier] = useState<"" | "A" | "B" | "C">("");
   const [runs, setRuns] = useState<number>(0);
@@ -56,10 +72,14 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
 
+  const runsLabel = runs === 0
+    ? `default (${configRunsDefault} from config)`
+    : String(runs);
+
   const rows = [
     { kind: "model" as const,    label: `model:   ${fmt(model, "all (no filter)")}` },
-    { kind: "tier" as const,     label: `tier:    ${fmt(tier, "all")}` },
-    { kind: "runs" as const,     label: `runs:    ${runs === 0 ? "default (config)" : String(runs)}` },
+    { kind: "tier" as const,     label: `tier:    ${TIER_DESCRIPTIONS[tier] ?? tier}` },
+    { kind: "runs" as const,     label: `runs:    ${runsLabel}` },
     { kind: "force" as const,    label: `force:   ${force ? "yes (re-run completed configs)" : "no (skip cached)"}` },
     { kind: "rotate" as const,   label: `rotate:  ${keepDownloads ? "no (keep downloaded files)" : "yes (delete each model after its configs succeed)"}` },
     { kind: "run" as const,      label: "> start bench" },
