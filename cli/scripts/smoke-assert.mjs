@@ -37,6 +37,23 @@ check(
 );
 check("config.default.json exists", existsSync(mod.CALIBR_DEFAULT_CFG), mod.CALIBR_DEFAULT_CFG);
 
+// samples.json drives the pre-bench download-footprint gate; bundling it
+// is part of the engine contract.
+const samples = mod.readSamples();
+check(
+  "samples.json is bundled and parseable",
+  Array.isArray(samples) && samples.length > 0,
+  `got ${Array.isArray(samples) ? samples.length + " entries" : typeof samples}`,
+);
+if (samples.length > 0) {
+  const fp = mod.downloadFootprintBytes(samples);
+  check(
+    "downloadFootprintBytes returns sensible numbers",
+    fp.totalBytes > 0 && fp.maxFileBytes > 0 && fp.maxFileBytes <= fp.totalBytes,
+    `total=${fp.totalBytes} max=${fp.maxFileBytes}`,
+  );
+}
+
 const expectedDataRoot = (process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE || "");
 check(
   "data dir resolves under the user's local app data",

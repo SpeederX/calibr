@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync } from "node:fs";
+import { dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -335,3 +335,95 @@ export const ENGINE_COMMANDS: EngineCommand[] = [
   { id: "report",   label: "report",   description: "build HTML report + .bat launchers",   args: ["report"] },
   { id: "all",      label: "all",      description: "discover -> plan -> bench -> report",  args: ["all"] },
 ];
+
+// ---------------------------------------------------------------------------
+// Samples catalog (curated GGUF download list shipped with the engine)
+// ---------------------------------------------------------------------------
+export interface Sample {
+  id: string;
+  model: string;
+  series?: string;
+  variant?: string;
+  tier_hint?: "A" | "B" | "C" | string;
+  hf_repo: string;
+  hf_file: string;
+  target_dir: string;
+  mmproj_file?: string;
+  size_bytes: number;
+  notes?: string;
+}
+
+export function readSamples(): Sample[] {
+  const path = join(ENGINE_ROOT, "samples.json");
+  const parsed = readJsonSafe<{ samples?: Sample[] }>(path, {});
+  return Array.isArray(parsed.samples) ? parsed.samples : [];
+}
+
+export function filterSamples(samples: Sample[], opts: { sampleId?: string; model?: string }): Sample[] {
+  return samples.filter(s => {
+    if (opts.sampleId) {
+      // Mirror PowerShell -like (case-insensitive glob).
+      const pattern = "^" + opts.sampleId.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+      if (!new RegExp(pattern, "i").test(s.id)) return false;
+    }
+    if (opts.model) {
+      // Mirror PowerShell -match (case-insensitive regex).
+      try { if (!new RegExp(opts.model, "i").test(s.model)) return false; }
+      catch { return false; }
+    }
+    return true;
+  });
+}
+
+export function downloadFootprintBytes(samples: Sample[]): { totalBytes: number; maxFileBytes: number } {
+  let total = 0;
+  let max = 0;
+  for (const s of samples) {
+    const b = Number(s.size_bytes) || 0;
+    total += b;
+    if (b > max) max = b;
+  }
+  return { totalBytes: total, maxFileBytes: max };
+}
+
+// ---------------------------------------------------------------------------
+// Disk-space probing for the download destination
+// ---------------------------------------------------------------------------
+export function downloadDestination(cfg?: Config): string {
+  const c = cfg ?? loadConfig();
+  if (Array.isArray(c.scan_paths) && c.scan_paths.length > 0) return c.scan_paths[0]!;
+  return join(ENGINE_ROOT, "downloaded-models");
+}
+
+// Walks up the path until it finds a directory that exists, then statfs's
+// that. statfsSync errors out on a non-existent path, but the destination
+// folder may legitimately not exist yet (e.g. first-time download into a
+// scan_paths[0] that the user just configured).
+export function freeBytesOn(path: string): number {
+  let probe = path;
+  while (probe && !existsSync(probe)) {
+    const parent = dirname(probe);
+    if (parent === probe) break;
+    probe = parent;
+  }
+  if (!probe || !existsSync(probe)) {
+    // Fall back to the drive root so we at least report something.
+    probe = parsePath(path).root || "C:\\";
+    if (!existsSync(probe)) return -1;
+  }
+  try {
+    const stat = statfsSync(probe);
+    // bavail = blocks free for non-superuser. Multiply by block size for bytes.
+    return Number(stat.bavail) * Number(stat.bsize);
+  } catch {
+    return -1;
+  }
+}
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 0) return "?";
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024)       return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}

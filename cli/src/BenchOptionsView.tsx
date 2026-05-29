@@ -53,35 +53,40 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   const [tier, setTier] = useState<"" | "A" | "B" | "C">("");
   const [runs, setRuns] = useState<number>(0);
   const [force, setForce] = useState<boolean>(false);
+  const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
 
   const rows = [
-    { kind: "model" as const, label: `model:  ${fmt(model, "all (no filter)")}` },
-    { kind: "tier" as const,  label: `tier:   ${fmt(tier, "all")}` },
-    { kind: "runs" as const,  label: `runs:   ${runs === 0 ? "default (config)" : String(runs)}` },
-    { kind: "force" as const, label: `force:  ${force ? "yes (re-run completed configs)" : "no (skip cached)"}` },
-    { kind: "run" as const,   label: "> start bench" },
-    { kind: "cancel" as const, label: "  cancel" },
+    { kind: "model" as const,    label: `model:   ${fmt(model, "all (no filter)")}` },
+    { kind: "tier" as const,     label: `tier:    ${fmt(tier, "all")}` },
+    { kind: "runs" as const,     label: `runs:    ${runs === 0 ? "default (config)" : String(runs)}` },
+    { kind: "force" as const,    label: `force:   ${force ? "yes (re-run completed configs)" : "no (skip cached)"}` },
+    { kind: "rotate" as const,   label: `rotate:  ${keepDownloads ? "no (keep downloaded files)" : "yes (delete each model after its configs succeed)"}` },
+    { kind: "run" as const,      label: "> start bench" },
+    { kind: "cancel" as const,   label: "  cancel" },
   ];
 
   const activate = (i: number) => {
     const row = rows[i];
     switch (row.kind) {
-      case "model": setModel(next(modelChoices, model)); break;
-      case "tier":  setTier(next(TIERS, tier)); break;
-      case "runs":  setRuns(next(RUNS_VALUES, runs)); break;
-      case "force": setForce(!force); break;
+      case "model":  setModel(next(modelChoices, model)); break;
+      case "tier":   setTier(next(TIERS, tier)); break;
+      case "runs":   setRuns(next(RUNS_VALUES, runs)); break;
+      case "force":  setForce(!force); break;
+      case "rotate": setKeepDownloads(!keepDownloads); break;
       case "run": {
         const args: string[] = ["bench"];
         if (model) args.push("-Model", model);
         if (tier) args.push("-Tier", tier);
         if (runs > 0) args.push("-Runs", String(runs));
         if (force) args.push("-Force");
+        if (keepDownloads) args.push("-KeepDownloads");
         const parts: string[] = [];
         if (model) parts.push(`-Model "${model}"`);
         if (tier) parts.push(`-Tier ${tier}`);
         if (runs > 0) parts.push(`-Runs ${runs}`);
         if (force) parts.push("-Force");
+        if (keepDownloads) parts.push("-KeepDownloads");
         const label = parts.length ? `bench ${parts.join(" ")}` : "bench";
         onRun(args, label);
         break;

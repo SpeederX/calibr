@@ -15,15 +15,34 @@ const MAX_LINES = 200;
 // Source: calibr.ps1 Invoke-Bench inner loop.
 const PROGRESS_RE = /^\s*\[(\d+)\/(\d+)\]\s+(.+?)\s*$/;
 
+// Rotation events emitted by Invoke-RotationCheck in the engine.
+// Examples:
+//   [rotate] deleted C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf
+//   [rotate] deleted C:\models\Q\mmproj-F16.gguf (mmproj)
+//   [rotate] kept C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf (-KeepDownloads)
+//   [rotate] kept C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf (1 failed)
+//   [rotate] FAILED to delete C:\models\...: <message>
+const ROTATE_DELETE_RE = /^\s*\[rotate\]\s+deleted\s+(.+?)\s*$/;
+const ROTATE_KEEP_RE   = /^\s*\[rotate\]\s+kept\s+(.+?)\s*$/;
+const ROTATE_FAIL_RE   = /^\s*\[rotate\]\s+FAILED\s+(.+?)\s*$/;
+
 interface Progress {
   current: number;
   total: number;
   label: string;
 }
 
+interface RotationStats {
+  deleted: number;
+  kept: number;
+  failed: number;
+  lastEvent: string | null;
+}
+
 export function RunView({ args, label, onExit }: Props) {
   const [lines, setLines] = useState<string[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [rotation, setRotation] = useState<RotationStats>({ deleted: 0, kept: 0, failed: 0, lastEvent: null });
   const [exitCode, setExitCode] = useState<number | null>(null);
   const procRef = useRef<ReturnType<typeof runEngine> | null>(null);
   const isBench = useMemo(() => args[0] === "bench" || args[0] === "all", [args]);
@@ -49,6 +68,22 @@ export function RunView({ args, label, onExit }: Props) {
           setProgress({ current: Number(m[1]), total: Number(m[2]), label: m[3] });
           break;
         }
+      }
+      // Accumulate rotation events from every incoming line.
+      let dDelta = 0, kDelta = 0, fDelta = 0;
+      let last: string | null = null;
+      for (const line of incoming) {
+        if (ROTATE_DELETE_RE.test(line))     { dDelta++; last = line.trim(); }
+        else if (ROTATE_KEEP_RE.test(line))  { kDelta++; last = line.trim(); }
+        else if (ROTATE_FAIL_RE.test(line))  { fDelta++; last = line.trim(); }
+      }
+      if (dDelta || kDelta || fDelta) {
+        setRotation(prev => ({
+          deleted: prev.deleted + dDelta,
+          kept: prev.kept + kDelta,
+          failed: prev.failed + fDelta,
+          lastEvent: last ?? prev.lastEvent,
+        }));
       }
     };
 
@@ -90,6 +125,14 @@ export function RunView({ args, label, onExit }: Props) {
           <Text color="cyan">
             [{progress!.current}/{progress!.total}] {pct}% — {progress!.label}
           </Text>
+        </Box>
+      )}
+      {isBench && (rotation.deleted > 0 || rotation.kept > 0 || rotation.failed > 0) && (
+        <Box marginTop={1} flexDirection="column">
+          <Text color={rotation.failed > 0 ? "yellow" : "gray"}>
+            rotation: {rotation.deleted} deleted · {rotation.kept} kept{rotation.failed > 0 ? ` · ${rotation.failed} failed` : ""}
+          </Text>
+          {rotation.lastEvent && <Text dimColor>last: {rotation.lastEvent}</Text>}
         </Box>
       )}
       <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
