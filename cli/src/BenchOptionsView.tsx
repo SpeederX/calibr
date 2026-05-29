@@ -55,6 +55,10 @@ function fmt(s: string | null, fallback: string): string {
   return s === null || s === "" ? fallback : s;
 }
 
+type Phase =
+  | { kind: "form" }
+  | { kind: "cachePrompt"; pendingArgs: string[]; pendingLabel: string; cursor: number };
+
 export function BenchOptionsView({ onRun, onCancel }: Props) {
   const models = useMemo(readCatalogModels, []);
   const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
@@ -69,29 +73,36 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   const [model, setModel] = useState<string | null>(null);
   const [tier, setTier] = useState<"" | "A" | "B" | "C">("");
   const [runs, setRuns] = useState<number>(0);
-  const [force, setForce] = useState<boolean>(false);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
+  const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
   const runsLabel = runs === 0
     ? `default (${configRunsDefault} from config)`
     : String(runs);
 
-  const forceLabel = force
-    ? "yes (re-run completed configs)"
-    : (cachedCount > 0
-        ? `no (will skip ${cachedCount} cached result${cachedCount === 1 ? "" : "s"})`
-        : "no (skip cached)");
-
   const rows = [
     { kind: "model" as const,    label: `model:   ${fmt(model, "all (no filter)")}` },
     { kind: "tier" as const,     label: `tier:    ${TIER_DESCRIPTIONS[tier] ?? tier}` },
     { kind: "runs" as const,     label: `runs:    ${runsLabel}` },
-    { kind: "force" as const,    label: `force:   ${forceLabel}` },
     { kind: "rotate" as const,   label: `rotate:  ${keepDownloads ? "no (keep downloaded files)" : "yes (delete each model after its configs succeed)"}` },
     { kind: "run" as const,      label: "> start bench" },
     { kind: "cancel" as const,   label: "  cancel" },
   ];
+
+  // Build the args for the engine. The cache choice (use cache vs re-run all)
+  // is made AFTER form submit, via the cachePrompt phase, and decides whether
+  // we tack on -Force or not.
+  const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
+    const args: string[] = ["bench"];
+    const parts: string[] = [];
+    if (model) { args.push("-Model", model); parts.push(`-Model "${model}"`); }
+    if (tier) { args.push("-Tier", tier); parts.push(`-Tier ${tier}`); }
+    if (runs > 0) { args.push("-Runs", String(runs)); parts.push(`-Runs ${runs}`); }
+    if (rerunAll) { args.push("-Force"); parts.push("-Force"); }
+    if (keepDownloads) { args.push("-KeepDownloads"); parts.push("-KeepDownloads"); }
+    return { args, label: parts.length ? `bench ${parts.join(" ")}` : "bench" };
+  };
 
   const activate = (i: number) => {
     const row = rows[i];
@@ -99,23 +110,18 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
       case "model":  setModel(next(modelChoices, model)); break;
       case "tier":   setTier(next(TIERS, tier)); break;
       case "runs":   setRuns(next(RUNS_VALUES, runs)); break;
-      case "force":  setForce(!force); break;
       case "rotate": setKeepDownloads(!keepDownloads); break;
       case "run": {
-        const args: string[] = ["bench"];
-        if (model) args.push("-Model", model);
-        if (tier) args.push("-Tier", tier);
-        if (runs > 0) args.push("-Runs", String(runs));
-        if (force) args.push("-Force");
-        if (keepDownloads) args.push("-KeepDownloads");
-        const parts: string[] = [];
-        if (model) parts.push(`-Model "${model}"`);
-        if (tier) parts.push(`-Tier ${tier}`);
-        if (runs > 0) parts.push(`-Runs ${runs}`);
-        if (force) parts.push("-Force");
-        if (keepDownloads) parts.push("-KeepDownloads");
-        const label = parts.length ? `bench ${parts.join(" ")}` : "bench";
-        onRun(args, label);
+        // If there are no cached results, launch immediately with the
+        // 'use cache' shape (no -Force). Otherwise route through the
+        // cache prompt so the user makes the choice explicitly.
+        if (cachedCount > 0) {
+          const built = buildArgs(false);
+          setPhase({ kind: "cachePrompt", pendingArgs: built.args, pendingLabel: built.label, cursor: 0 });
+        } else {
+          const { args, label } = buildArgs(false);
+          onRun(args, label);
+        }
         break;
       }
       case "cancel": onCancel(); break;
@@ -123,11 +129,54 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   };
 
   useInput((input, key) => {
+    if (phase.kind === "cachePrompt") {
+      const choices: Array<"use" | "rerun" | "cancel"> = ["use", "rerun", "cancel"];
+      if (key.upArrow)        { setPhase({ ...phase, cursor: Math.max(0, phase.cursor - 1) }); return; }
+      if (key.downArrow)      { setPhase({ ...phase, cursor: Math.min(choices.length - 1, phase.cursor + 1) }); return; }
+      if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
+      if (key.return || input === " ") {
+        const choice = choices[phase.cursor];
+        if (choice === "cancel")     { setPhase({ kind: "form" }); return; }
+        if (choice === "use")        { onRun(phase.pendingArgs, phase.pendingLabel); return; }
+        if (choice === "rerun")      { const r = buildArgs(true); onRun(r.args, r.label); return; }
+      }
+      return;
+    }
     if (key.upArrow || input === "k") setCursor(c => Math.max(0, c - 1));
     else if (key.downArrow || input === "j") setCursor(c => Math.min(rows.length - 1, c + 1));
     else if (key.return || input === " ") activate(cursor);
     else if (key.escape || input === "q") onCancel();
   });
+
+  if (phase.kind === "cachePrompt") {
+    const promptRows = [
+      { label: `use cache (skip ${cachedCount} cached result${cachedCount === 1 ? "" : "s"}, only bench new configs)` },
+      { label: `re-run all (force fresh runs for everything; overrides the cache)` },
+      { label: `cancel (back to the form)` },
+    ];
+    return (
+      <Box flexDirection="column">
+        <Text bold color="yellow">cache found</Text>
+        <Box marginTop={1}>
+          <Text>
+            {cachedCount} result file{cachedCount === 1 ? "" : "s"} already in <Text color="cyan">data\results\</Text>.
+            Configs that match will be skipped unless you re-run all.
+          </Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          {promptRows.map((row, i) => {
+            const selected = i === phase.cursor;
+            return (
+              <Text key={i} color={selected ? "cyan" : undefined} inverse={selected}>
+                {selected ? "> " : "  "}{row.label}
+              </Text>
+            );
+          })}
+        </Box>
+        <Box marginTop={1}><Text dimColor>↑/↓ move · enter to choose · q/esc back to form</Text></Box>
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column">

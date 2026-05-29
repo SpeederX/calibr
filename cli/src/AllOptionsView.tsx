@@ -16,15 +16,16 @@ interface Props {
   onCancel: () => void;
 }
 
-// Two phases in this screen:
-//   form     - user toggles options for `calibr all`
-//   gate     - shown only when -DownloadSamples is on; surfaces the
-//              max-file-size warning and free-space check before launching.
-//              User must explicitly confirm. If free space is short,
-//              the only option is "back" — no override.
+// Three phases:
+//   form        - user toggles options for `calibr all`
+//   gate        - shown only when -DownloadSamples is on; pre-flight
+//                 disk-space check the user must accept
+//   cachePrompt - shown only when result JSONs exist in data/results/;
+//                 user picks 'use cache' / 're-run all' / 'cancel'
 type Phase =
   | { kind: "form" }
-  | { kind: "gate"; required: number; available: number; sampleCount: number; sufficient: boolean };
+  | { kind: "gate"; required: number; available: number; sampleCount: number; sufficient: boolean }
+  | { kind: "cachePrompt"; cursor: number };
 
 export function AllOptionsView({ onRun, onCancel }: Props) {
   // 'all' is the typical "I want everything" path; defaulting samples on
@@ -33,7 +34,6 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // in one keystroke.
   const [downloadSamples, setDownloadSamples] = useState<boolean>(true);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
-  const [force, setForce] = useState<boolean>(false);
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
@@ -43,30 +43,36 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const destination = useMemo(() => downloadDestination(cfg), [cfg]);
   const cachedCount = useMemo(cachedResultsCount, []);
 
-  const forceLabel = force
-    ? "yes (re-run completed configs)"
-    : (cachedCount > 0
-        ? `no (will skip ${cachedCount} cached result${cachedCount === 1 ? "" : "s"})`
-        : "no (skip cached)");
-
   const rows = [
     { kind: "download" as const, label: `samples:  ${downloadSamples ? "download curated set first (-DownloadSamples)" : "off (use catalog as-is)"}` },
     { kind: "rotate"   as const, label: `rotate:   ${keepDownloads ? "no (keep downloaded files after bench)" : "yes (default — delete each model after success)"}` },
-    { kind: "force"    as const, label: `force:    ${forceLabel}` },
     { kind: "prefer"   as const, label: `picker:   ${preferSpeed ? "speed (ignore WDDM safety)" : "safety (default — non-paging wins ties)"}` },
     { kind: "run"      as const, label: "> start all" },
     { kind: "cancel"   as const, label: "  cancel" },
   ];
 
-  const buildArgs = () => {
+  // Build args. rerunAll toggles -Force; chosen after the cache prompt
+  // (or unconditionally false if the cache is empty and the prompt is skipped).
+  const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
     const args: string[] = ["all"];
     const parts: string[] = [];
     if (downloadSamples) { args.push("-DownloadSamples"); parts.push("-DownloadSamples"); }
     if (keepDownloads)   { args.push("-KeepDownloads");   parts.push("-KeepDownloads"); }
-    if (force)           { args.push("-Force");           parts.push("-Force"); }
+    if (rerunAll)        { args.push("-Force");           parts.push("-Force"); }
     if (preferSpeed)     { args.push("-PreferSpeed");     parts.push("-PreferSpeed"); }
-    const label = parts.length ? `all ${parts.join(" ")}` : "all";
-    return { args, label };
+    return { args, label: parts.length ? `all ${parts.join(" ")}` : "all" };
+  };
+
+  // Decide which phase comes next after the user clears the current step.
+  // Order: disk gate (if downloading) → cache prompt (if cache exists) →
+  // launch.
+  const advanceFromGate = () => {
+    if (cachedCount > 0) {
+      setPhase({ kind: "cachePrompt", cursor: 0 });
+    } else {
+      const { args, label } = buildArgs(false);
+      onRun(args, label);
+    }
   };
 
   const runGate = () => {
@@ -88,18 +94,14 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     switch (row.kind) {
       case "download": setDownloadSamples(!downloadSamples); break;
       case "rotate":   setKeepDownloads(!keepDownloads); break;
-      case "force":    setForce(!force); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
       case "run": {
         if (downloadSamples) {
-          // Skip the gate when the user asked to keep everything anyway
-          // (rotation off + downloads kept means peak disk is the full set,
-          // not one model — different calculation entirely; for now we still
-          // show the per-model warning since the act of starting downloads
-          // still requires at least one file's worth of space).
           runGate();
+        } else if (cachedCount > 0) {
+          setPhase({ kind: "cachePrompt", cursor: 0 });
         } else {
-          const { args, label } = buildArgs();
+          const { args, label } = buildArgs(false);
           onRun(args, label);
         }
         break;
@@ -115,8 +117,20 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         return;
       }
       if (phase.sufficient && (key.return || input === "y" || input === "Y" || input === " ")) {
-        const { args, label } = buildArgs();
-        onRun(args, label);
+        advanceFromGate();
+      }
+      return;
+    }
+    if (phase.kind === "cachePrompt") {
+      const choices: Array<"use" | "rerun" | "cancel"> = ["use", "rerun", "cancel"];
+      if (key.upArrow)   { setPhase({ ...phase, cursor: Math.max(0, phase.cursor - 1) }); return; }
+      if (key.downArrow) { setPhase({ ...phase, cursor: Math.min(choices.length - 1, phase.cursor + 1) }); return; }
+      if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
+      if (key.return || input === " ") {
+        const choice = choices[phase.cursor];
+        if (choice === "cancel") { setPhase({ kind: "form" }); return; }
+        const r = buildArgs(choice === "rerun");
+        onRun(r.args, r.label);
       }
       return;
     }
@@ -155,6 +169,36 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
             {sufficient ? "y/enter to proceed · n/esc to back out" : "esc/q to go back"}
           </Text>
         </Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "cachePrompt") {
+    const promptRows = [
+      { label: `use cache (skip ${cachedCount} cached result${cachedCount === 1 ? "" : "s"}, only bench new configs)` },
+      { label: `re-run all (force fresh runs for everything; overrides the cache)` },
+      { label: `cancel (back to the form)` },
+    ];
+    return (
+      <Box flexDirection="column">
+        <Text bold color="yellow">cache found</Text>
+        <Box marginTop={1}>
+          <Text>
+            {cachedCount} result file{cachedCount === 1 ? "" : "s"} already in <Text color="cyan">data\results\</Text>.
+            Configs that match will be skipped unless you re-run all.
+          </Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          {promptRows.map((row, i) => {
+            const selected = i === phase.cursor;
+            return (
+              <Text key={i} color={selected ? "cyan" : undefined} inverse={selected}>
+                {selected ? "> " : "  "}{row.label}
+              </Text>
+            );
+          })}
+        </Box>
+        <Box marginTop={1}><Text dimColor>↑/↓ move · enter to choose · q/esc back to form</Text></Box>
       </Box>
     );
   }
