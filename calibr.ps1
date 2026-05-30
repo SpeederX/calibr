@@ -79,7 +79,16 @@ param(
     # gathering measurements. The top-level result records the median over the
     # N runs for varying metrics; raw per-run values live in a `runs` array.
     # 0 means "use bench.runs_per_config from config" (default 3).
-    [int]$Runs = 0
+    [int]$Runs = 0,
+
+    # Used by bench (and `all`): opt out of post-bench rotation. By default,
+    # when a model's .gguf was downloaded by calibr (recorded in the download
+    # manifest at data/downloads.json) and every config for that model
+    # finished successfully, the .gguf and its auto-paired mmproj are deleted
+    # to keep peak working-set bounded to one model. -KeepDownloads disables
+    # the cleanup so files survive the bench. User-owned files (those not in
+    # the manifest) are never touched regardless of this flag.
+    [switch]$KeepDownloads
 )
 
 $ErrorActionPreference = "Stop"
@@ -97,6 +106,7 @@ $script:CALIBR_RESULTS_DIR = Join-Path $CALIBR_DATA_DIR "results"
 $script:CALIBR_LOGS_DIR    = Join-Path $CALIBR_DATA_DIR "logs"
 $script:CALIBR_BATS_DIR    = Join-Path $CALIBR_DATA_DIR "bats"
 $script:CALIBR_REPORT      = Join-Path $CALIBR_DATA_DIR "report.html"
+$script:CALIBR_DOWNLOADS   = Join-Path $CALIBR_DATA_DIR "downloads.json"
 
 foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
@@ -502,7 +512,12 @@ function Invoke-Discover {
     $catalog = @()
     foreach ($base in $cfg.scan_paths) {
         if (-not (Test-Path $base)) { Write-Warning "scan path not found: $base"; continue }
-        Write-Host "Scanning $base"
+        $abs = (Resolve-Path -LiteralPath $base -ErrorAction SilentlyContinue).Path
+        $display = if ($abs -and $abs -ne $base) { "$base  ->  $abs" } else { $base }
+        Write-Host "Scanning $display"
+        if ($base -eq "." -or $base -eq ".\") {
+            Write-Host "  (relative path; resolves against the current working directory)" -ForegroundColor DarkYellow
+        }
         $ggufs = Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue
         foreach ($f in $ggufs) {
             $skip = $false
@@ -519,6 +534,44 @@ function Invoke-Discover {
 
     $catalog | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_CATALOG
     Write-Host ("Catalog: {0} models -> {1}" -f $catalog.Count, $CALIBR_CATALOG) -ForegroundColor Green
+
+    # Surface the case where a single mmproj file on disk is paired with
+    # multiple distinct text models (historical Gemma 4 E2B vs E4B clash,
+    # different vision n_embd but same filename). The detection logic itself
+    # lives in Find-MmprojSharedAcrossModels so it can be unit-tested without
+    # a real filesystem walk; this loop just renders the warnings.
+    foreach ($warn in (Find-MmprojSharedAcrossModels -catalog $catalog)) {
+        Write-Host ""
+        Write-Host ("WARNING: mmproj shared across {0} distinct models:" -f $warn.models.Count) -ForegroundColor Yellow
+        Write-Host ("  mmproj: {0}" -f $warn.mmproj) -ForegroundColor Yellow
+        Write-Host ("  models: {0}" -f ($warn.models -join ', ')) -ForegroundColor Yellow
+        Write-Host  "  If these models have different vision n_embd, bench will fail at load." -ForegroundColor Yellow
+        Write-Host  "  Workaround: move each variant into its own subfolder so the mmproj files do not collide." -ForegroundColor Yellow
+    }
+}
+
+function Find-MmprojSharedAcrossModels {
+    # Pure: groups catalog entries by their paired mmproj path; returns an
+    # array of @{mmproj; models} for every mmproj seen with more than one
+    # distinct `model` name. Returns @() when nothing is shared. Two variants
+    # of the same model (e.g. Qwen3.5-2B Q4_K_XL + BF16) that share an
+    # mmproj are NOT flagged because the `model` field is identical — they
+    # genuinely use the same projector.
+    param($catalog)
+    $byMmproj = @{}
+    foreach ($e in $catalog) {
+        if (-not $e -or -not $e.mmproj) { continue }
+        if (-not $byMmproj.ContainsKey($e.mmproj)) { $byMmproj[$e.mmproj] = @() }
+        $byMmproj[$e.mmproj] += $e.model
+    }
+    $warnings = @()
+    foreach ($kv in $byMmproj.GetEnumerator()) {
+        $distinctModels = @($kv.Value | Sort-Object -Unique)
+        if ($distinctModels.Count -gt 1) {
+            $warnings += [pscustomobject]@{ mmproj = $kv.Key; models = $distinctModels }
+        }
+    }
+    return ,$warnings
 }
 
 # ============================================================================
@@ -552,6 +605,38 @@ function New-PlanItem {
     }
 }
 
+function Get-SampleMaxContextMap {
+    # Builds a hashtable {hf_file.ToLower() -> max_context (int)} from
+    # samples.json. Used by Invoke-Plan to skip Tier A candidates above
+    # the model's officially-supported ctx. User-owned models (not in
+    # samples.json by basename) fall through to the global max_context_cap
+    # only — a per-model cap for those would require reading GGUF metadata,
+    # which is a separate (larger) piece of work.
+    $samples = Get-SampleList
+    $map = @{}
+    foreach ($s in $samples) {
+        if ($null -ne $s.max_context -and $s.hf_file) {
+            $map[$s.hf_file.ToLower()] = [int]$s.max_context
+        }
+    }
+    return $map
+}
+
+function Test-CtxAllowedForModel {
+    # Pure predicate: returns $true iff $ctx is allowed by both caps.
+    # 0 disables either cap (matches Invoke-Plan's existing convention
+    # for max_context_cap). Both caps are upper bounds; <=  passes,
+    # > fails.
+    param(
+        [Parameter(Mandatory)][int]$Ctx,
+        [int]$GlobalCap = 0,
+        [int]$PerModelCap = 0
+    )
+    if ($GlobalCap   -gt 0 -and $Ctx -gt $GlobalCap)   { return $false }
+    if ($PerModelCap -gt 0 -and $Ctx -gt $PerModelCap) { return $false }
+    return $true
+}
+
 function Invoke-Plan {
     $cfg = Get-Config
     Write-Host "=== plan ===" -ForegroundColor Cyan
@@ -565,6 +650,9 @@ function Invoke-Plan {
     }
     $base = $cfg.base_args + $threadsArg
 
+    $globalCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
+    $perModelCaps = Get-SampleMaxContextMap
+
     $plan = @()
     $idx = 1
     foreach ($m in $catalog) {
@@ -572,11 +660,28 @@ function Invoke-Plan {
         $tier = Get-Tier -meta $m -cfg $cfg
         if ($Tier -and $tier -ne $Tier) { continue }
 
+        # Per-model ctx cap if the .gguf basename matches a curated sample.
+        # User-owned files won't match → $perModelCap stays 0 → only the
+        # global cap applies.
+        $perModelCap = 0
+        $bname = [System.IO.Path]::GetFileName($m.path)
+        if ($bname -and $perModelCaps.ContainsKey($bname.ToLower())) {
+            $perModelCap = $perModelCaps[$bname.ToLower()]
+        }
+
         switch ($tier) {
             "A" {
+                $skipped = 0
                 foreach ($c in $cfg.tier_a_candidates) {
+                    if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $globalCtxCap -PerModelCap $perModelCap)) {
+                        $skipped++
+                        continue
+                    }
                     $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base"
                     $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
+                }
+                if ($skipped -gt 0 -and $perModelCap -gt 0) {
+                    Write-Host ("  skipped {0} tier-A candidates above {1}'s max_context ({2})" -f $skipped, $m.model, $perModelCap) -ForegroundColor DarkGray
                 }
             }
             "B" {
@@ -870,6 +975,9 @@ function Invoke-OneBench {
 
     $jsonFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
     $logFile  = Join-Path $CALIBR_LOGS_DIR    "$($item.id).log"
+    $confirmMibLocal = if ($cfg.wddm_detection -and $null -ne $cfg.wddm_detection.shared_delta_confirm_mib) {
+        [int]$cfg.wddm_detection.shared_delta_confirm_mib
+    } else { 500 }
 
     # Resolve N: CLI flag > config > default 3. Minimum 1.
     $N = if ($Runs -gt 0) { $Runs }
@@ -939,6 +1047,7 @@ function Invoke-OneBench {
                 wddm_flag_high_vram  = $r.wddm_flag_high_vram
                 wddm_flag_shared_pos = $r.wddm_flag_shared_pos
             }
+            $failResult.failure_reason = Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
             Write-BenchStatusLine -item $item -result $failResult
             return $failResult
@@ -948,6 +1057,10 @@ function Invoke-OneBench {
     }
 
     $aggregated = New-AggregatedBenchResult -item $item -cfg $cfg -runs $runs
+    # All N runs succeeded so failure_reason is unset (null). Recording it as
+    # null (rather than omitting) keeps every result's schema identical, which
+    # simplifies report.template.html's column rendering.
+    $aggregated.failure_reason = Get-FailureReason -result $aggregated -sharedConfirmMib $confirmMibLocal
     $aggregated | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
     Write-BenchStatusLine -item $item -result $aggregated
     return $aggregated
@@ -974,6 +1087,158 @@ function Write-BenchStatusLine {
     Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
 }
 
+function Get-FailureReason {
+    # Classify why a bench result is not ok into one of four buckets so
+    # downstream code (rotation, abandonment, reports) can act on it
+    # without re-parsing scattered signals. Returns one of:
+    #   vram_overflow      - WDDM paged into shared memory; the model
+    #                        couldn't fit in real VRAM. fit_status said
+    #                        'failed_but_running' OR shared_peak crossed
+    #                        the confirm threshold.
+    #   server_timeout     - llama-server never became ready in time, but
+    #                        no VRAM-pressure signal fired. Build/CUDA bug,
+    #                        broken model file, port conflict, etc.
+    #   unsupported_arch   - the v1.0 short-circuit: llama.cpp doesn't
+    #                        know this architecture yet (update llama.cpp).
+    #   other              - catch-all for $result.ok=false without any
+    #                        of the above signals.
+    # Returns $null when $result.ok is true (no failure to classify).
+    param($result, [int]$sharedConfirmMib = 500)
+    if ($null -eq $result) { return $null }
+    if ($result.ok) { return $null }
+    if ($result.unsupported_architecture) { return "unsupported_arch" }
+    $shared = if ($null -ne $result.shared_peak_mib) { [int]$result.shared_peak_mib } else { 0 }
+    if ($result.fit_status -eq "failed_but_running" -or $shared -gt $sharedConfirmMib) {
+        return "vram_overflow"
+    }
+    if ($result.ready -eq $false) { return "server_timeout" }
+    return "other"
+}
+
+function Select-PlanForBench {
+    # Pure filter: applies the same -Model/-Tier/-Id rules Invoke-Bench uses,
+    # returns an array (possibly empty). The leading `$_ -and` is load-bearing:
+    # PowerShell's `$null | Where-Object` yields one $null item, and @() wraps
+    # it to a 1-element array, which would then crash the rotation context
+    # build with ContainsKey($null). The same pattern protects against any
+    # other malformed plan entry that managed to become $null mid-pipeline.
+    param(
+        $plan,
+        [string]$ModelFilter = "",
+        [string]$TierFilter = "",
+        [string]$IdFilter = ""
+    )
+    return ,@($plan | Where-Object {
+        $_ -and
+        (-not $ModelFilter -or $_.model -match $ModelFilter) -and
+        (-not $TierFilter  -or $_.tier  -eq $TierFilter) -and
+        (-not $IdFilter    -or $_.id    -like $IdFilter)
+    })
+}
+
+function Invoke-RotationCheck {
+    # Called once per config-iteration in Invoke-Bench. If $item's model_path
+    # has reached its expected config count, deletes the .gguf and possibly
+    # its mmproj and emits a host line, or keeps and skips silently.
+    #
+    # Policy is intentionally simple: a file calibr fetched into a temporary
+    # location lives only as long as we need it for the bench. Once every
+    # config for that model has been accounted for (ok, fail, or skip), we
+    # delete the file regardless of outcome. Reasons:
+    #   - the per-config result JSONs (and logs) are persisted separately
+    #     and are the actual evidence the user might want for debugging;
+    #     the .gguf itself has no diagnostic value
+    #   - keeping a file that's never going to be benched again wastes disk
+    #     for nothing (the original peak-bounded promise of rotation)
+    #
+    # The only reasons we KEEP are still:
+    #   - $KeepDownloads flag set (user opted out explicitly)
+    #   - file is not in the download manifest (user-owned; never touched)
+    #
+    # mmproj is deleted only when no other not-yet-rotated model in $filtered
+    # still references it on disk. Avoids breaking a later same-bench config
+    # of a sibling variant that happens to share the projector file.
+    param(
+        $item,
+        [hashtable]$modelStatus,
+        $filtered,
+        [ref]$rotatedRef,
+        [ref]$keptRef
+    )
+    $mp = $item.model_path
+    $st = $modelStatus[$mp]
+    if (-not $st) { return }
+    if ($st.done -ne $st.needed) { return }
+    if ($st.rotated) { return }
+    $st.rotated = $true
+
+    if ($KeepDownloads) {
+        Write-Host ("[rotate] kept {0} (-KeepDownloads)" -f $mp) -ForegroundColor DarkGray
+        $keptRef.Value++
+        return
+    }
+    if (-not (Test-DownloadedByCalibr -Path $mp)) {
+        # Silent for user-owned files; printing for every model would spam.
+        $keptRef.Value++
+        return
+    }
+
+    # Delete model file.
+    if (Test-Path -LiteralPath $mp) {
+        try {
+            Remove-Item -LiteralPath $mp -Force -ErrorAction Stop
+            Write-Host ("[rotate] deleted {0}" -f $mp) -ForegroundColor DarkCyan
+            $rotatedRef.Value++
+        } catch {
+            Write-Host ("[rotate] FAILED to delete {0}: {1}" -f $mp, $_.Exception.Message) -ForegroundColor Red
+            return
+        }
+    } else {
+        # File already gone (e.g. user moved it mid-bench). Nothing to do.
+    }
+
+    # Maybe delete mmproj. Only if no other not-yet-rotated model in $filtered
+    # still references the same projector path.
+    if ($st.mmprojPath) {
+        $stillNeeded = $false
+        foreach ($other in $filtered) {
+            if ($other.model_path -eq $mp) { continue }
+            if ($other.mmproj_path -ieq $st.mmprojPath) {
+                $otherSt = $modelStatus[$other.model_path]
+                if ($otherSt -and -not $otherSt.rotated) {
+                    $stillNeeded = $true
+                    break
+                }
+            }
+        }
+        if (-not $stillNeeded -and (Test-Path -LiteralPath $st.mmprojPath)) {
+            try {
+                Remove-Item -LiteralPath $st.mmprojPath -Force -ErrorAction Stop
+                Write-Host ("[rotate] deleted {0} (mmproj)" -f $st.mmprojPath) -ForegroundColor DarkCyan
+            } catch {
+                Write-Host ("[rotate] FAILED to delete mmproj {0}: {1}" -f $st.mmprojPath, $_.Exception.Message) -ForegroundColor Red
+            }
+        }
+    }
+
+    # Cleanup the now-empty parent directory the .gguf lived in. Use
+    # System.IO.Path.GetDirectoryName instead of Split-Path: PS 5.1's
+    # Split-Path -LiteralPath -Parent triggers a parameter-set ambiguity.
+    # We use DirectoryInfo for the empty-check + delete to make the
+    # 'only if empty' intent explicit and to avoid Remove-Item's own
+    # parameter-set quirks on directories. If anything is still in the
+    # dir (user files, sibling .gguf, hidden files), we leave it alone.
+    $parentDir = [System.IO.Path]::GetDirectoryName($mp)
+    if ($parentDir -and (Test-Path -LiteralPath $parentDir)) {
+        try {
+            $info = New-Object System.IO.DirectoryInfo($parentDir)
+            if ($info.GetFileSystemInfos().Length -eq 0) {
+                $info.Delete()
+            }
+        } catch { }
+    }
+}
+
 function Invoke-Bench {
     $cfg = Get-Config
     if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
@@ -995,15 +1260,18 @@ function Invoke-Bench {
         Write-Host "WARNING: $w" -ForegroundColor Yellow
     }
 
-    # @(...) ensures a single match still surfaces as a 1-element array; otherwise
-    # PowerShell unwraps to the bare hashtable and $filtered.Count returns the
-    # number of keys (8) instead of 1, which throws the [i/total] display off.
-    $filtered = @($plan | Where-Object {
-        (-not $Model -or $_.model -match $Model) -and
-        (-not $Tier   -or $_.tier  -eq $Tier) -and
-        (-not $Id     -or $_.id    -like $Id)
-    })
-    Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $plan.Count)
+    $filtered = Select-PlanForBench -plan $plan -ModelFilter $Model -TierFilter $Tier -IdFilter $Id
+    $planCount = if ($plan) { @($plan).Count } else { 0 }
+    Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $planCount)
+
+    if ($filtered.Count -eq 0) {
+        if ($planCount -eq 0) {
+            Write-Host "Plan is empty. Run 'calibr discover' (with .gguf files in scan_paths) then 'calibr plan' first." -ForegroundColor Yellow
+        } else {
+            Write-Host "No configs match the current filter (-Model / -Tier / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
+        }
+        return
+    }
 
     if ($DryRun) {
         $filtered | ForEach-Object { Write-Host ("  [{0}] {1}" -f $_.tier, $_.label) }
@@ -1017,14 +1285,48 @@ function Invoke-Bench {
     $failCount  = 0
     $skipCount  = 0
     $i = 0
+    # Threshold used by Get-FailureReason to decide vram_overflow vs other.
+    # Mirrors the value used in Invoke-OneBenchRun / New-AggregatedBenchResult
+    # for the WDDM flag so all three views agree.
+    $confirmThresh = if ($cfg.wddm_detection -and $null -ne $cfg.wddm_detection.shared_delta_confirm_mib) {
+        [int]$cfg.wddm_detection.shared_delta_confirm_mib
+    } else { 500 }
+
+    # Rotation context: per-distinct-model_path tracking so we know when every
+    # config touching a given .gguf is accounted for and can decide whether to
+    # delete the file. We index by model_path (not model name) because the same
+    # name could theoretically resolve to different files across scan paths.
+    $modelStatus = @{}
+    foreach ($item in $filtered) {
+        $mp = $item.model_path
+        if (-not $modelStatus.ContainsKey($mp)) {
+            $modelStatus[$mp] = @{
+                needed      = 0
+                ok          = 0
+                fail        = 0
+                skip        = 0
+                done        = 0
+                modelName   = $item.model
+                mmprojPath  = $item.mmproj_path
+                rotated     = $false
+            }
+        }
+        $modelStatus[$mp].needed++
+    }
+    $rotatedCount = 0
+    $keptCount    = 0
 
     foreach ($item in $filtered) {
         $i++
+        $mp = $item.model_path
 
         if ($abandoned.ContainsKey($item.model)) {
             $reason = $abandoned[$item.model]
             Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkYellow
             $skipCount++
+            $modelStatus[$mp].skip++
+            $modelStatus[$mp].done++
+            Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
             continue
         }
 
@@ -1043,12 +1345,36 @@ function Invoke-Bench {
 
         Write-Host ("`n[$i/$total] $($item.label)") -ForegroundColor Cyan
         $r = Invoke-OneBench -item $item -cfg $cfg
-        if ($r.ok) { $okCount++ } else { $failCount++ }
+        if ($r.ok) {
+            $okCount++
+            $modelStatus[$mp].ok++
+        } else {
+            $failCount++
+            $modelStatus[$mp].fail++
+        }
+        $modelStatus[$mp].done++
 
         if (-not $r.ok -and $r.unsupported_architecture) {
             $abandoned[$item.model] = "unsupported architecture '$($r.unsupported_architecture)'"
             Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
         }
+
+        # Tier-aware abandonment on VRAM overflow. Tier A sweeps ctx
+        # ascending: if the smallest ctx already pages, larger ctxs make
+        # it worse. Tier C sweeps gpu-layers ascending: if 20 already
+        # pages, 24..36 push even more onto GPU. Tier B sweeps
+        # n-cpu-moe ascending = MORE on CPU = LESS GPU pressure, so a
+        # failure on 28 (most-on-GPU) does NOT predict failure on 36;
+        # do not abandon Tier B on vram_overflow.
+        if (-not $r.ok -and -not $abandoned.ContainsKey($item.model)) {
+            $reason = Get-FailureReason -result $r -sharedConfirmMib $confirmThresh
+            if ($reason -eq "vram_overflow" -and ($item.tier -eq "A" -or $item.tier -eq "C")) {
+                $abandoned[$item.model] = "vram overflow at smallest config in tier $($item.tier) sweep; larger configs will be worse"
+                Write-Host ("  -> abandoning remaining tier {0} tests for model '{1}' (vram overflow detected; bigger ctx/ngl can only worsen it)" -f $item.tier, $item.model) -ForegroundColor DarkYellow
+            }
+        }
+
+        Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
     }
 
     Write-Progress -Activity "calibr bench" -Completed
@@ -1065,6 +1391,9 @@ function Invoke-Bench {
         Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
         $reasons = @($abandoned.Values | Sort-Object -Unique)
         Write-Host ("   reason: {0}" -f ($reasons -join '; ')) -ForegroundColor DarkYellow
+    }
+    if ($rotatedCount -gt 0 -or ($keptCount -gt 0 -and -not $KeepDownloads)) {
+        Write-Host ("   rotated: {0} deleted . {1} kept" -f $rotatedCount, $keptCount) -ForegroundColor DarkCyan
     }
     Write-Host $bar -ForegroundColor Cyan
 }
@@ -1252,7 +1581,12 @@ function Invoke-Report {
     $now = (Get-Date).ToString("yyyy-MM-dd HH:mm")
     $templatePath = Join-Path $CALIBR_ROOT "report.template.html"
     if (-not (Test-Path $templatePath)) { throw "Missing report.template.html" }
-    $html = Get-Content $templatePath -Raw
+    # -Encoding UTF8 is required: the template contains characters outside
+    # ASCII (e.g. the ≈ glyph in the headroom annotation). PS 5.1's default
+    # is the system code page (Windows-1252 on Italian Windows), which would
+    # silently mojibake those bytes on read and then re-encode the garbage
+    # as 'valid' UTF-8 on write.
+    $html = Get-Content $templatePath -Raw -Encoding UTF8
     $html = $html.Replace("%%NOW%%", $now).Replace("%%DATA%%", $resJson).Replace("%%WINNERS%%", $winJson).Replace("%%CFG%%", $cfgJson)
     $html | Out-File -Encoding utf8 $CALIBR_REPORT
     Write-Host "Report: $CALIBR_REPORT" -ForegroundColor Green
@@ -1266,6 +1600,77 @@ function Get-SampleList {
     if (-not (Test-Path $samplesFile)) { throw "samples.json missing at $samplesFile" }
     $raw = Get-Content $samplesFile -Raw | ConvertFrom-Json
     return $raw.samples
+}
+
+# Download manifest: records which .gguf files calibr itself fetched. Used by
+# bench's post-config rotation step to decide whether a file is safe to delete
+# (entries in the manifest = downloaded by calibr; absence = user-owned, never
+# touched). Manifest entries are kept after the file is rotated off disk so a
+# re-download via `get-sample-models -SampleId` is one command.
+function Get-DownloadManifest {
+    # Emits each manifest entry as its own pipeline value (or no values if
+    # the file is missing/empty/corrupt). Enumerating here, instead of
+    # returning the parsed array as a single pipeline value, is what lets
+    # callers do `@(Get-DownloadManifest)` and get a flat array — otherwise
+    # the @() would wrap the entire parsed array as a single element, and
+    # downstream Where-Object/foreach would treat the whole manifest as
+    # one item. PS 5.1's ConvertFrom-Json returns the JSON array as one
+    # pipeline value, so we re-enumerate explicitly.
+    if (-not (Test-Path $CALIBR_DOWNLOADS)) { return }
+    $raw = Get-Content $CALIBR_DOWNLOADS -Raw -ErrorAction SilentlyContinue
+    if (-not $raw) { return }
+    try {
+        $parsed = $raw | ConvertFrom-Json
+        foreach ($entry in $parsed) { $entry }
+    } catch {
+        Write-Warning "downloads.json is corrupt; treating as empty. ($($_.Exception.Message))"
+    }
+}
+
+function Add-DownloadManifestEntry {
+    # Idempotent on $ModelPath: replaces an existing entry rather than duplicating
+    # so re-running `get-sample-models` for the same sample updates the timestamp
+    # in place.
+    param(
+        [Parameter(Mandatory)][string]$SampleId,
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][string]$ModelPath,
+        [string]$MmprojPath = "",
+        [long]$SizeBytes = 0
+    )
+    # Get-DownloadManifest emits one entry per pipeline value; piping to
+    # Where-Object filters by path, @() collects into an array (empty if
+    # no entries match). $_ -and guards against phantom $null entries that
+    # an empty/corrupt manifest could otherwise let through.
+    $existing = @(Get-DownloadManifest | Where-Object { $_ -and $_.model_path -ne $ModelPath })
+    $entry = [ordered]@{
+        sample_id     = $SampleId
+        model         = $Model
+        model_path    = $ModelPath
+        mmproj_path   = if ($MmprojPath) { $MmprojPath } else { $null }
+        size_bytes    = $SizeBytes
+        downloaded_at = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $manifest = @($existing + $entry)
+    # -InputObject (rather than pipeline) keeps a 1-element array serialized
+    # as [{...}] instead of the bare object {...} that the pipeline form
+    # would emit. Round-tripping stays an array either way (Get's caller @()
+    # wrap handles the bare-object case) but writing a real JSON array is
+    # less surprising for anyone who opens the file by hand.
+    ConvertTo-Json -InputObject $manifest -Depth 5 | Out-File -Encoding utf8 $CALIBR_DOWNLOADS
+}
+
+function Test-DownloadedByCalibr {
+    # Returns $true iff the given absolute path is recorded in the download
+    # manifest. Paths are compared case-insensitively to match Windows
+    # filesystem semantics.
+    param([Parameter(Mandatory)][string]$Path)
+    $manifest = @(Get-DownloadManifest)
+    if ($manifest.Count -eq 0) { return $false }
+    foreach ($e in $manifest) {
+        if ($e -and $e.model_path -and $e.model_path -ieq $Path) { return $true }
+    }
+    return $false
 }
 
 function Format-HumanSize {
@@ -1405,13 +1810,30 @@ function Invoke-GetSampleModels {
         Write-Host ("`n[{0}] {1} ({2})" -f $s.id, $s.model, (Format-HumanSize ([long]$s.size_bytes))) -ForegroundColor Cyan
         $dest = Get-SampleDestination -sample $s -cfg $cfg
         $modelPath = Join-Path $dest $s.hf_file
+        # Remember whether the file was already there before the call. If
+        # Invoke-HFDownload returns OK because the file existed, we treat it
+        # as user-owned and skip the manifest tag — rotation must never
+        # delete files calibr didn't actually fetch.
+        $modelExistedBefore = Test-Path -LiteralPath $modelPath
         $ok = Invoke-HFDownload -Repo $s.hf_repo -File $s.hf_file -DestPath $modelPath -ExpectedBytes ([long]$s.size_bytes)
         if ($ok) { $okCount++ } else { $failCount++ }
 
         # mmproj if present
+        $mmPath = $null
         if ($ok -and $s.mmproj_file) {
             $mmPath = Join-Path $dest $s.mmproj_file
             Invoke-HFDownload -Repo $s.hf_repo -File $s.mmproj_file -DestPath $mmPath -ExpectedBytes 0 | Out-Null
+        }
+
+        # Record in the download manifest only when we actually fetched the
+        # file in this call (it didn't already exist). This guarantees that
+        # files the user pre-downloaded — even into the same curated path
+        # samples.json points to — are never tagged calibr-owned and never
+        # rotated.
+        if ($ok -and -not $modelExistedBefore) {
+            $modelAbs = (Get-Item -LiteralPath $modelPath).FullName
+            $mmAbs = if ($mmPath -and (Test-Path $mmPath)) { (Get-Item -LiteralPath $mmPath).FullName } else { "" }
+            Add-DownloadManifestEntry -SampleId $s.id -Model $s.model -ModelPath $modelAbs -MmprojPath $mmAbs -SizeBytes ([long]$s.size_bytes)
         }
     }
 
@@ -1875,18 +2297,24 @@ function Invoke-Help {
             Examples = @( "calibr plan", "calibr plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "calibr bench [-Model <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun]"
+            Usage    = "calibr bench [-Model <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun] [-KeepDownloads]"
             Flags    = @(
                 "-Model <regex>    Only run configs whose model name matches"
                 "-Tier {A|B|C}     Only run configs for this tier"
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
                 "-DryRun           List configs that would run, don't execute"
+                "-KeepDownloads    Opt out of post-bench rotation. By default, any model whose"
+                "                  .gguf is recorded in data/downloads.json (i.e. calibr"
+                "                  downloaded it) is deleted from disk after every config for"
+                "                  that model finishes successfully. User-owned files are"
+                "                  never touched regardless of this flag."
             )
             Examples = @(
                 "calibr bench"
                 "calibr bench -Model Qwen3.5-9B"
                 "calibr bench -Tier A -Force"
+                "calibr bench -KeepDownloads"
             )
         }
         "report" = @{
@@ -1900,18 +2328,25 @@ function Invoke-Help {
             Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "calibr all [-DownloadSamples [-SampleId <id>] [-Model <regex>]] [-Force] [-PreferSpeed]"
+            Usage    = "calibr all [-DownloadSamples [-SampleId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-KeepDownloads]"
             Flags    = @(
-                "-DownloadSamples         Run get-sample-models before the pipeline"
+                "-DownloadSamples         Interleaved mode: walk samples one-by-one, download"
+                "                         -> discover -> plan -> bench -> rotate per sample so"
+                "                         peak disk stays bounded to one model. Pre-existing"
+                "                         models in scan_paths are benched first (phase 0)."
                 "-SampleId <id>           (with -DownloadSamples) only fetch the matching sample"
                 "-Model <regex>           Filter download AND bench by model name"
                 "-Force                   Re-run all benchmarks (skip cache)"
                 "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
+                "-KeepDownloads           Opt out of post-bench rotation. By default with"
+                "                         -DownloadSamples, calibr-downloaded files are deleted"
+                "                         after a clean bench to bound peak disk to one model."
             )
             Examples = @(
                 "calibr all"
                 "calibr all -DownloadSamples"
                 "calibr all -DownloadSamples -SampleId qwen3.5-9b-q4km"
+                "calibr all -DownloadSamples -KeepDownloads"
                 "calibr all -PreferSpeed"
             )
         }
@@ -2053,22 +2488,88 @@ switch ($Command) {
     "get-sample-models"  { Invoke-GetSampleModels }
     "all"                {
         if ($DownloadSamples) {
-            # Without an explicit filter (-SampleId / -Model / -DownloadAll), default to "all samples".
-            if (-not ($DownloadAll -or $SampleId -or $Model)) { $script:DownloadAll = $true }
-            Invoke-GetSampleModels
+            # Interleaved rotation: instead of fetching the entire curated set
+            # up-front (~88 GB peak) and benching afterwards, we walk one
+            # sample at a time — download → discover → plan → bench just this
+            # model → rotation deletes it — so the working set on disk stays
+            # bounded to one model. This is what makes -KeepDownloads=off
+            # actually deliver the 'peak ~ largest single file' promise the
+            # CLI's pre-flight gate shows.
+            $samples = Get-SampleList
+            if ($SampleId) { $samples = $samples | Where-Object { $_.id -like $SampleId } }
+            if ($Model)    { $samples = $samples | Where-Object { $_.model -match $Model } }
+            $samples = @($samples)
+            if ($samples.Count -eq 0) {
+                Write-Host "No samples match the current -SampleId / -Model filters. Nothing to do." -ForegroundColor Yellow
+                return
+            }
 
-            # If neither config.json nor -ScanPath set scan_paths, point discover at the
-            # directory the samples just landed in, otherwise it'd throw "scan_paths is empty".
-            $cfgAfter = Get-Config
-            $scanEmpty = (-not $cfgAfter.scan_paths -or $cfgAfter.scan_paths.Count -eq 0)
+            # Point scan_paths at the download destination if the user hasn't
+            # configured it; otherwise discover would later throw 'scan_paths
+            # is empty'.
+            $cfgInit = Get-Config
+            $scanEmpty = (-not $cfgInit.scan_paths -or $cfgInit.scan_paths.Count -eq 0)
             $cliEmpty  = (-not $script:ScanPath  -or $script:ScanPath.Count  -eq 0)
             if ($scanEmpty -and $cliEmpty) {
                 $defaultDl = if ($Destination) { $Destination } else { Join-Path $CALIBR_ROOT "downloaded-models" }
                 $script:ScanPath = @($defaultDl)
-                Write-Host "[all] No scan_paths configured. Will scan $defaultDl (where samples landed)." -ForegroundColor Cyan
+                Write-Host "[all] No scan_paths configured. Will scan $defaultDl." -ForegroundColor Cyan
             }
+
+            Write-Host ""
+            Write-Host ("=== all -DownloadSamples : {0} sample(s), rotated ===" -f $samples.Count) -ForegroundColor Cyan
+
+            # Phase 0: bench whatever is already on disk so existing models
+            # don't get orphaned by the per-sample loop (each iteration's
+            # bench is narrowed to the current sample's model). Skipped if
+            # the user explicitly scoped with -SampleId or -Model — then
+            # they want a narrow run, not a sweep over everything.
+            if (-not $SampleId -and -not $Model) {
+                Write-Host ""
+                Write-Host "--- pre-existing models ---" -ForegroundColor DarkCyan
+                Invoke-Discover
+                Invoke-Plan
+                Invoke-Bench
+            }
+
+            # Phase 1+: per-sample download + bench + rotate.
+            $savedSampleId = $script:SampleId
+            $savedModel    = $script:Model
+            $idx = 0
+            foreach ($s in $samples) {
+                $idx++
+                Write-Host ""
+                # Two prefixes: the bracketed [sample X/N] is CLI-parseable
+                # (RunView surfaces it as the outer progress strip); the
+                # second line is human-readable.
+                Write-Host ("[sample {0}/{1}] {2}" -f $idx, $samples.Count, $s.id)
+                Write-Host ("--- sample {0}/{1} : {2} ({3}) ---" -f $idx, $samples.Count, $s.id, $s.model) -ForegroundColor Cyan
+
+                $script:SampleId = $s.id
+                $script:Model    = ""   # SampleId narrows enough on its own
+                Invoke-GetSampleModels
+
+                # Re-discover so the freshly-downloaded file enters the catalog;
+                # re-plan because the catalog grew.
+                $script:SampleId = $savedSampleId
+                Invoke-Discover
+                Invoke-Plan
+
+                # Bench narrows to this sample's model — Invoke-RotationCheck
+                # then has a chance to delete the .gguf the moment its last
+                # config finishes successfully.
+                $script:Model = $s.model
+                Invoke-Bench
+            }
+            $script:SampleId = $savedSampleId
+            $script:Model    = $savedModel
+
+            Write-Host ""
+            Write-Host "--- final report ---" -ForegroundColor DarkCyan
+            Invoke-Report
+        } else {
+            Invoke-Discover; Invoke-Plan; Invoke-Bench; Invoke-Report
         }
-        Invoke-Discover; Invoke-Plan; Invoke-Bench; Invoke-Report
     }
     default              { Invoke-Help }
 }

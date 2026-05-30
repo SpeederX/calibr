@@ -55,9 +55,15 @@ A typical first session:
 
 1. **init** — auto-detect GPU/CPU/VRAM, write the local config.
 2. Edit `config.json` and set `scan_paths` to the folders that contain
-   your `.gguf` files.
-3. **all** — runs discover, plan, bench, report end-to-end. Expect this
-   to take hours depending on how many models you have.
+   your `.gguf` files. If you don't have any `.gguf` yet, skip this and
+   let step 3 download the curated set.
+3. **all** → configure: turn `samples: on (-DownloadSamples)`, leave
+   `rotate: yes` (default). The CLI shows the peak disk requirement
+   (~20 GB for the largest model in the curated set) and the free space
+   on your destination, then asks for confirmation. After you accept,
+   the engine downloads each model, benches it, deletes it, moves to
+   the next. Expect this to take a few hours; peak disk stays bounded
+   to one model at a time.
 4. **results** — browse a leaderboard of winners per model. Press
    `enter` to drill into per-config detail, `o` to open the full HTML
    report in your browser, `q` to go back.
@@ -65,7 +71,8 @@ A typical first session:
 For sub-tasks (re-bench one model, change run count):
 
 5. From the menu pick **bench** → configure model filter, tier, runs,
-   force flag → start.
+   force flag, rotation → start. If you want to keep the downloaded
+   `.gguf` files on disk after the bench, toggle `rotate: no`.
 
 ## Where things are stored
 
@@ -77,6 +84,7 @@ installed package. Your own data goes to:
 ├── config.json          your overrides
 ├── catalog.json         models discovered on disk
 ├── plan.json            test plan expanded from catalog
+├── downloads.json       which .gguf files calibr downloaded (rotation manifest)
 ├── results\*.json       one file per bench config
 ├── logs\*.log           full llama-server stderr per config
 ├── bats\*.bat           per-config launch scripts
@@ -105,9 +113,9 @@ The menu exposes the engine verbs verbatim. Brief summary:
 | `init` | Detect hardware, write `config.json` with sane defaults. |
 | `discover` | Scan `scan_paths` for `*.gguf`, build the model catalog. |
 | `plan` | Expand the catalog into a sweep of bench configurations per tier. |
-| `bench` | Run each pending plan entry, write a result JSON per config. |
+| `bench` | Run each pending plan entry, write a result JSON per config. When models came from `get-sample-models`, each model's .gguf is deleted from disk after its configs all finish (use `-KeepDownloads` to opt out). |
 | `report` | Build the HTML dashboard and per-config `.bat` launchers. |
-| `all` | discover → plan → bench → report, end to end. |
+| `all` | discover → plan → bench → report, end to end. With `samples: on`, fetches the curated set first; the CLI runs a pre-flight disk-space gate before launching. |
 | `status` | Print current config + counts (also shown as a card in the menu). |
 
 ## Status keybinds
@@ -122,11 +130,14 @@ The menu exposes the engine verbs verbatim. Brief summary:
 
 - **Windows only.** See Requirements. Cross-platform support is on the
   roadmap when the PowerShell engine is rewritten in TypeScript.
-- **`discover` pairs mmproj by directory.** Two model variants in the
-  same folder that ship the same `mmproj-F16.gguf` filename but with
-  different `n_embd` (Gemma 4 E2B vs E4B is the known case) will
-  cross-pair and the wrong one fails at load. Workaround: put each
-  multimodal variant in its own subfolder.
+- **`discover` pairs mmproj by directory.** If two model variants live
+  in the same folder and physically share one `mmproj-*.gguf` file but
+  the projector is only valid for one of them (different vision
+  `n_embd`), bench will fail at load on the other. The curated samples
+  set keeps Gemma 4 E2B and E4B in separate folders for this reason;
+  for your own models, keep each multimodal variant in its own
+  subfolder. `discover` now emits a `WARNING` whenever it sees one
+  mmproj paired with multiple distinct text models.
 - **No re-run-single-config from the results screen** yet. Use the
   bench screen with a tight `-Model` filter and `-Force` instead.
 

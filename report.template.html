@@ -61,6 +61,7 @@
   <h1>calibr benchmark report</h1>
   <div class="meta">Generated %%NOW%%</div>
   <div class="hw" id="hw"></div>
+  <div class="meta" id="overall-pct"></div>
 
   <h2>Winners per model</h2>
   <div class="grid" id="winners"></div>
@@ -108,6 +109,17 @@ document.getElementById('hw').innerHTML =
   ' | CPU ' + (hw.cpu_cores_physical || '?') + 'C/' + (hw.cpu_threads_logical || '?') + 'T' +
   ' | VRAM safety budget: <code>' + (hw.vram_safety_budget_mib || '?') + ' MiB</code>' +
   ' | llama-server: <code>' + (CFG.llama_server_exe || 'n/a') + '</code>';
+
+// ---- Overall success rate (models with >=1 OK config / total models) ----
+const modelsSet = new Set(DATA.map(d => d.model));
+const modelsWithSuccess = new Set(DATA.filter(d => d.ok).map(d => d.model));
+const totalModels = modelsSet.size;
+const okModels = modelsWithSuccess.size;
+const pct = totalModels > 0 ? Math.round((okModels / totalModels) * 100) : 0;
+document.getElementById('overall-pct').innerHTML =
+  '<b>' + okModels + '/' + totalModels + ' models</b> have at least one successful config ' +
+  '(<b>' + pct + '%</b>). ' +
+  DATA.length + ' total bench configs, ' + DATA.filter(d => d.ok).length + ' ok.';
 
 // ---- Winners grid ----
 const wGrid = document.getElementById('winners');
@@ -270,6 +282,18 @@ if (flagged.length === 0) {
   wddmEl.innerHTML = html + '</tbody></table>';
 }
 
+// Friendly labels for the fit_status enum the engine writes. Keep the raw
+// values as the CSS class (.fit-failed_but_running etc.) so styling stays
+// stable; only the displayed text is humanized.
+function fitLabel(s) {
+  switch (s) {
+    case 'success':            return 'fits OK';
+    case 'failed_but_running': return 'vram overflow';
+    case 'unknown':            return 'unknown';
+    default:                   return s || '-';
+  }
+}
+
 // ---- Tabs for all results ----
 const tiers = ['all', ...new Set(DATA.map(d => d.tier))].filter((v, i, a) => a.indexOf(v) === i);
 const tabsEl = document.getElementById('tier-tabs');
@@ -295,7 +319,7 @@ function buildTable(filter) {
         '<td class="num">' + d.vram_peak_mib + '</td>' +
         '<td class="num">' + wddm + '</td>' +
         '<td>' + (d.layers_offloaded || '-') + '</td>' +
-        '<td class="fit-' + d.fit_status + '">' + d.fit_status + '</td>' +
+        '<td class="fit-' + d.fit_status + '">' + fitLabel(d.fit_status) + '</td>' +
       '</tr>'
     );
   });

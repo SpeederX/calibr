@@ -61,6 +61,9 @@
   ],
   "_comment_candidates": "Context / KV-cache-quantization combos to try for Tier A models. q8_0 -> near-lossless, q4_0 -> unlocks ~2x more ctx at minor quality hit.",
 
+  "max_context_cap": 262144,
+  "_comment_cap": "Global sanity ceiling for Tier A context sweep. Any tier_a_candidates entry with ctx above this value is silently dropped at plan time. Set to 0 to disable. Today's highest sample-set model (Qwen3.5/3.6) caps at 262144, so this is a no-op for the curated samples but guards against accidentally pushing huge ctx values that no current GGUF supports.",
+
   "wddm_detection": {
     "vram_saturation_threshold": 0.92,
     "_comment_sat": "If peak_vram / total_vram exceeds this, config is flagged as 'WDDM risk'.",

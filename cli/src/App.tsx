@@ -6,10 +6,14 @@ import { StatusView } from "./StatusView.js";
 import { RunView } from "./RunView.js";
 import { ResultsView } from "./ResultsView.js";
 import { BenchOptionsView } from "./BenchOptionsView.js";
+import { AllOptionsView } from "./AllOptionsView.js";
+import { InitOptionsView } from "./InitOptionsView.js";
 
 type Screen =
   | { kind: "menu" }
+  | { kind: "initOptions" }
   | { kind: "benchOptions" }
+  | { kind: "allOptions" }
   | { kind: "run"; args: string[]; label: string }
   | { kind: "results" };
 
@@ -56,6 +60,28 @@ export function App() {
     );
   }
 
+  if (screen.kind === "allOptions") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <AllOptionsView
+          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+          onCancel={() => setScreen({ kind: "menu" })}
+        />
+      </Box>
+    );
+  }
+
+  if (screen.kind === "initOptions") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <InitOptionsView
+          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+          onCancel={() => setScreen({ kind: "menu" })}
+        />
+      </Box>
+    );
+  }
+
   const items: { label: string; value: string }[] = [
     { label: `${"results".padEnd(10)} — browse benchmark winners`, value: "__results" },
     ...ENGINE_COMMANDS.map((c) => ({
@@ -76,8 +102,16 @@ export function App() {
               setScreen({ kind: "results" });
               return;
             }
+            if (item.value === "init") {
+              setScreen({ kind: "initOptions" });
+              return;
+            }
             if (item.value === "bench") {
               setScreen({ kind: "benchOptions" });
+              return;
+            }
+            if (item.value === "all") {
+              setScreen({ kind: "allOptions" });
               return;
             }
             const cmd = ENGINE_COMMANDS.find((c) => c.id === item.value);
