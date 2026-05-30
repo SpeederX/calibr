@@ -57,7 +57,7 @@ function fmt(s: string | null, fallback: string): string {
 
 type Phase =
   | { kind: "form" }
-  | { kind: "cachePrompt"; pendingArgs: string[]; pendingLabel: string; cursor: number };
+  | { kind: "cachePrompt" };
 
 export function BenchOptionsView({ onRun, onCancel }: Props) {
   const models = useMemo(readCatalogModels, []);
@@ -112,12 +112,9 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
       case "runs":   setRuns(next(RUNS_VALUES, runs)); break;
       case "rotate": setKeepDownloads(!keepDownloads); break;
       case "run": {
-        // If there are no cached results, launch immediately with the
-        // 'use cache' shape (no -Force). Otherwise route through the
-        // cache prompt so the user makes the choice explicitly.
+        // No cache → launch immediately. Cache present → ask y/n.
         if (cachedCount > 0) {
-          const built = buildArgs(false);
-          setPhase({ kind: "cachePrompt", pendingArgs: built.args, pendingLabel: built.label, cursor: 0 });
+          setPhase({ kind: "cachePrompt" });
         } else {
           const { args, label } = buildArgs(false);
           onRun(args, label);
@@ -130,15 +127,16 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
 
   useInput((input, key) => {
     if (phase.kind === "cachePrompt") {
-      const choices: Array<"use" | "rerun" | "cancel"> = ["use", "rerun", "cancel"];
-      if (key.upArrow)        { setPhase({ ...phase, cursor: Math.max(0, phase.cursor - 1) }); return; }
-      if (key.downArrow)      { setPhase({ ...phase, cursor: Math.min(choices.length - 1, phase.cursor + 1) }); return; }
       if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
-      if (key.return || input === " ") {
-        const choice = choices[phase.cursor];
-        if (choice === "cancel")     { setPhase({ kind: "form" }); return; }
-        if (choice === "use")        { onRun(phase.pendingArgs, phase.pendingLabel); return; }
-        if (choice === "rerun")      { const r = buildArgs(true); onRun(r.args, r.label); return; }
+      if (input === "y" || input === "Y") {
+        const r = buildArgs(false);
+        onRun(r.args, r.label);
+        return;
+      }
+      if (input === "n" || input === "N") {
+        const r = buildArgs(true);
+        onRun(r.args, r.label);
+        return;
       }
       return;
     }
@@ -149,31 +147,20 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   });
 
   if (phase.kind === "cachePrompt") {
-    const promptRows = [
-      { label: `use cache (skip ${cachedCount} cached result${cachedCount === 1 ? "" : "s"}, only bench new configs)` },
-      { label: `re-run all (force fresh runs for everything; overrides the cache)` },
-      { label: `cancel (back to the form)` },
-    ];
     return (
       <Box flexDirection="column">
-        <Text bold color="yellow">cache found</Text>
+        <Text bold color="yellow">
+          {cachedCount} cached result{cachedCount === 1 ? "" : "s"} found in data\results\.
+        </Text>
         <Box marginTop={1}>
           <Text>
-            {cachedCount} result file{cachedCount === 1 ? "" : "s"} already in <Text color="cyan">data\results\</Text>.
-            Configs that match will be skipped unless you re-run all.
+            Use the cached results and only bench the new configs?{" "}
+            <Text color="cyan">[y/n]</Text>
           </Text>
         </Box>
-        <Box marginTop={1} flexDirection="column">
-          {promptRows.map((row, i) => {
-            const selected = i === phase.cursor;
-            return (
-              <Text key={i} color={selected ? "cyan" : undefined} inverse={selected}>
-                {selected ? "> " : "  "}{row.label}
-              </Text>
-            );
-          })}
+        <Box marginTop={1}>
+          <Text dimColor>y = use cache, bench only new · n = re-run every config from scratch · q/esc = back</Text>
         </Box>
-        <Box marginTop={1}><Text dimColor>↑/↓ move · enter to choose · q/esc back to form</Text></Box>
       </Box>
     );
   }

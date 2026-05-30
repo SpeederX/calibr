@@ -25,7 +25,7 @@ interface Props {
 type Phase =
   | { kind: "form" }
   | { kind: "gate"; required: number; available: number; sampleCount: number; sufficient: boolean }
-  | { kind: "cachePrompt"; cursor: number };
+  | { kind: "cachePrompt" };
 
 export function AllOptionsView({ onRun, onCancel }: Props) {
   // 'all' is the typical "I want everything" path; defaulting samples on
@@ -68,7 +68,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // launch.
   const advanceFromGate = () => {
     if (cachedCount > 0) {
-      setPhase({ kind: "cachePrompt", cursor: 0 });
+      setPhase({ kind: "cachePrompt" });
     } else {
       const { args, label } = buildArgs(false);
       onRun(args, label);
@@ -99,7 +99,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         if (downloadSamples) {
           runGate();
         } else if (cachedCount > 0) {
-          setPhase({ kind: "cachePrompt", cursor: 0 });
+          setPhase({ kind: "cachePrompt" });
         } else {
           const { args, label } = buildArgs(false);
           onRun(args, label);
@@ -122,15 +122,16 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       return;
     }
     if (phase.kind === "cachePrompt") {
-      const choices: Array<"use" | "rerun" | "cancel"> = ["use", "rerun", "cancel"];
-      if (key.upArrow)   { setPhase({ ...phase, cursor: Math.max(0, phase.cursor - 1) }); return; }
-      if (key.downArrow) { setPhase({ ...phase, cursor: Math.min(choices.length - 1, phase.cursor + 1) }); return; }
       if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
-      if (key.return || input === " ") {
-        const choice = choices[phase.cursor];
-        if (choice === "cancel") { setPhase({ kind: "form" }); return; }
-        const r = buildArgs(choice === "rerun");
+      if (input === "y" || input === "Y") {
+        const r = buildArgs(false);
         onRun(r.args, r.label);
+        return;
+      }
+      if (input === "n" || input === "N") {
+        const r = buildArgs(true);
+        onRun(r.args, r.label);
+        return;
       }
       return;
     }
@@ -174,31 +175,20 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   }
 
   if (phase.kind === "cachePrompt") {
-    const promptRows = [
-      { label: `use cache (skip ${cachedCount} cached result${cachedCount === 1 ? "" : "s"}, only bench new configs)` },
-      { label: `re-run all (force fresh runs for everything; overrides the cache)` },
-      { label: `cancel (back to the form)` },
-    ];
     return (
       <Box flexDirection="column">
-        <Text bold color="yellow">cache found</Text>
+        <Text bold color="yellow">
+          {cachedCount} cached result{cachedCount === 1 ? "" : "s"} found in data\results\.
+        </Text>
         <Box marginTop={1}>
           <Text>
-            {cachedCount} result file{cachedCount === 1 ? "" : "s"} already in <Text color="cyan">data\results\</Text>.
-            Configs that match will be skipped unless you re-run all.
+            Use the cached results and only bench the new configs?{" "}
+            <Text color="cyan">[y/n]</Text>
           </Text>
         </Box>
-        <Box marginTop={1} flexDirection="column">
-          {promptRows.map((row, i) => {
-            const selected = i === phase.cursor;
-            return (
-              <Text key={i} color={selected ? "cyan" : undefined} inverse={selected}>
-                {selected ? "> " : "  "}{row.label}
-              </Text>
-            );
-          })}
+        <Box marginTop={1}>
+          <Text dimColor>y = use cache, bench only new · n = re-run every config from scratch · q/esc = back</Text>
         </Box>
-        <Box marginTop={1}><Text dimColor>↑/↓ move · enter to choose · q/esc back to form</Text></Box>
       </Box>
     );
   }
