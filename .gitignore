@@ -39,3 +39,10 @@ venv/
 # Test artifacts (temp config files use system temp; this is just a safety net)
 tests/tmp/
 tests/*.tmp.json
+
+# Local archive/clipboard scratch files (e.g. extracted attachments,
+# zipped docs dropped at the root for inspection — not part of the repo)
+*.zip
+*.tgz
+*.tar
+*.tar.gz
