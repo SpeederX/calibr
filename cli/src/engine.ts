@@ -168,9 +168,19 @@ export interface Result {
   shared_peak_mib?: number;
   wddm_vram_saturation?: number;
   fit_status?: string;
+  failure_reason?: "vram_overflow" | "server_timeout" | "unsupported_arch" | "other" | null;
   unsupported_architecture?: string | null;
   extra_args?: string;
   timestamp?: string;
+  // Extended metrics (v0.1.3+). Null when not collected (failure before
+  // bench POST, or pre-extended-metrics legacy result JSONs).
+  ttft_sec?: number | null;
+  gpu_power_peak_w?: number;
+  gpu_temp_peak_c?: number;
+  gpu_util_avg_pct?: number;
+  ram_baseline_mib?: number;
+  ram_used_peak_mib?: number;
+  disk_read_peak_mb_s?: number;
   [k: string]: any;
 }
 

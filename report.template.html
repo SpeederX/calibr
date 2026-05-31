@@ -87,8 +87,11 @@
     <table id="all">
       <thead><tr>
         <th>ID</th><th>Tier</th><th>Model</th><th>Config</th>
+        <th class="num">TTFT s</th>
         <th class="num">Prompt t/s</th><th class="num">Eval t/s</th>
         <th class="num">VRAM</th><th class="num">Shared</th>
+        <th class="num">RAM Δ</th>
+        <th class="num">GPU W</th><th class="num">GPU °C</th><th class="num">GPU %</th>
         <th>Layers</th><th>Fit</th>
       </tr></thead>
       <tbody></tbody>
@@ -313,11 +316,16 @@ function buildTable(filter) {
         '<td><code>' + d.id + '</code></td>' +
         '<td class="tier-' + d.tier + '">' + d.tier + '</td>' +
         '<td>' + d.model + '</td>' +
-        '<td style="max-width:360px;font-size:11px;color:var(--c-muted)">' + d.extra_args + '</td>' +
+        '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + d.extra_args + '</td>' +
+        '<td class="num">' + (d.ttft_sec != null ? d.ttft_sec.toFixed(2) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_tps ? d.prompt_tps.toFixed(1) : '-') + '</td>' +
         '<td class="num"><b>' + (d.eval_tps ? d.eval_tps.toFixed(1) : '-') + '</b></td>' +
         '<td class="num">' + d.vram_peak_mib + '</td>' +
         '<td class="num">' + wddm + '</td>' +
+        '<td class="num">' + (d.ram_used_peak_mib != null ? d.ram_used_peak_mib : '-') + '</td>' +
+        '<td class="num">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? d.gpu_power_peak_w.toFixed(0) : '-') + '</td>' +
+        '<td class="num">' + (d.gpu_temp_peak_c != null && d.gpu_temp_peak_c > 0 ? d.gpu_temp_peak_c : '-') + '</td>' +
+        '<td class="num">' + (d.gpu_util_avg_pct != null && d.gpu_util_avg_pct > 0 ? d.gpu_util_avg_pct + '%' : '-') + '</td>' +
         '<td>' + (d.layers_offloaded || '-') + '</td>' +
         '<td class="fit-' + d.fit_status + '">' + fitLabel(d.fit_status) + '</td>' +
       '</tr>'

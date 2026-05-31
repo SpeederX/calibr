@@ -763,6 +763,16 @@ function New-AggregatedBenchResult {
     $promptTpsMed  = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.prompt_tps })), 2)
     $evalTpsMed    = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.eval_tps })),   2)
 
+    # Extended-metric medians/aggregates. ttft and util are median over runs;
+    # power, temp, ram are max-over-runs (peaks are what matter for thermal
+    # / pressure analysis, not the typical reading).
+    $ttftMed       = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.ttft_sec })),         3)
+    $utilAvgMed    = [int](Get-Median   -values @($runs | ForEach-Object { $_.gpu_util_avg_pct }))
+    $powerPeakMax  = [math]::Round((@($runs | ForEach-Object { $_.gpu_power_peak_w }) | Measure-Object -Maximum).Maximum, 1)
+    $tempPeakMax   = [int]((@($runs | ForEach-Object { $_.gpu_temp_peak_c })  | Measure-Object -Maximum).Maximum)
+    $ramPeakMax    = [int]((@($runs | ForEach-Object { $_.ram_used_peak_mib }) | Measure-Object -Maximum).Maximum)
+    $diskPeakMax   = [math]::Round((@($runs | ForEach-Object { $_.disk_read_peak_mb_s }) | Measure-Object -Maximum).Maximum, 1)
+
     $satRatio = if ($vramTotal -gt 0) { [math]::Round($vramPeakMed / $vramTotal, 3) } else { 0 }
     $flagHighVram  = ($satRatio -gt $satThresh)
     $flagSharedPos = ($sharedPeakMed -gt $confirmThresh)
@@ -799,6 +809,16 @@ function New-AggregatedBenchResult {
         prompt_tps       = $promptTpsMed
         eval_tps         = $evalTpsMed
 
+        # Extended metrics: medians for ttft/util (typical), maxes for
+        # power/temp/ram/disk (peaks are what matter).
+        ttft_sec             = $ttftMed
+        gpu_util_avg_pct     = $utilAvgMed
+        gpu_power_peak_w     = $powerPeakMax
+        gpu_temp_peak_c      = $tempPeakMax
+        ram_baseline_mib     = $first.ram_baseline_mib
+        ram_used_peak_mib    = $ramPeakMax
+        disk_read_peak_mb_s  = $diskPeakMax
+
         # WDDM-derived recomputed from the medians (not the raw runs)
         wddm_vram_saturation = $satRatio
         wddm_flag_high_vram  = $flagHighVram
@@ -811,6 +831,45 @@ function New-AggregatedBenchResult {
         runs  = @($runs)
     }
     return $result
+}
+
+function Get-GpuSnapshot {
+    # Single nvidia-smi call that returns memory.used + power.draw +
+    # temperature.gpu + utilization.gpu in one CSV row, so the polling loop
+    # pays one process spawn per tick instead of four. Returns a hashtable
+    # with sensible fallbacks if any field comes back as 'N/A' (some Quadro
+    # / Tesla SKUs don't report power.draw, for instance).
+    $line = ""
+    try {
+        $line = (nvidia-smi --query-gpu=memory.used,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader,nounits) -replace '\s',''
+    } catch { }
+    $parts = if ($line) { $line -split ',' } else { @('0','0','0','0') }
+    return @{
+        mem_mib  = if ($parts[0] -match '^\d') { [int]$parts[0] }      else { 0 }
+        power_w  = if ($parts[1] -match '^\d') { [double]$parts[1] }    else { 0 }
+        temp_c   = if ($parts[2] -match '^\d') { [int]$parts[2] }      else { 0 }
+        util_pct = if ($parts[3] -match '^\d') { [int]$parts[3] }      else { 0 }
+    }
+}
+
+function Get-AvailableMemoryMib {
+    # System-wide free RAM in MiB, via the Windows perf counter. The wddm
+    # shared-mem counter already justified taking the Get-Counter overhead
+    # on every poll tick; adding one more metric is cheap.
+    try {
+        $cs = (Get-Counter '\Memory\Available MBytes' -ErrorAction Stop).CounterSamples
+        return [int]$cs[0].CookedValue
+    } catch { return -1 }
+}
+
+function Get-DiskReadBytesPerSec {
+    # Total physical-disk read throughput across all drives. Polled during
+    # the load phase to surface cold-start I/O bottlenecks (NVMe at 7 GB/s
+    # vs HDD at 500 MB/s makes a huge difference on first-load timing).
+    try {
+        $cs = (Get-Counter '\PhysicalDisk(_Total)\Disk Read Bytes/sec' -ErrorAction Stop).CounterSamples
+        return [int64]$cs[0].CookedValue
+    } catch { return 0 }
 }
 
 function Invoke-OneBenchRun {
@@ -833,13 +892,15 @@ function Invoke-OneBenchRun {
     if ($item.mmproj_path) { $argStr += " --mmproj `"$($item.mmproj_path)`"" }
     $argStr += " $($item.extra_args) --port $port --host 127.0.0.1 --no-warmup --cache-ram 128"
 
-    $vramBefore = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
+    $gpuBaseline = Get-GpuSnapshot
+    $vramBefore = $gpuBaseline.mem_mib
     $sharedBaseline = if ($cfg.wddm_detection.enable_shared_mem_counter) { Get-SharedGPUMemoryMib } else { 0 }
     if ($sharedBaseline -lt 0) { $sharedBaseline = 0 }
+    $ramBaseline = Get-AvailableMemoryMib   # MiB free before load
 
     "===== RUN $runIndex =====" | Out-File -Encoding utf8 -Append $logFile
     "[CMD] $exe $argStr" | Out-File -Encoding utf8 -Append $logFile
-    "[VRAM before: $vramBefore MiB; shared baseline: $sharedBaseline MiB]" | Out-File -Encoding utf8 -Append $logFile
+    "[VRAM before: $vramBefore MiB; shared baseline: $sharedBaseline MiB; RAM avail: $ramBaseline MiB]" | Out-File -Encoding utf8 -Append $logFile
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $exe
@@ -858,11 +919,20 @@ function Invoke-OneBenchRun {
     $ready = $false
     $peakVram = $vramBefore
     $peakShared = 0
+    $peakPower = 0.0
+    $peakTemp = 0
+    $utilSum = 0
+    $utilCount = 0
+    $minRam = $ramBaseline       # min available => peak used
+    $peakDiskRead = 0            # bytes/sec, load phase only
     $wc = New-Object System.Net.WebClient
     while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
         Start-Sleep -Milliseconds 500
-        $v = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
-        if ($v -gt $peakVram) { $peakVram = $v }
+        $snap = Get-GpuSnapshot
+        if ($snap.mem_mib  -gt $peakVram)  { $peakVram  = $snap.mem_mib }
+        if ($snap.power_w  -gt $peakPower) { $peakPower = $snap.power_w }
+        if ($snap.temp_c   -gt $peakTemp)  { $peakTemp  = $snap.temp_c }
+        if ($snap.util_pct -ge 0) { $utilSum += $snap.util_pct; $utilCount++ }
         if ($cfg.wddm_detection.enable_shared_mem_counter) {
             $s = Get-SharedGPUMemoryMib
             if ($s -ge 0) {
@@ -870,6 +940,16 @@ function Invoke-OneBenchRun {
                 if ($delta -gt $peakShared) { $peakShared = $delta }
             }
         }
+        $ramNow = Get-AvailableMemoryMib
+        if ($ramNow -ge 0 -and ($minRam -lt 0 -or $ramNow -lt $minRam)) { $minRam = $ramNow }
+        $diskNow = Get-DiskReadBytesPerSec
+        if ($diskNow -gt $peakDiskRead) { $peakDiskRead = $diskNow }
+        # Live poll marker for the CLI's real-time strip. Structured key=value
+        # so the parser is grep-stable. The CLI filters these out of the
+        # visible log so they don't bloat the scroll buffer.
+        $ramUsedNow = if ($ramBaseline -ge 0 -and $ramNow -ge 0) { $ramBaseline - $ramNow } else { 0 }
+        $diskMBNow = [math]::Round($diskNow / 1MB, 1)
+        Write-Host ("[poll] gpu_mem={0} gpu_pow={1} gpu_temp={2} gpu_util={3} ram_used={4} disk_r={5}" -f $snap.mem_mib, $snap.power_w, $snap.temp_c, $snap.util_pct, $ramUsedNow, $diskMBNow)
         try {
             $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
             if ($content.Length -gt 10) { $ready = $true; break }
@@ -888,6 +968,15 @@ function Invoke-OneBenchRun {
         ready           = $ready
         ok              = $false
         error           = $null
+        # Extended metrics (added in v0.1.3). Defaults are sensible
+        # null/zero so the schema stays uniform across all runs.
+        ttft_sec             = $null   # set after the bench POST returns
+        gpu_power_peak_w     = [math]::Round($peakPower, 1)
+        gpu_temp_peak_c      = $peakTemp
+        gpu_util_avg_pct     = if ($utilCount -gt 0) { [int]($utilSum / $utilCount) } else { 0 }
+        ram_baseline_mib     = $ramBaseline
+        ram_used_peak_mib    = if ($ramBaseline -ge 0 -and $minRam -ge 0) { [int]($ramBaseline - $minRam) } else { 0 }
+        disk_read_peak_mb_s  = [math]::Round($peakDiskRead / 1MB, 1)
     }
 
     if ($ready) {
@@ -907,17 +996,38 @@ function Invoke-OneBenchRun {
                 $run.prompt_tps = [math]::Round($resp.timings.prompt_per_second, 2)
                 $run.eval_n     = $resp.timings.predicted_n
                 $run.eval_tps   = [math]::Round($resp.timings.predicted_per_second, 2)
+                # Time-to-first-token: llama.cpp reports prompt_ms (total
+                # time spent processing the input prompt). The first
+                # generated token comes out immediately after, so prompt_ms
+                # is effectively the felt latency before the model
+                # responds. Dominates total time for long prompts because
+                # prompt eval is O(N^2) in input length.
+                if ($null -ne $resp.timings.prompt_ms) {
+                    $run.ttft_sec = [math]::Round([double]$resp.timings.prompt_ms / 1000, 3)
+                }
             }
         } catch { $run.error = $_.Exception.Message }
 
-        $v = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
-        if ($v -gt $run.vram_peak_mib) { $run.vram_peak_mib = $v }
+        # Post-bench snapshot: grabs peaks of GPU/RAM at the moment the model
+        # is hottest (the bench POST is synchronous, so we don't poll during
+        # it; this single snapshot captures the steady-state load right
+        # after). Background-thread polling during the POST would be more
+        # accurate but adds significant complexity for marginal gain.
+        $snap = Get-GpuSnapshot
+        if ($snap.mem_mib  -gt $run.vram_peak_mib)        { $run.vram_peak_mib       = $snap.mem_mib }
+        if ($snap.power_w  -gt $run.gpu_power_peak_w)     { $run.gpu_power_peak_w    = [math]::Round($snap.power_w, 1) }
+        if ($snap.temp_c   -gt $run.gpu_temp_peak_c)      { $run.gpu_temp_peak_c     = $snap.temp_c }
         if ($cfg.wddm_detection.enable_shared_mem_counter) {
             $s = Get-SharedGPUMemoryMib
             if ($s -ge 0) {
                 $delta = $s - $sharedBaseline
                 if ($delta -gt $run.shared_peak_mib) { $run.shared_peak_mib = $delta }
             }
+        }
+        $ramNow = Get-AvailableMemoryMib
+        if ($ramBaseline -ge 0 -and $ramNow -ge 0) {
+            $usedNow = $ramBaseline - $ramNow
+            if ($usedNow -gt $run.ram_used_peak_mib) { $run.ram_used_peak_mib = [int]$usedNow }
         }
     }
 
@@ -1046,6 +1156,16 @@ function Invoke-OneBench {
                 wddm_vram_saturation = $r.wddm_vram_saturation
                 wddm_flag_high_vram  = $r.wddm_flag_high_vram
                 wddm_flag_shared_pos = $r.wddm_flag_shared_pos
+                # Extended metrics carry through to the failure record too
+                # so the report can render the same columns uniformly
+                # whether ok=true or ok=false.
+                ttft_sec             = $r.ttft_sec
+                gpu_power_peak_w     = $r.gpu_power_peak_w
+                gpu_temp_peak_c      = $r.gpu_temp_peak_c
+                gpu_util_avg_pct     = $r.gpu_util_avg_pct
+                ram_baseline_mib     = $r.ram_baseline_mib
+                ram_used_peak_mib    = $r.ram_used_peak_mib
+                disk_read_peak_mb_s  = $r.disk_read_peak_mb_s
             }
             $failResult.failure_reason = Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
