@@ -380,6 +380,15 @@ Describe "New-AggregatedBenchResult" {
             compute_host_mib = 80
             layers_offloaded = "33/33"
             fit_status      = "success"
+            # Extended metrics (defaults make the aggregator happy even
+            # when a test doesn't care about these dimensions)
+            ttft_sec             = 0.2
+            gpu_power_peak_w     = 140.0
+            gpu_temp_peak_c      = 65
+            gpu_util_avg_pct     = 80
+            ram_baseline_mib     = 12000
+            ram_used_peak_mib    = 600
+            disk_read_peak_mb_s  = 350.0
         }
     }
 
@@ -443,6 +452,38 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 380.0 $r.prompt_tps
         Assert-Equal 35.0  $r.eval_tps
         Assert-Equal 1 $r.runs.Count
+    }
+    It "aggregates extended metrics (median for ttft/util, max for power/temp/ram/disk)" {
+        # Hand-build runs with distinct values per dimension so the
+        # aggregation rule (median vs max) is observable.
+        $r1 = _run 0 7000 30 410.0 40.0
+        $r1.ttft_sec            = 0.20
+        $r1.gpu_util_avg_pct    = 60
+        $r1.gpu_power_peak_w    = 130.0
+        $r1.gpu_temp_peak_c     = 60
+        $r1.ram_used_peak_mib   = 500
+        $r1.disk_read_peak_mb_s = 200.0
+        $r2 = _run 1 7200 50 430.0 42.0
+        $r2.ttft_sec            = 0.30   # median
+        $r2.gpu_util_avg_pct    = 75      # median
+        $r2.gpu_power_peak_w    = 180.0  # max
+        $r2.gpu_temp_peak_c     = 72     # max
+        $r2.ram_used_peak_mib   = 900    # max
+        $r2.disk_read_peak_mb_s = 500.0  # max
+        $r3 = _run 2 7100 40 420.0 41.0
+        $r3.ttft_sec            = 0.40
+        $r3.gpu_util_avg_pct    = 90
+        $r3.gpu_power_peak_w    = 150.0
+        $r3.gpu_temp_peak_c     = 65
+        $r3.ram_used_peak_mib   = 700
+        $r3.disk_read_peak_mb_s = 300.0
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs @($r1, $r2, $r3)
+        Assert-Equal 0.3   $r.ttft_sec               "ttft median"
+        Assert-Equal 75    $r.gpu_util_avg_pct        "util median"
+        Assert-Equal 180.0 $r.gpu_power_peak_w        "power max"
+        Assert-Equal 72    $r.gpu_temp_peak_c         "temp max"
+        Assert-Equal 900   $r.ram_used_peak_mib       "ram max"
+        Assert-Equal 500.0 $r.disk_read_peak_mb_s     "disk max"
     }
 }
 
