@@ -1,5 +1,16 @@
 # Specs
 
+> ⚠ **ARCHIVED.** The spec-and-plan-for-everything workflow was
+> superseded by [`../CLAUDE.md`](../CLAUDE.md) when the project
+> entered the product-iteration phase. New work no longer creates
+> entries here by default; what ships is documented in the commit
+> message instead.
+>
+> The files in this folder are kept as historical record of how each
+> feature was originally scoped. They are not authoritative — some
+> describe behavior that was later changed, simplified, or dropped.
+> Check the current code (and `git log`) for what actually shipped.
+
 One small, atomic feature or decision per file, named after the behavior
 (`config-cli.md`, `vram-headroom-indicator.md`). A spec answers **what**:
 

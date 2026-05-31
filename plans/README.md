@@ -1,5 +1,11 @@
 # Plans
 
+> ⚠ **ARCHIVED.** Same as `../spec/`: the plan-per-feature workflow
+> was superseded by [`../CLAUDE.md`](../CLAUDE.md). Existing plan files
+> are historical artifacts of how upcoming work was scoped at the time —
+> not authoritative for the current product. The shipped behavior lives
+> in the code and the commit messages.
+
 Implementation recipes for non-trivial work. One file per plan, named
 `YYYY-MM-DD-<short-slug>.md`. A plan answers **how**: ordering, file paths,
 verification steps, trade-offs considered. It typically references one or

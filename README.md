@@ -14,19 +14,20 @@ per-model optimized `.bat` launchers.
 
 ![dashboard screenshot](docs/screenshot.png)
 
-> **v1 is Windows-only.** Detection of silent VRAM-to-RAM paging relies on a
+> **Windows-only today.** Detection of silent VRAM-to-RAM paging relies on a
 > Windows-specific perf counter (`\GPU Adapter Memory(*)\Shared Usage`).
-> Linux/macOS PowerShell 7 support is on the roadmap; on Linux the silent
-> failure mode this tool primarily targets simply doesn't exist (CUDA OOMs
-> cleanly).
+> Linux drivers raise OOM cleanly, so the silent-failure mode this tool
+> primarily targets doesn't exist there. Cross-platform support is a
+> Phase 2/3 question — see [`CLAUDE.md`](CLAUDE.md).
 
-> **For an LLM (or contributor) reading this**: skim the **architecture
-> docs** for the full picture before diving into the code.
-> Start with [`architecture/README.md`](architecture/README.md) for the
-> methodology and folder map, then
-> [`architecture/domain.md`](architecture/domain.md) for the vocabulary,
-> then the most recent file under [`memories/`](memories/) for a
-> point-in-time state-of-the-project primer.
+> **For an LLM (or contributor) reading this**: start with
+> [`CLAUDE.md`](CLAUDE.md) — it documents the current methodology,
+> the three-phase product direction (CLI → backend → web UI), and what
+> is REFERENCE ONLY vs authoritative. The folders `architecture/`,
+> `spec/`, `plans/`, `memories/` are kept for history but do not
+> reflect current practice. Domain vocabulary (`model` / `series` /
+> `variant` / `tier` / `WDDM` / `headroom`) still lives in
+> [`architecture/domain.md`](architecture/domain.md).
 
 ---
 
@@ -51,29 +52,44 @@ per-model optimized `.bat` launchers.
 
 ## Quickstart
 
+Two ways to run, same engine underneath.
+
+**Interactive CLI** (recommended — Node + Ink TUI with menus, forms, a
+live progress strip, and a results browser):
+
+```powershell
+npm install -g calibr
+calibr
+```
+
+You get a menu: `init`, `discover`, `plan`, `bench`, `report`, `all`,
+`results`. Walk through it with arrow keys + enter. The `all` form
+defaults to downloading the curated reference set and rotating files
+off disk per model, so peak disk stays bounded to the largest single
+model (~20 GB).
+
+**Raw PowerShell** (no Node required — useful for headless / CI):
+
 ```powershell
 git clone https://github.com/SpeederX/calibr.git    # or your fork
 cd calibr
-.\calibr.ps1 init      # detect HW + write config.json
-.\calibr.ps1 all       # discover -> plan -> bench -> report
-start data\report.html  # open the dashboard
+.\calibr.ps1 init                # detect HW + write config.json
+.\calibr.ps1 all                 # discover -> plan -> bench -> report
+start data\report.html           # open the dashboard
 ```
 
-You're done. The winning configurations are in `data/bats/{model}.bat` —
-double-click one and you have llama-server running with the optimized flags.
+Winning configurations land in `data/bats/{model}.bat` — double-click
+one and you have llama-server running with the optimized flags.
 
-If you don't have any `.gguf` files yet, or want to try every model from the
-curated reference set, add `-DownloadSamples` to `all` and calibr will fetch
-the models first, then run the full pipeline:
-
-```powershell
-.\calibr.ps1 all -DownloadSamples   # ~100 GB, full reference set (prompts to confirm)
-```
-
-Or you can just try out with one sample:
+Don't have any `.gguf` files yet? Add `-DownloadSamples` and calibr
+walks the curated set one model at a time (download → bench → delete):
 
 ```powershell
-.\calibr.ps1 all -DownloadSamples -SampleId qwen3.5-9b-q4km   # ~5 GB, one model
+# full curated set, ~85 GB total bandwidth, ~20 GB peak on disk
+.\calibr.ps1 all -DownloadSamples
+
+# just one sample (fast, ~500 MB, finishes in minutes)
+.\calibr.ps1 all -DownloadSamples -SampleId qwen3.5-0.8b-q4xl
 ```
 
 ## Why not just …?
@@ -478,66 +494,79 @@ calibr/
 
 ## Known limitations
 
-- **Single run per config (N=1).** Each config is benchmarked once. Empirical
-  variance on a quiet RTX 2070 desktop: about **±5 % on `eval_tps`** and
-  **±10 % on `prompt_tps`**. That's enough resolution to spot a 4× speedup
-  but not a 5 % regression. If you need stable numbers, the cleanest patch is
-  a loop in `Invoke-OneBench` taking the median of 3 runs (the rest of the
-  pipeline is unchanged). PRs welcome.
+- **Windows only.** The WDDM shared-memory polling that detects silent
+  paging uses `Get-Counter \GPU Adapter Memory(*)\Shared Usage`, which is
+  a Windows-specific perf counter. The CLI explicitly refuses to start on
+  non-Windows. Cross-platform support is a Phase 2/3 question (see
+  [`CLAUDE.md`](CLAUDE.md)).
 - **MoE detection is a regex on the filename.** `model =~ /A\d+B/` correctly
-  matches `Qwen3.6-35B-A3B` and `Mixtral-8x7B`-style names but **a model
+  matches `Qwen3.6-35B-A3B` and `Mixtral-8x7B`-style names but a model
   innocently named `something-A100B-special.gguf` would be false-flagged as
-  MoE** and routed to a `--n-cpu-moe` sweep that won't apply to it. If this
-  bites you, add the model to a manual `dense_overrides` list in
-  `config.json` (not yet implemented; PR welcome) or rename the file.
+  MoE and routed to a `--n-cpu-moe` sweep. Add the model to
+  `config.dense_overrides` (case-sensitive, exact match) to opt it back out
+  of Tier B classification.
 - **Single GPU only.** No `--tensor-split` planning or per-device VRAM
   tracking. Multi-GPU users have to point `-LlamaServer` at a build that
   defaults to the right device.
-- **Windows-only WDDM detection.** On Linux, `shared_peak_mib` is always `-1`
-  because the perf counter is Windows-specific. The other heuristic
-  (saturation %) still works as a sanity check, and Linux drivers raise OOM
-  cleanly so the silent-failure mode this tool primarily targets simply
-  doesn't exist there.
 - **Winner picker doesn't model quality.** Q4 is preferred over BF16 if it
   generates faster, even though BF16 has higher fidelity. If you care about
   the tradeoff, look at the report's per-model table and pick by hand —
-  every number is preserved.
+  every number is preserved. (A future opt-in quality bench is being
+  explored — see Roadmap.)
 - **No HuggingFace authentication for `get-sample-models`.** Models that
   require accepting a license (notably some Gemma variants) will return 401.
   Accept the license once on the website, or download those particular files
   with `huggingface-cli` separately.
+- **Per-model `max_context` only honored for curated samples.** Entries in
+  `samples.json` carry `max_context` (scraped from the upstream model card),
+  and `plan` skips Tier A candidates above it. User-owned `.gguf` files
+  outside `samples.json` fall back to the global `max_context_cap` (default
+  262 144) — a future GGUF metadata parser would derive the per-model cap
+  from the file itself.
 
 ## Roadmap
 
-Things explicitly out of scope for v1 but reasonable next steps:
+Direction lives in [`CLAUDE.md`](CLAUDE.md) (the project pivoted from a
+strict SemVer + spec-driven backlog to a three-phase product approach:
+CLI → backend → web UI). Concrete near-term ideas being explored:
 
-- `-PreferSpeed` flag to disable the WDDM-safety preference in the winner
-  picker (so a paging-but-faster config can win when you accept the risk).
-- Per-config N-run support with median + MAD for variance reduction.
-- `dense_overrides` list to bypass MoE filename regex false positives.
-- Speculative decoding planning: pair a small model in the same series
-  (e.g. Qwen3.5-0.8B as draft for Qwen3.5-9B) and benchmark the
-  `--draft-max` configurations.
-- Quality scoring: optionally run a small task suite (truthful-qa subset,
-  HumanEval-mini) per config so the winner picker can balance speed vs
-  quality.
-- Linux/macOS port: a `nvml`-based equivalent of the WDDM shared-memory
-  delta heuristic.
-- Multi-GPU planning with `--tensor-split`.
+- **Real-time metrics during bench**: stream CPU/GPU load + temperature,
+  system-RAM pressure, disk read/write, GPU power draw into the CLI run
+  view — and persist them on each result for the report.
+- **TTFT (time-to-first-token)** as a first-class metric alongside
+  `prompt_tps` / `eval_tps`. Free to measure, captures the felt latency
+  for chat-style use.
+- **KV-fill stub**: synthesize a long prompt to fill the KV cache to
+  25/50/75/95% before timing, so `prompt_tps` reflects the attention-scaling
+  cost at real-world context lengths instead of an empty-cache best case.
+- **Optional quality bench**: integrate a small abstention test suite
+  (the no-auth tasks only, opt-in via flag, multi-hour) and surface a
+  per-model honesty score alongside speed.
+- **Scoring profiles in the report**: weighted matrices over speed,
+  efficiency, honesty, hardware stress, etc., so the same data renders
+  multiple leaderboards.
+- **GGUF metadata parser** for user-owned models: derive `max_context` and
+  the architecture key from the binary header so the plan filter is exact
+  for any model, not just curated samples.
+- **Phase 2 — NestJS backend** that exposes the engine operations the CLI
+  invokes today. Enables clients other than the CLI and a shared online
+  leaderboard.
+- **Phase 3 — Angular UI** on top of the backend.
+- **Linux / macOS / Android** as additional clients of the Phase 2 API
+  (the engine itself stays Windows until a concrete cross-platform user
+  surfaces; see CLAUDE.md for the rationale).
 
 ## Contributing
 
-Each of these is a 1-day PR:
+The fastest first contribution is a new entry in `samples.json` for a
+model not yet covered (verify the HuggingFace URL resolves and add the
+correct `max_context`).
 
-- A new entry in `samples.json` for a model not yet covered (please verify
-  the HuggingFace URL is live).
-- A `dense_overrides` list to fix MoE false positives.
-- Linux port for WDDM detection: parse `nvml` over time and compare against
-  the GPU's actual pinned memory.
-- A median-of-N runner for variance reduction.
-
-The script is one file (~990 lines of PowerShell). The HTML template is
-self-contained (vanilla CSS + ~80 lines of inline JS, no build step).
+The engine is one PowerShell file (`calibr.ps1`, ~2 600 lines) plus a
+test harness in `tests/`. The CLI is a small Node + Ink + TypeScript
+app in `cli/` (~1 200 lines of TS). The HTML report template
+(`report.template.html`) is self-contained — vanilla CSS plus ~150 lines
+of inline JS, no build step.
 
 ## License
 

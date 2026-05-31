@@ -1,5 +1,16 @@
 # Architecture and working methodology
 
+> ⚠ **ARCHIVED.** This document describes a working methodology
+> (GitFlow lite + strict SemVer + spec-and-plan-for-everything + design
+> docs with Why/Pros/Cons + memory snapshots + priority-ordered
+> backlog) that was explicitly superseded by [`../CLAUDE.md`](../CLAUDE.md)
+> when the project entered the product-iteration phase. Kept for history;
+> the current workflow is documented in CLAUDE.md.
+>
+> The folder still contains [`domain.md`](domain.md), which IS
+> authoritative for project vocabulary (`model` / `series` / `variant` /
+> `tier` / `WDDM` / `headroom`).
+
 How the project is organized and how changes flow from idea to release.
 
 ## Branching: GitFlow lite
