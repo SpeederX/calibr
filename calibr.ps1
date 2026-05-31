@@ -944,6 +944,12 @@ function Invoke-OneBenchRun {
         if ($ramNow -ge 0 -and ($minRam -lt 0 -or $ramNow -lt $minRam)) { $minRam = $ramNow }
         $diskNow = Get-DiskReadBytesPerSec
         if ($diskNow -gt $peakDiskRead) { $peakDiskRead = $diskNow }
+        # Live poll marker for the CLI's real-time strip. Structured key=value
+        # so the parser is grep-stable. The CLI filters these out of the
+        # visible log so they don't bloat the scroll buffer.
+        $ramUsedNow = if ($ramBaseline -ge 0 -and $ramNow -ge 0) { $ramBaseline - $ramNow } else { 0 }
+        $diskMBNow = [math]::Round($diskNow / 1MB, 1)
+        Write-Host ("[poll] gpu_mem={0} gpu_pow={1} gpu_temp={2} gpu_util={3} ram_used={4} disk_r={5}" -f $snap.mem_mib, $snap.power_w, $snap.temp_c, $snap.util_pct, $ramUsedNow, $diskMBNow)
         try {
             $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
             if ($content.Length -gt 10) { $ready = $true; break }

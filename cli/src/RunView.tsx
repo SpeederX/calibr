@@ -33,6 +33,24 @@ const ROTATE_DELETE_RE = /^\s*\[rotate\]\s+deleted\s+(.+?)\s*$/;
 const ROTATE_KEEP_RE   = /^\s*\[rotate\]\s+kept\s+(.+?)\s*$/;
 const ROTATE_FAIL_RE   = /^\s*\[rotate\]\s+FAILED\s+(.+?)\s*$/;
 
+// Live polling marker emitted by Invoke-OneBenchRun every ~500ms during
+// the load wait. Format is structured key=value pairs so the parser is
+// grep-stable. Example:
+//   [poll] gpu_mem=7032 gpu_pow=180.5 gpu_temp=72 gpu_util=87 ram_used=512 disk_r=420.5
+// Filtered from the visible log so it doesn't bloat the scroll buffer.
+const POLL_RE = /^\s*\[poll\]\s+(.+?)\s*$/;
+function parsePollLine(rest: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const pair of rest.split(/\s+/)) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const key = pair.slice(0, eq);
+    const val = Number(pair.slice(eq + 1));
+    if (!isNaN(val)) out[key] = val;
+  }
+  return out;
+}
+
 interface Progress {
   current: number;
   total: number;
@@ -52,11 +70,22 @@ interface RotationStats {
   lastEvent: string | null;
 }
 
+interface LiveMetrics {
+  gpu_mem: number;
+  gpu_pow: number;
+  gpu_temp: number;
+  gpu_util: number;
+  ram_used: number;
+  disk_r: number;
+  updatedAt: number; // ms since epoch; goes stale after a few seconds
+}
+
 export function RunView({ args, label, onExit }: Props) {
   const [lines, setLines] = useState<string[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [sampleProgress, setSampleProgress] = useState<SampleProgress | null>(null);
   const [rotation, setRotation] = useState<RotationStats>({ deleted: 0, kept: 0, failed: 0, lastEvent: null });
+  const [live, setLive] = useState<LiveMetrics | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
   // Scroll offset measured from the bottom of the buffer in lines. 0 means
   // 'follow the tail'; positive values mean 'show N lines up from the
@@ -73,11 +102,14 @@ export function RunView({ args, label, onExit }: Props) {
     const append = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       const incoming = text.split(/\r?\n/);
+      // Filter [poll] markers out of the visible log: they're real-time
+      // telemetry, not narrative output. The strip below renders them.
+      const visible = incoming.filter(l => !POLL_RE.test(l));
       setLines((prev) => {
         const merged = [...prev];
         if (merged.length === 0) merged.push("");
-        merged[merged.length - 1] += incoming[0];
-        for (let i = 1; i < incoming.length; i++) merged.push(incoming[i]);
+        merged[merged.length - 1] += visible[0] ?? "";
+        for (let i = 1; i < visible.length; i++) merged.push(visible[i]);
         return merged.length > MAX_LINES ? merged.slice(-MAX_LINES) : merged;
       });
       // Scan all incoming lines for the most recent [X/Y] config marker
@@ -108,19 +140,36 @@ export function RunView({ args, label, onExit }: Props) {
       }
       // Accumulate rotation events from every incoming line.
       let dDelta = 0, kDelta = 0, fDelta = 0;
-      let last: string | null = null;
+      let lastRot: string | null = null;
+      // Most recent [poll] line wins for the live strip.
+      let lastPoll: Record<string, number> | null = null;
       for (const line of incoming) {
-        if (ROTATE_DELETE_RE.test(line))     { dDelta++; last = line.trim(); }
-        else if (ROTATE_KEEP_RE.test(line))  { kDelta++; last = line.trim(); }
-        else if (ROTATE_FAIL_RE.test(line))  { fDelta++; last = line.trim(); }
+        if (ROTATE_DELETE_RE.test(line))     { dDelta++; lastRot = line.trim(); }
+        else if (ROTATE_KEEP_RE.test(line))  { kDelta++; lastRot = line.trim(); }
+        else if (ROTATE_FAIL_RE.test(line))  { fDelta++; lastRot = line.trim(); }
+        else {
+          const pm = line.match(POLL_RE);
+          if (pm) lastPoll = parsePollLine(pm[1]);
+        }
       }
       if (dDelta || kDelta || fDelta) {
         setRotation(prev => ({
           deleted: prev.deleted + dDelta,
           kept: prev.kept + kDelta,
           failed: prev.failed + fDelta,
-          lastEvent: last ?? prev.lastEvent,
+          lastEvent: lastRot ?? prev.lastEvent,
         }));
+      }
+      if (lastPoll) {
+        setLive({
+          gpu_mem:  lastPoll.gpu_mem  ?? 0,
+          gpu_pow:  lastPoll.gpu_pow  ?? 0,
+          gpu_temp: lastPoll.gpu_temp ?? 0,
+          gpu_util: lastPoll.gpu_util ?? 0,
+          ram_used: lastPoll.ram_used ?? 0,
+          disk_r:   lastPoll.disk_r   ?? 0,
+          updatedAt: Date.now(),
+        });
       }
     };
 
@@ -194,6 +243,13 @@ export function RunView({ args, label, onExit }: Props) {
             rotation: {rotation.deleted} deleted · {rotation.kept} kept{rotation.failed > 0 ? ` · ${rotation.failed} failed` : ""}
           </Text>
           {rotation.lastEvent && <Text dimColor>last: {rotation.lastEvent}</Text>}
+        </Box>
+      )}
+      {live && (
+        <Box marginTop={1}>
+          <Text color="cyan">
+            live · GPU {live.gpu_mem} MiB / {live.gpu_pow.toFixed(0)} W / {live.gpu_temp}°C / {live.gpu_util}%  ·  RAM Δ {live.ram_used} MiB  ·  disk r {live.disk_r.toFixed(0)} MB/s
+          </Text>
         </Box>
       )}
       <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
