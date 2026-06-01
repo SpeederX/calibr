@@ -1,7 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import Spinner from "ink-spinner";
+import { spawnSync } from "node:child_process";
 import { runEngine } from "./engine.js";
+
+// Kill the whole process tree rooted at pid. On Windows, Node's
+// child.kill() doesn't propagate to grandchildren — we spawn powershell
+// which then spawns llama-server.exe via System.Diagnostics.Process, and
+// llama-server keeps running after powershell dies. taskkill /T /F walks
+// the tree and force-terminates everything.
+function killTree(pid: number | undefined): void {
+  if (!pid || pid <= 0) return;
+  try {
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
+      windowsHide: true,
+      stdio: "ignore",
+      shell: false,
+    });
+  } catch {}
+}
 
 interface Props {
   args: string[];
@@ -221,7 +238,7 @@ export function RunView({ args, label, onExit }: Props) {
 
     return () => {
       clearInterval(tick);
-      try { run.proc.kill(); } catch {}
+      killTree(run.proc.pid);
     };
   }, []);
 
@@ -237,14 +254,30 @@ export function RunView({ args, label, onExit }: Props) {
     if (key.downArrow) { setScrollOffset(o => Math.max(0, o - 1)); return; }
     if (key.pageUp)    { setScrollOffset(o => Math.min(Math.max(0, lines.length - VIEWPORT), o + VIEWPORT)); return; }
     if (key.pageDown)  { setScrollOffset(o => Math.max(0, o - VIEWPORT)); return; }
-    if (input === "g") { setScrollOffset(Math.max(0, lines.length - VIEWPORT)); return; }  // top
-    if (input === "G") { setScrollOffset(0); return; }                                       // bottom (resume tail)
+    // Lowercase mnemonics for top/bottom (uppercase G felt awkward in a
+    // PowerShell terminal where Shift+letter is muscle-memory for caps).
+    // Home/End are kept as the universal escape hatch.
+    if (input === "g" || key.meta && key.upArrow)   { setScrollOffset(Math.max(0, lines.length - VIEWPORT)); return; }  // top
+    if (input === "h" || key.meta && key.downArrow) { setScrollOffset(0); return; }                                       // bottom (resume tail)
 
-    if (exitCode !== null && (key.return || input === "q" || key.escape)) {
-      onExit();
+    // q / esc: cancel a live run, exit the screen after the run is done.
+    // We kill the WHOLE PowerShell process tree because the engine
+    // spawns llama-server as a grandchild — Node's child.kill() only
+    // hits the immediate child, leaving llama-server orphaned and still
+    // emitting stdout. taskkill /T /F walks the tree.
+    if (input === "q" || key.escape) {
+      if (exitCode === null) {
+        killTree(procRef.current?.proc.pid);
+        // Don't onExit() yet — let the natural process close handler
+        // set exitCode so the user sees the final '[err] ... (exit -1)'
+        // banner with the elapsed time. They press q/esc again to leave.
+      } else {
+        onExit();
+      }
+      return;
     }
-    if (exitCode === null && (input === "q" || key.escape)) {
-      try { procRef.current?.proc.kill(); } catch {}
+    if (exitCode !== null && key.return) {
+      onExit();
     }
   });
 
@@ -317,7 +350,7 @@ export function RunView({ args, label, onExit }: Props) {
           </Text>
         )}
         <Text dimColor>
-          ↑/↓ scroll · PgUp/PgDn page · g top · G bottom · {exitCode === null ? "q/esc cancel" : "enter/q/esc back"}
+          ↑/↓ scroll · PgUp/PgDn page · g top · h bottom · {exitCode === null ? "q/esc cancel run" : "enter/q/esc back"}
         </Text>
       </Box>
     </Box>
