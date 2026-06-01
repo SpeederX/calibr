@@ -1853,6 +1853,12 @@ function Invoke-Report {
         $gpuUt  = if ($null -ne $r.gpu_util_avg_pct)   { [int]$r.gpu_util_avg_pct } else { $null }
         $ramPk  = if ($null -ne $r.ram_used_peak_mib)  { [int]$r.ram_used_peak_mib } else { $null }
         $ramBl  = if ($null -ne $r.ram_baseline_mib)   { [int]$r.ram_baseline_mib } else { $null }
+        # Failure-classification fields. The report needs them to give a
+        # meaningful summary for failed configs (otherwise the row shows
+        # zeros + 'unknown' fit and the user thinks the config wasn't run).
+        $failReason   = if ($null -ne $r.failure_reason)           { [string]$r.failure_reason } else { $null }
+        $unsupportedArch = if ($null -ne $r.unsupported_architecture) { [string]$r.unsupported_architecture } else { $null }
+        $readyFlag    = if ($null -ne $r.ready) { [bool]$r.ready } else { $null }
         [ordered]@{
             id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; tier=$r.tier
             prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
@@ -1866,6 +1872,11 @@ function Invoke-Report {
             # is meant to be opened on the same machine that ran the bench).
             model_path=$r.model_path
             mmproj_path=$r.mmproj_path
+            # Failure-classification fields (matched against Get-FailureReason
+            # in the engine). Null on successful runs.
+            failure_reason=$failReason
+            unsupported_architecture=$unsupportedArch
+            ready=$readyFlag
             # Derived for the new charts and the headroom annotation:
             time_total_sec=$derived.time_total_sec
             headroom_mib=$derived.headroom_mib

@@ -27,7 +27,7 @@
   td.num { text-align: right; font-family: Consolas, monospace; font-variant-numeric: tabular-nums; }
   .tier-A, .fit-success  { color: var(--c-a); font-weight: 600; }
   .tier-B, .fit-unknown  { color: var(--c-b); font-weight: 600; }
-  .tier-C, .fit-failed_but_running { color: var(--c-c); font-weight: 600; }
+  .tier-C, .fit-failed_but_running, .fit-failed { color: var(--c-c); font-weight: 600; }
   .wddm { color: var(--c-c); font-weight: 700; }
   .bat-link { display: inline-block; padding: 2px 8px; background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; cursor: pointer; }
   .bat-link:hover { border-color: var(--c-accent); }
@@ -49,18 +49,21 @@
   details.model-row { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; }
   details.model-row[open] { border-color: var(--c-accent); }
   details.model-row > summary { list-style: none; cursor: pointer; padding: 10px 14px;
-                                display: grid; grid-template-columns: 16px 1fr auto; gap: 10px;
+                                display: grid; grid-template-columns: 16px auto minmax(0, 1fr) auto; gap: 10px;
                                 align-items: center; }
   details.model-row > summary::-webkit-details-marker { display: none; }
   .toggle-arrow { font-size: 10px; color: var(--c-muted); transition: transform 0.15s; display: inline-block; width: 12px; }
   details.model-row[open] .toggle-arrow { transform: rotate(90deg); }
-  .model-name { font-weight: 600; color: var(--c-text); }
+  .model-name { font-weight: 600; color: var(--c-text); white-space: nowrap; }
+  details.model-row.is-failed .model-name { color: var(--c-c); }
   .winner-summary { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-                    font-family: Consolas, monospace; font-size: 11px; color: var(--c-muted); }
+                    font-family: Consolas, monospace; font-size: 11px; color: var(--c-muted);
+                    min-width: 0; }
+  .fail-summary { color: var(--c-c); font-family: Consolas, monospace; font-size: 11px; }
+  .fail-arch { color: var(--c-muted); margin-left: 6px; }
   .winner-stat { color: var(--c-text); }
   .winner-stat b { color: var(--c-accent); }
   .winner-actions { display: flex; gap: 6px; align-items: center; }
-  .no-winner { color: var(--c-muted); font-style: italic; font-size: 11px; }
   .model-row .config-list { padding: 0 14px 12px 42px; }
   .model-row .config-list table { margin-top: 0; font-size: 11px; }
   .model-row .config-list th { background: transparent; border-bottom: 1px solid var(--c-border); color: var(--c-muted); font-weight: 400; }
@@ -406,6 +409,7 @@ function renderModelsList() {
     const configs = byModel[model].slice().sort((a, b) => (+b.eval_tps || 0) - (+a.eval_tps || 0));
     const w = currentWinners[model];
 
+    const allFailed = !w;
     const summaryHtml = w
       ? '<span class="model-name">' + escapeHtml(model) + '</span>' +
         '<span class="winner-summary">' + winnerSummary(w) + '</span>' +
@@ -414,7 +418,7 @@ function renderModelsList() {
           ' <a class="bat-link" href="#" data-cfg-id="' + w.id + '" title="Generate a .bat for this exact config (client-side)">&darr; bat</a>' +
         '</span>'
       : '<span class="model-name">' + escapeHtml(model) + '</span>' +
-        '<span class="no-winner">no ok config for this model</span>' +
+        '<span class="fail-summary">' + noWinnerSummary(configs) + '</span>' +
         '<span></span>';
 
     // Per-model sub-table: every config benched, winner highlighted.
@@ -430,13 +434,13 @@ function renderModelsList() {
               '<td class="num">' + wddm + '</td>' +
               '<td class="num">' + fmt2(c.ttft_sec) + '</td>' +
               '<td class="num">' + ((+c.gpu_power_peak_w > 0) ? fmt0(c.gpu_power_peak_w) + ' W' : '-') + '</td>' +
-              '<td class="fit-' + c.fit_status + '">' + fitLabel(c.fit_status) + '</td>' +
+              '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
               '<td><a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a></td>' +
               '</tr>';
     }
 
     el.insertAdjacentHTML('beforeend',
-      '<details class="model-row">' +
+      '<details class="model-row' + (allFailed ? ' is-failed' : '') + '">' +
         '<summary>' +
           '<span class="toggle-arrow">&#9654;</span>' +
           summaryHtml +
@@ -613,13 +617,80 @@ if (flagged.length === 0) {
 // ===========================================================================
 // All-results table (winner-aware)
 // ===========================================================================
-function fitLabel(s) {
-  switch (s) {
-    case 'success':            return 'fits OK';
-    case 'failed_but_running': return 'vram overflow';
-    case 'unknown':            return 'unknown';
-    default:                   return s || '-';
+// Friendly label for the Fit column. Takes the FULL config object (not just
+// fit_status) because failed runs need failure_reason / unsupported_arch
+// info to be informative — without that, every failure shows the engine's
+// fallback fit_status='unknown', which the user reads as "wasn't executed".
+function fitLabel(c) {
+  if (!c) return '-';
+  if (c.ok) {
+    switch (c.fit_status) {
+      case 'success':            return 'fits OK';
+      case 'failed_but_running': return 'vram overflow';
+      case 'unknown':            return 'unknown';
+      default:                   return c.fit_status || '-';
+    }
   }
+  // Failed run: surface failure_reason. The engine writes the architecture
+  // name on unsupported_arch failures so we can suggest exactly what's missing.
+  switch (c.failure_reason) {
+    case 'unsupported_arch':
+      return c.unsupported_architecture
+        ? 'unsupported arch: ' + c.unsupported_architecture
+        : 'unsupported architecture';
+    case 'vram_overflow':  return 'vram overflow on load';
+    case 'server_timeout': return 'llama-server timeout';
+    case 'other':          return 'load failed';
+    default:
+      // Legacy result JSONs (pre-failure_reason) — best-effort guess.
+      if (c.unsupported_architecture) return 'unsupported arch: ' + c.unsupported_architecture;
+      if (c.ready === false)          return 'never became ready';
+      return 'failed';
+  }
+}
+
+// CSS class for the Fit cell. Successful runs get fit-<status> (preserves
+// the existing styling); failed runs always get fit-failed (red).
+function fitClass(c) {
+  if (!c) return '';
+  if (c.ok) return 'fit-' + (c.fit_status || 'unknown');
+  return 'fit-failed';
+}
+
+// Human label for a single failure_reason — used in the "no winner" model
+// summary so the user sees WHY before expanding.
+function failureLabel(reason) {
+  switch (reason) {
+    case 'unsupported_arch': return 'unsupported architecture (needs newer llama.cpp build)';
+    case 'vram_overflow':    return 'ran out of VRAM on load';
+    case 'server_timeout':   return 'llama-server never became ready';
+    case 'other':            return 'load failed';
+    default:                 return reason || 'unknown';
+  }
+}
+
+// Summarize the failure(s) across a model's configs for the collapsed row.
+// If every failure shares a single reason, name it; if mixed, list them.
+// Surfaces the architecture name on unsupported_arch so the user knows
+// which one to look up.
+function noWinnerSummary(configs) {
+  const reasons = new Set();
+  const archs = new Set();
+  for (const c of configs) {
+    if (c.ok) continue;
+    reasons.add(c.failure_reason || 'other');
+    if (c.unsupported_architecture) archs.add(c.unsupported_architecture);
+  }
+  if (reasons.size === 0) return 'no ok config for this model';
+  if (reasons.size === 1) {
+    const reason = [...reasons][0];
+    let txt = failureLabel(reason);
+    if (reason === 'unsupported_arch' && archs.size > 0) {
+      txt = 'unsupported architecture <span class="fail-arch">[' + [...archs].join(', ') + ']</span> — update llama.cpp';
+    }
+    return txt;
+  }
+  return [...reasons].map(failureLabel).join(' / ');
 }
 
 function escapeHtml(s) {
@@ -659,7 +730,7 @@ function renderAllTable() {
         '<td class="num">' + (d.gpu_temp_peak_c != null && d.gpu_temp_peak_c > 0 ? d.gpu_temp_peak_c : '-') + '</td>' +
         '<td class="num">' + (d.gpu_util_avg_pct != null && d.gpu_util_avg_pct > 0 ? d.gpu_util_avg_pct + '%' : '-') + '</td>' +
         '<td>' + (d.layers_offloaded || '-') + '</td>' +
-        '<td class="fit-' + d.fit_status + '">' + fitLabel(d.fit_status) + '</td>' +
+        '<td class="' + fitClass(d) + '">' + fitLabel(d) + '</td>' +
       '</tr>'
     );
   });

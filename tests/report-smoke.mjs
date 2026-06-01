@@ -42,6 +42,17 @@ const DATA = [
     ttft_sec:null, gpu_power_peak_w:null, gpu_temp_peak_c:null, gpu_util_avg_pct:null,
     ram_used_peak_mib:null, ram_baseline_mib:null,
     model_path:"C:\\fake\\m2.gguf", mmproj_path:null },
+  // ok=false with an unsupported architecture — exercises the no-winner /
+  // failure-label rendering path that the user hit on Gemma-4-E4B / Granite.
+  { id:"c", label:"ctx16k_kv_q8", model:"M3", series:"M", variant:"Q4", tier:"A",
+    prompt_tps:0, eval_tps:0, vram_peak_mib:808, shared_peak_mib:0, load_sec:6,
+    layers_offloaded:null, fit_status:"unknown", wddm_vram_saturation:0.1,
+    wddm_flag_high_vram:false, wddm_flag_shared_pos:false, extra_args:"--ctx-size 16384",
+    ok:false, time_total_sec:null, headroom_mib:7384, ctx_size:16384, kv_cache_mib:0,
+    ttft_sec:null, gpu_power_peak_w:31, gpu_temp_peak_c:45, gpu_util_avg_pct:1,
+    ram_used_peak_mib:1, ram_baseline_mib:13000,
+    model_path:"C:\\fake\\m3.gguf", mmproj_path:null,
+    failure_reason:"unsupported_arch", unsupported_architecture:"fakearch_v2", ready:false },
 ];
 const WINNERS = [{ model:"M1", winner_id:"a", bat:"M1.bat" }, { model:"M2", winner_id:"b", bat:"M2.bat" }];
 const CFG = {

@@ -49,7 +49,16 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'id="models-list"')                 "models-list container missing"
         Assert-True ($tpl -match 'details\.model-row')               "model-row CSS missing"
         Assert-True ($tpl -match 'function renderModelsList')        "renderModelsList function missing"
-        Assert-True ($tpl -match 'details class="model-row"')        "details element for model row missing"
+        # Class string may now have additional modifiers (e.g. ' is-failed') appended.
+        Assert-True ($tpl -match 'details class="model-row')         "details element for model row missing"
+    }
+    It "surfaces failure_reason for failed configs and 'no winner' models" {
+        Assert-True ($tpl -match 'function fitLabel')                "fitLabel helper missing"
+        Assert-True ($tpl -match 'function failureLabel')            "failureLabel helper missing"
+        Assert-True ($tpl -match 'function noWinnerSummary')         "noWinnerSummary helper missing"
+        Assert-True ($tpl -match 'unsupported_arch')                 "unsupported_arch case missing from fitLabel"
+        Assert-True ($tpl -match 'unsupported_architecture')         "unsupported_architecture detail missing"
+        Assert-True ($tpl -match 'is-failed')                        "is-failed model row modifier missing"
     }
     It "exposes the eval/vram tabbed widget that replaces the old separate bar sections" {
         Assert-True ($tpl -match 'id="bars-tabs"')           "bars-tabs container missing"
@@ -155,6 +164,11 @@ Describe "Invoke-Report end-to-end on canned data" {
         It "embeds paths for client-side .bat generation (Phase F)" {
             Assert-True ($html -match '"model_path"')         "DATA missing model_path"
             Assert-True ($html -match '"mmproj_path"')        "DATA missing mmproj_path"
+        }
+        It "embeds failure-classification fields (so the report explains why a config failed)" {
+            Assert-True ($html -match '"failure_reason"')             "DATA missing failure_reason"
+            Assert-True ($html -match '"unsupported_architecture"')   "DATA missing unsupported_architecture"
+            Assert-True ($html -match '"ready"')                      "DATA missing ready"
         }
         It "computes headroom = vram_total - vram_peak for the canned record" {
             # vram_total=8192, vram_peak=2000 -> headroom=6192
