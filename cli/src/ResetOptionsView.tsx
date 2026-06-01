@@ -65,15 +65,22 @@ function readBuckets(): Bucket[] {
     } catch {}
   }
 
+  const reportsArchiveDir = join(CALIBR_DATA_DIR, "reports");
   const results = countFiles(resultsDir, ".json");
   const logs    = countFiles(logsDir, ".log");
   const bats    = countFiles(batsDir, ".bat");
+  const archived = countFiles(reportsArchiveDir, ".html");
+
+  const reportCountParts: string[] = [];
+  if (fileExists(reportFile)) reportCountParts.push("current present");
+  if (archived > 0)            reportCountParts.push(`${archived} archived`);
+  const reportLabel = reportCountParts.length > 0 ? reportCountParts.join(" + ") : "absent";
 
   return [
     { flag: "-Results",          label: "results",           hint: "data/results/*.json — bench cache",         exists: results > 0, countLabel: `${results} file${results === 1 ? "" : "s"}` },
     { flag: "-Catalog",          label: "catalog",           hint: "data/catalog.json — model index",            exists: fileExists(catalogFile), countLabel: fileExists(catalogFile) ? "present" : "absent" },
     { flag: "-Plan",             label: "plan",              hint: "data/plan.json — expanded bench configs",    exists: fileExists(planFile), countLabel: fileExists(planFile) ? "present" : "absent" },
-    { flag: "-Report",           label: "report",            hint: "data/report.html — regenerable from results",exists: fileExists(reportFile), countLabel: fileExists(reportFile) ? "present" : "absent" },
+    { flag: "-Report",           label: "report (+archive)", hint: "data/report.html + data/reports/*.html — current + auto-archived past reports", exists: fileExists(reportFile) || archived > 0, countLabel: reportLabel },
     { flag: "-Logs",             label: "logs",              hint: "data/logs/*.log — llama-server stderr",      exists: logs > 0, countLabel: `${logs} file${logs === 1 ? "" : "s"}` },
     { flag: "-Bats",             label: "bats",              hint: "data/bats/*.bat — winner launchers",         exists: bats > 0, countLabel: `${bats} file${bats === 1 ? "" : "s"}` },
     { flag: "-Downloads",        label: "downloads manifest",hint: "data/downloads.json — rotation tracking",    exists: fileExists(downloadsFile), countLabel: fileExists(downloadsFile) ? "present" : "absent" },

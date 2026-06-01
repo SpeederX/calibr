@@ -131,11 +131,12 @@ $script:CALIBR_RESULTS_DIR = Join-Path $CALIBR_DATA_DIR "results"
 $script:CALIBR_LOGS_DIR    = Join-Path $CALIBR_DATA_DIR "logs"
 $script:CALIBR_BATS_DIR    = Join-Path $CALIBR_DATA_DIR "bats"
 $script:CALIBR_REPORT      = Join-Path $CALIBR_DATA_DIR "report.html"
+$script:CALIBR_REPORTS_DIR = Join-Path $CALIBR_DATA_DIR "reports"   # archived old reports
 $script:CALIBR_DOWNLOADS   = Join-Path $CALIBR_DATA_DIR "downloads.json"
 $script:CALIBR_DEFAULT_PRESETS = Join-Path $CALIBR_ROOT     "default_bench_presets.json"
 $script:CALIBR_USER_PRESETS    = Join-Path $CALIBR_DATA_DIR "user_bench_presets.json"
 
-foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR)) {
+foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR, $CALIBR_REPORTS_DIR)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
 
@@ -1862,6 +1863,31 @@ function Invoke-Report {
     # as 'valid' UTF-8 on write.
     $html = Get-Content $templatePath -Raw -Encoding UTF8
     $html = $html.Replace("%%NOW%%", $now).Replace("%%DATA%%", $resJson).Replace("%%WINNERS%%", $winJson).Replace("%%CFG%%", $cfgJson)
+
+    # Preserve the previous report under data/reports/ before overwriting.
+    # The 'current' report path stays stable so the CLI's `o` keybind and
+    # the per-winner .bat launchers continue to point at one well-known
+    # location, while history accumulates next door for after-the-fact
+    # comparisons. Timestamp uses the OLD file's LastWriteTime (not now)
+    # so the archive name reflects when that report was actually built.
+    if (Test-Path -LiteralPath $CALIBR_REPORT) {
+        try {
+            $prevStamp = (Get-Item -LiteralPath $CALIBR_REPORT).LastWriteTime.ToString("yyyyMMdd-HHmmss")
+            $archived  = Join-Path $CALIBR_REPORTS_DIR ("report-{0}.html" -f $prevStamp)
+            # Collision guard: in the unlikely event two reports were
+            # generated within the same second, suffix a numeric tag.
+            $i = 1
+            while (Test-Path -LiteralPath $archived) {
+                $archived = Join-Path $CALIBR_REPORTS_DIR ("report-{0}-{1}.html" -f $prevStamp, $i)
+                $i++
+            }
+            Move-Item -LiteralPath $CALIBR_REPORT -Destination $archived -Force -ErrorAction Stop
+            Write-Host ("Archived previous report -> {0}" -f $archived) -ForegroundColor DarkGray
+        } catch {
+            Write-Host ("Could not archive previous report ({0}); overwriting in place." -f $_.Exception.Message) -ForegroundColor DarkYellow
+        }
+    }
+
     $html | Out-File -Encoding utf8 $CALIBR_REPORT
     Write-Host "Report: $CALIBR_REPORT" -ForegroundColor Green
 }
@@ -2213,6 +2239,12 @@ function Get-ResetTargets {
     if ($t.Report -and (Test-Path $Paths.ReportFile)) {
         $out += @{ kind = 'report'; path = $Paths.ReportFile; description = "report.html (regenerable from results)" }
     }
+    if ($t.Report -and $Paths.ReportsArchiveDir -and (Test-Path $Paths.ReportsArchiveDir)) {
+        $archived = (Get-ChildItem $Paths.ReportsArchiveDir -Filter '*.html' -ErrorAction SilentlyContinue).Count
+        if ($archived -gt 0) {
+            $out += @{ kind = 'reports_archive'; path = $Paths.ReportsArchiveDir; description = "$archived archived report(s) under data/reports/" }
+        }
+    }
     if ($t.Logs -and (Test-Path $Paths.LogsDir)) {
         $count = (Get-ChildItem $Paths.LogsDir -Filter '*.log' -ErrorAction SilentlyContinue).Count
         $out += @{ kind = 'logs'; path = $Paths.LogsDir; description = "$count llama-server log file(s)" }
@@ -2258,14 +2290,15 @@ function Invoke-Reset {
         All              = [bool]$All
     }
     $paths = @{
-        ResultsDir      = $CALIBR_RESULTS_DIR
-        CatalogFile     = $CALIBR_CATALOG
-        PlanFile        = $CALIBR_PLAN
-        ReportFile      = $CALIBR_REPORT
-        LogsDir         = $CALIBR_LOGS_DIR
-        BatsDir         = $CALIBR_BATS_DIR
-        DownloadsFile   = $CALIBR_DOWNLOADS
-        LocalConfigFile = $CALIBR_LOCAL_CFG
+        ResultsDir         = $CALIBR_RESULTS_DIR
+        CatalogFile        = $CALIBR_CATALOG
+        PlanFile           = $CALIBR_PLAN
+        ReportFile         = $CALIBR_REPORT
+        ReportsArchiveDir  = $CALIBR_REPORTS_DIR
+        LogsDir            = $CALIBR_LOGS_DIR
+        BatsDir            = $CALIBR_BATS_DIR
+        DownloadsFile      = $CALIBR_DOWNLOADS
+        LocalConfigFile    = $CALIBR_LOCAL_CFG
     }
     $managed = @(Get-DownloadManifest | Where-Object { $_ -and $_.model_path } | ForEach-Object {
         # Include the mmproj too if the entry tracked one.
@@ -2293,11 +2326,16 @@ function Invoke-Reset {
         try {
             if (Test-Path -LiteralPath $t.path) {
                 $isDir = (Get-Item -LiteralPath $t.path).PSIsContainer
-                if ($t.kind -in @('results','logs','bats') -and $isDir) {
+                if ($t.kind -in @('results','logs','bats','reports_archive') -and $isDir) {
                     # Wipe contents but keep the directory; the engine
                     # recreates it on demand and removing the dir itself
                     # buys nothing.
-                    $glob = switch ($t.kind) { 'results' { '*.json' } 'logs' { '*.log' } 'bats' { '*.bat' } }
+                    $glob = switch ($t.kind) {
+                        'results'          { '*.json' }
+                        'logs'             { '*.log' }
+                        'bats'             { '*.bat' }
+                        'reports_archive'  { '*.html' }
+                    }
                     Get-ChildItem $t.path -Filter $glob -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction Stop
                 } else {
                     Remove-Item -LiteralPath $t.path -Force -ErrorAction Stop
