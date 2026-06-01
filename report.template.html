@@ -8,6 +8,7 @@
     --c-bg:#0f1420; --c-card:#1a2030; --c-border:#2a3040; --c-text:#e8ecf0;
     --c-muted:#8a96a8; --c-accent:#5fd4ff;
     --c-a:#22c55e; --c-b:#f59e0b; --c-c:#ef4444;
+    --c-win:#5fd4ff; --c-win-bg:rgba(95,212,255,0.08);
   }
   * { box-sizing: border-box; }
   body { font: 14px/1.5 -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
@@ -28,32 +29,73 @@
   .tier-B, .fit-unknown  { color: var(--c-b); font-weight: 600; }
   .tier-C, .fit-failed_but_running { color: var(--c-c); font-weight: 600; }
   .wddm { color: var(--c-c); font-weight: 700; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(320px,1fr)); gap: 12px; }
-  .card { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 12px 14px; }
-  .card h3 { margin-top: 0; color: var(--c-accent); }
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 10px 0; }
-  .stat-val { font-family: Consolas, monospace; color: #fff; font-size: 14px; font-weight: 600; }
-  .bat-link { display: inline-block; margin-top: 8px; padding: 3px 9px; background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; }
-  .bar-row { display: grid; grid-template-columns: 260px 1fr 90px; gap: 8px; align-items: center; margin: 2px 0; }
-  .bar-row.bar-row-ann { grid-template-columns: 260px 1fr 90px 150px; }
+  .bat-link { display: inline-block; padding: 2px 8px; background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; cursor: pointer; }
+  .bat-link:hover { border-color: var(--c-accent); }
+
+  /* ----- Filter selector (new in v1.2) ----- */
+  .filter-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+                margin: 14px 0 8px; padding: 10px 14px; background: var(--c-card);
+                border: 1px solid var(--c-border); border-radius: 6px; }
+  .filter-bar .label { color: var(--c-muted); font-size: 12px; margin-right: 4px; }
+  .filter-btn { padding: 6px 14px; background:#0b1020; border: 1px solid var(--c-border);
+                border-radius: 4px; color: var(--c-text); font-size: 12px; cursor: pointer;
+                font-family: inherit; }
+  .filter-btn:hover { border-color: var(--c-accent); }
+  .filter-btn.active { background: var(--c-win-bg); border-color: var(--c-win); color: var(--c-win); font-weight: 600; }
+  .filter-desc { color: var(--c-muted); font-size: 11px; margin-left: auto; max-width: 480px; text-align: right; font-style: italic; }
+
+  /* ----- Models list (collapsible, replaces 'Winners' grid) ----- */
+  .models-list { display: flex; flex-direction: column; gap: 4px; }
+  details.model-row { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; }
+  details.model-row[open] { border-color: var(--c-accent); }
+  details.model-row > summary { list-style: none; cursor: pointer; padding: 10px 14px;
+                                display: grid; grid-template-columns: 16px 1fr auto; gap: 10px;
+                                align-items: center; }
+  details.model-row > summary::-webkit-details-marker { display: none; }
+  .toggle-arrow { font-size: 10px; color: var(--c-muted); transition: transform 0.15s; display: inline-block; width: 12px; }
+  details.model-row[open] .toggle-arrow { transform: rotate(90deg); }
+  .model-name { font-weight: 600; color: var(--c-text); }
+  .winner-summary { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+                    font-family: Consolas, monospace; font-size: 11px; color: var(--c-muted); }
+  .winner-stat { color: var(--c-text); }
+  .winner-stat b { color: var(--c-accent); }
+  .winner-actions { display: flex; gap: 6px; align-items: center; }
+  .no-winner { color: var(--c-muted); font-style: italic; font-size: 11px; }
+  .model-row .config-list { padding: 0 14px 12px 42px; }
+  .model-row .config-list table { margin-top: 0; font-size: 11px; }
+  .model-row .config-list th { background: transparent; border-bottom: 1px solid var(--c-border); color: var(--c-muted); font-weight: 400; }
+  .model-row .config-list tr.is-winner { background: var(--c-win-bg); }
+  .model-row .config-list tr.is-winner td:first-child::before { content: '★ '; color: var(--c-win); }
+
+  /* ----- Tabbed widget for eval/vram bars ----- */
+  .tabs { display: flex; gap: 4px; margin: 14px 0 0; }
+  .tab { padding: 6px 12px; background: var(--c-card); border: 1px solid var(--c-border); border-bottom: none;
+         border-radius: 5px 5px 0 0; cursor: pointer; font-size: 12px; color: var(--c-muted); font-family: inherit; }
+  .tab.active { background:#141a28; color: var(--c-accent); border-bottom: 1px solid #141a28; }
+  .tab-content { background:#141a28; border: 1px solid var(--c-border); border-radius: 0 5px 5px 5px; padding: 12px; }
+  .bar-row { display: grid; grid-template-columns: 320px 1fr 90px; gap: 8px; align-items: center; margin: 2px 0; }
+  .bar-row.bar-row-ann { grid-template-columns: 320px 1fr 90px 150px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-row.is-winner .name::before { content: '★ '; color: var(--c-win); }
   .bar-row .track { background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
   .bar-row .fill { height: 100%; background: linear-gradient(90deg,#5fd4ff,#4ade80); }
   .bar-row .fill.tier-B { background: linear-gradient(90deg,#fbbf24,#f59e0b); }
   .bar-row .fill.tier-C { background: linear-gradient(90deg,#ef4444,#b91c1c); }
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
   .bar-row .ann { font-family: Consolas, monospace; font-size: 11px; text-align: right; color: var(--c-muted); }
+
+  /* ----- Scatter (now first chart) ----- */
   .scatter-bg-ram   { fill: rgba(255,255,255,0.025); }
   .scatter-line-gpu { stroke: var(--c-c); stroke-dasharray: 4 4; stroke-width: 1.2; opacity: 0.7; }
   .scatter-axis     { stroke: var(--c-border); stroke-width: 1; }
   .scatter-tick     { fill: var(--c-muted); font-size: 10px; font-family: Consolas, monospace; }
   .scatter-dot      { stroke-width: 2; cursor: default; }
-  .scatter-dot:hover { stroke: var(--c-accent); stroke-width: 2.5; }
-  .tabs { display: flex; gap: 4px; margin: 14px 0 0; }
-  .tab { padding: 6px 12px; background: var(--c-card); border: 1px solid var(--c-border); border-bottom: none;
-         border-radius: 5px 5px 0 0; cursor: pointer; font-size: 12px; color: var(--c-muted); }
-  .tab.active { background:#141a28; color: var(--c-accent); border-bottom: 1px solid #141a28; }
-  .tab-content { background:#141a28; border: 1px solid var(--c-border); border-radius: 0 5px 5px 5px; padding: 12px; }
+  .scatter-dot.is-winner { stroke-width: 3.5; }
+  .scatter-dot:hover { stroke: var(--c-accent); stroke-width: 3; }
+
+  /* ----- All-results table (winner-aware) ----- */
+  #all tbody tr.is-winner { background: var(--c-win-bg); }
+  #all tbody tr.is-winner td:first-child::before { content: '★ '; color: var(--c-win); }
 </style>
 </head>
 <body>
@@ -63,19 +105,29 @@
   <div class="hw" id="hw"></div>
   <div class="meta" id="overall-pct"></div>
 
-  <h2>Winners per model</h2>
-  <div class="grid" id="winners"></div>
-
-  <h2>Eval tokens/s</h2>
-  <div id="eval-bars"></div>
+  <div class="filter-bar">
+    <span class="label">Winner criterion:</span>
+    <button class="filter-btn" data-filter="speed">Speed</button>
+    <button class="filter-btn" data-filter="efficiency">Efficiency</button>
+    <button class="filter-btn" data-filter="safety">Safety-balanced</button>
+    <button class="filter-btn" data-filter="overall">Overall</button>
+    <span class="filter-desc" id="filter-desc"></span>
+  </div>
 
   <h2>Memory vs latency</h2>
-  <p class="meta">One dot per ok config. <b>Y</b> = VRAM peak + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). Hover for details.</p>
+  <p class="meta">One dot per ok config. <b>Y</b> = VRAM peak + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). ★ winners for the current filter are outlined thicker.</p>
   <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
 
-  <h2>VRAM peak (MiB) vs safety budget</h2>
-  <p class="meta">Sorted ascending: less VRAM at top = better. The headroom column estimates how many extra context tokens fit in the unused VRAM at this run's KV-cache cost (CUDA builds only).</p>
-  <div id="vram-bars"></div>
+  <h2>Models (winners per current filter)</h2>
+  <p class="meta">Each row shows the model's winning config for the selected filter. Expand a row to see all configs benched for that model. Per-config <code>.bat</code> downloads are generated on the fly; the default <code>bats/</code> directory still holds the engine's safety-first picks.</p>
+  <div class="models-list" id="models-list"></div>
+
+  <h2>Throughput &amp; memory</h2>
+  <div class="tabs" id="bars-tabs">
+    <div class="tab active" data-bars="eval">Eval tokens/s</div>
+    <div class="tab" data-bars="vram">VRAM peak</div>
+  </div>
+  <div class="tab-content"><div id="bars"></div></div>
 
   <h2>WDDM paging watchlist</h2>
   <p class="meta">Rows where shared GPU memory grew during the run (confirmed paging) or VRAM peak exceeded the saturation threshold (suspected).</p>
@@ -101,10 +153,12 @@
 </div>
 <script>
 const DATA = %%DATA%%;
-const WINNERS = %%WINNERS%%;
+const WINNERS = %%WINNERS%%;  // engine's safety-first picks; used for the static bats/ links
 const CFG = %%CFG%%;
 
-// ---- Hardware box ----
+// ===========================================================================
+// Hardware header + overall stats (unchanged from v1.1)
+// ===========================================================================
 const hw = CFG.hardware || {};
 document.getElementById('hw').innerHTML =
   '<b>Hardware:</b> ' + (hw.gpu_name || '(unknown GPU)') +
@@ -113,7 +167,6 @@ document.getElementById('hw').innerHTML =
   ' | VRAM safety budget: <code>' + (hw.vram_safety_budget_mib || '?') + ' MiB</code>' +
   ' | llama-server: <code>' + (CFG.llama_server_exe || 'n/a') + '</code>';
 
-// ---- Overall success rate (models with >=1 OK config / total models) ----
 const modelsSet = new Set(DATA.map(d => d.model));
 const modelsWithSuccess = new Set(DATA.filter(d => d.ok).map(d => d.model));
 const totalModels = modelsSet.size;
@@ -124,73 +177,352 @@ document.getElementById('overall-pct').innerHTML =
   '(<b>' + pct + '%</b>). ' +
   DATA.length + ' total bench configs, ' + DATA.filter(d => d.ok).length + ' ok.';
 
-// ---- Winners grid ----
-const wGrid = document.getElementById('winners');
-WINNERS.forEach(w => {
-  const r = DATA.find(x => x.id === w.winner_id);
-  if (!r) return;
-  wGrid.insertAdjacentHTML('beforeend',
-    '<div class="card">' +
-      '<h3>' + w.model + ' <span class="tier-' + r.tier + '">[' + r.tier + ']</span></h3>' +
-      '<div class="stats">' +
-        '<div><div class="meta">Eval</div><div class="stat-val">' + r.eval_tps.toFixed(1) + ' t/s</div></div>' +
-        '<div><div class="meta">Prompt</div><div class="stat-val">' + r.prompt_tps.toFixed(0) + ' t/s</div></div>' +
-        '<div><div class="meta">VRAM peak</div><div class="stat-val">' + r.vram_peak_mib + ' MiB</div></div>' +
-        '<div><div class="meta">Load</div><div class="stat-val">' + r.load_sec.toFixed(1) + 's</div></div>' +
-      '</div>' +
-      '<div class="meta">' + r.extra_args + '</div>' +
-      '<a class="bat-link" href="bats/' + w.bat + '">bats/' + w.bat + '</a>' +
-    '</div>'
-  );
-});
+// ===========================================================================
+// SCORERS — winner-picking strategies.
+//
+// Each scorer returns a number (higher = better). Configs that "disqualify"
+// under a scorer return -Infinity so they drop out of the winner pool. The
+// 'overall' scorer normalizes against global anchors so its weights are
+// comparable across runs of very different hardware.
+// ===========================================================================
+const CONFIRM_MIB = (CFG.wddm_detection && CFG.wddm_detection.shared_delta_confirm_mib)
+  ? +CFG.wddm_detection.shared_delta_confirm_mib : 500;
 
-// ---- Bars ----
-function bars(id, field, maxv, unit, opts) {
-  opts = opts || {};
-  const dir = opts.dir || 'desc';
-  const annotate = opts.annotate || null;
-  const el = document.getElementById(id);
-  const sorted = [...DATA].filter(d => d.ok).sort((a,b) =>
-    dir === 'asc' ? a[field] - b[field] : b[field] - a[field]
-  );
-  sorted.forEach(d => {
-    const pct = Math.min(100, (d[field] / maxv) * 100);
-    const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM+' + d.shared_peak_mib + 'MiB]</span>' :
-                  d.wddm_flag_high_vram  ? ' <span class="wddm">[WDDM?' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
-    const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
-    el.insertAdjacentHTML('beforeend',
-      '<div class="bar-row' + (annotate ? ' bar-row-ann' : '') + '">' +
-        '<div class="name"><span class="tier-' + d.tier + '">[' + d.tier + ']</span> ' + d.label + badge + '</div>' +
-        '<div class="track"><div class="fill tier-' + d.tier + '" style="width:' + pct + '%"></div></div>' +
-        '<div class="val">' + d[field].toFixed(1) + ' ' + unit + '</div>' +
-        annHtml +
-      '</div>'
-    );
-  });
+const isSafe = d => (+d.shared_peak_mib || 0) <= CONFIRM_MIB;
+
+// Anchors computed once over all OK configs. Used by the normalized scorers
+// so weights are unit-less and the score is comparable across runs.
+const ANCHORS = (() => {
+  const ok = DATA.filter(d => d.ok);
+  const evalMax = Math.max(1, ...ok.map(d => +d.eval_tps || 0));
+  const effs = ok.filter(d => +d.gpu_power_peak_w > 0)
+                 .map(d => (+d.eval_tps) / (+d.gpu_power_peak_w));
+  const effMax = effs.length > 0 ? Math.max(1, ...effs) : 1;
+  return { evalMax, effMax };
+})();
+
+const SCORERS = {
+  speed: {
+    label: 'Speed',
+    desc: 'Highest eval tokens/s. Ignores power and WDDM paging.',
+    score: d => +d.eval_tps || 0,
+  },
+  efficiency: {
+    label: 'Efficiency',
+    desc: 'Tokens per watt. Best perf/W (requires GPU power data).',
+    score: d => (+d.gpu_power_peak_w > 0) ? (+d.eval_tps / +d.gpu_power_peak_w) : -Infinity,
+  },
+  safety: {
+    label: 'Safety-balanced',
+    desc: 'Fastest config that did not page into shared memory (matches the engine\'s default bat pick).',
+    score: d => isSafe(d) ? (+d.eval_tps || 0) : -Infinity,
+  },
+  overall: {
+    label: 'Overall',
+    desc: 'Weighted: 50% speed + 30% safety (no paging) + 20% efficiency. Normalized against the run\'s best of each.',
+    score: d => {
+      const sp  = (+d.eval_tps || 0) / ANCHORS.evalMax;
+      const safe = isSafe(d) ? 1 : 0;
+      const eff = (+d.gpu_power_peak_w > 0)
+                  ? ((+d.eval_tps / +d.gpu_power_peak_w) / ANCHORS.effMax)
+                  : 0;
+      return 0.5 * sp + 0.3 * safe + 0.2 * eff;
+    },
+  },
+};
+
+// Pick one winning config per model under the selected scorer. Returns a map
+// { modelName: {...config, _score, _fallback?} }. If the scorer disqualifies
+// every config of a model (e.g. efficiency on a model with no power data),
+// we silently fall back to the speed winner and flag _fallback for the UI.
+function computeWinners(filter) {
+  const scorer = SCORERS[filter];
+  const speed  = SCORERS.speed;
+  const byModel = {};
+  const fallbacks = {};
+  for (const d of DATA) {
+    if (!d.ok) continue;
+    const s = scorer.score(d);
+    if (s > -Infinity) {
+      if (!byModel[d.model] || s > byModel[d.model]._score) {
+        byModel[d.model] = Object.assign({}, d, { _score: s });
+      }
+    }
+    // Always track a speed-winner so we have something to fall back on.
+    const ss = speed.score(d);
+    if (!fallbacks[d.model] || ss > fallbacks[d.model]._score) {
+      fallbacks[d.model] = Object.assign({}, d, { _score: ss });
+    }
+  }
+  // Backfill: models with no scorer-eligible winner get the speed winner +
+  // _fallback flag so the UI can mark them ("speed fallback").
+  for (const m of Object.keys(fallbacks)) {
+    if (!byModel[m]) {
+      byModel[m] = Object.assign({}, fallbacks[m], { _fallback: true });
+    }
+  }
+  return byModel;
 }
 
-// VRAM-headroom annotation. Uses the bench's measured kv_cache_mib (CUDA only)
-// to project the spare VRAM into a rough extra-context token count. Squiggle
-// is intentional: KV grows monotonically with ctx but compute buffers grow too.
+// Lookup helper for the engine's pre-generated .bat (one per model, safety-
+// first winner). Returns the WINNERS entry by model name, or null.
+const WINNERS_BY_MODEL = (() => {
+  const out = {};
+  (WINNERS || []).forEach(w => { out[w.model] = w; });
+  return out;
+})();
+
+// ===========================================================================
+// STATE + main re-render
+// ===========================================================================
+const STATE = {
+  filter:  'speed',
+  bars:    'eval',
+  tierTab: 'all',
+};
+
+let currentWinners = {};
+const isWinnerId = id => Object.values(currentWinners).some(w => w.id === id);
+
+function rerender() {
+  currentWinners = computeWinners(STATE.filter);
+  renderFilterBar();
+  renderScatter();
+  renderModelsList();
+  renderBars();
+  renderAllTable();
+}
+
+// ===========================================================================
+// Filter bar
+// ===========================================================================
+const filterBar = document.querySelector('.filter-bar');
+function renderFilterBar() {
+  filterBar.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.filter === STATE.filter);
+  });
+  document.getElementById('filter-desc').textContent = SCORERS[STATE.filter].desc;
+}
+filterBar.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    STATE.filter = btn.dataset.filter;
+    rerender();
+  });
+});
+
+// ===========================================================================
+// Client-side .bat generation. Constructs the .bat the engine would have
+// written for THIS config and triggers a browser download. Works for any
+// config, not just the safety-first winner the engine pre-generated.
+// ===========================================================================
+function generateBatText(d) {
+  const lines = [
+    '@echo off',
+    'REM Auto-generated by calibr report (client-side)',
+    'REM Model: ' + d.model + '   Config: ' + d.label,
+    'REM Bench: ' + (+d.eval_tps).toFixed(1) + ' t/s eval, ' + d.vram_peak_mib + ' MiB VRAM peak, tier ' + d.tier,
+    '',
+    '"' + CFG.llama_server_exe + '" ^',
+    '    -m "' + d.model_path + '" ^',
+  ];
+  if (d.mmproj_path) lines.push('    --mmproj "' + d.mmproj_path + '" ^');
+  // Split extra_args into "--flag" or "--flag value" tokens. Same regex
+  // shape as Invoke-Report's PS-side split so the result matches.
+  const pairs = (d.extra_args || '').match(/--\S+(?:\s+(?:"[^"]*"|[^-\s]\S*))?/g) || [];
+  for (const p of pairs) lines.push('    ' + p.trim() + ' ^');
+  lines.push('    --metrics');
+  return lines.join('\r\n');
+}
+
+function downloadBat(d) {
+  const text = generateBatText(d);
+  const safe = (d.model + '__' + d.label).replace(/[^\w.-]/g, '_') + '.bat';
+  const blob = new Blob([text], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = safe;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// Delegated click handler for the dynamic '↓ bat' links sprinkled in the
+// models list and the per-config sub-tables. Each carries its config id in
+// data-cfg-id.
+document.addEventListener('click', e => {
+  const link = e.target.closest('[data-cfg-id]');
+  if (!link) return;
+  e.preventDefault();
+  const d = DATA.find(x => x.id === link.dataset.cfgId);
+  if (d) downloadBat(d);
+});
+
+// ===========================================================================
+// Models list (replaces the old winners grid). Each model is a <details>
+// row; collapsed = winning config for current filter; expand = all configs.
+// ===========================================================================
+function fmt1(v)  { return (v == null) ? '-' : (+v).toFixed(1); }
+function fmt0(v)  { return (v == null) ? '-' : Math.round(+v).toString(); }
+function fmt2(v)  { return (v == null) ? '-' : (+v).toFixed(2); }
+
+function winnerSummary(w) {
+  const parts = [];
+  parts.push('<span class="tier-' + w.tier + '">[' + w.tier + ']</span> <span class="winner-stat">' + escapeHtml(w.label) + '</span>');
+  parts.push('<span class="winner-stat"><b>' + fmt1(w.eval_tps) + '</b> t/s</span>');
+  parts.push('<span class="winner-stat">' + w.vram_peak_mib + ' MiB</span>');
+  if (w.shared_peak_mib > 0) {
+    parts.push('<span class="winner-stat wddm">+' + w.shared_peak_mib + ' shared</span>');
+  }
+  if (+w.gpu_power_peak_w > 0) {
+    parts.push('<span class="winner-stat">' + fmt0(w.gpu_power_peak_w) + ' W</span>');
+  }
+  if (+w.gpu_temp_peak_c > 0) {
+    parts.push('<span class="winner-stat">' + w.gpu_temp_peak_c + '°C</span>');
+  }
+  if (w._fallback) {
+    parts.push('<span class="winner-stat meta" title="No config of this model qualifies for the selected filter; speed winner shown instead.">(speed fallback)</span>');
+  }
+  return parts.join(' · ');
+}
+
+function renderModelsList() {
+  const el = document.getElementById('models-list');
+  // Group all configs by model.
+  const byModel = {};
+  for (const d of DATA) {
+    (byModel[d.model] = byModel[d.model] || []).push(d);
+  }
+  // Sort models by their winner's score descending (so the "best" models
+  // float to the top of the list). Models with no winner sink to the bottom.
+  const sortedModels = Object.keys(byModel).sort((a, b) => {
+    const wa = currentWinners[a], wb = currentWinners[b];
+    if (!wa) return 1;
+    if (!wb) return -1;
+    return (wb._score || 0) - (wa._score || 0);
+  });
+
+  el.innerHTML = '';
+  for (const model of sortedModels) {
+    const configs = byModel[model].slice().sort((a, b) => (+b.eval_tps || 0) - (+a.eval_tps || 0));
+    const w = currentWinners[model];
+
+    const summaryHtml = w
+      ? '<span class="model-name">' + escapeHtml(model) + '</span>' +
+        '<span class="winner-summary">' + winnerSummary(w) + '</span>' +
+        '<span class="winner-actions">' +
+          (WINNERS_BY_MODEL[model] ? '<a class="bat-link" href="bats/' + WINNERS_BY_MODEL[model].bat + '" title="Pre-generated by the engine (safety-first pick)">default bat</a>' : '') +
+          ' <a class="bat-link" href="#" data-cfg-id="' + w.id + '" title="Generate a .bat for this exact config (client-side)">&darr; bat</a>' +
+        '</span>'
+      : '<span class="model-name">' + escapeHtml(model) + '</span>' +
+        '<span class="no-winner">no ok config for this model</span>' +
+        '<span></span>';
+
+    // Per-model sub-table: every config benched, winner highlighted.
+    let rows = '';
+    for (const c of configs) {
+      const isWin = w && c.id === w.id;
+      const wddm = (+c.shared_peak_mib > 0) ? '<span class="wddm">+' + c.shared_peak_mib + '</span>' : '-';
+      rows += '<tr' + (isWin ? ' class="is-winner"' : '') + '>' +
+              '<td><code>' + escapeHtml(c.label) + '</code></td>' +
+              '<td class="tier-' + c.tier + '">' + c.tier + '</td>' +
+              '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
+              '<td class="num">' + (c.vram_peak_mib != null ? c.vram_peak_mib : '-') + '</td>' +
+              '<td class="num">' + wddm + '</td>' +
+              '<td class="num">' + fmt2(c.ttft_sec) + '</td>' +
+              '<td class="num">' + ((+c.gpu_power_peak_w > 0) ? fmt0(c.gpu_power_peak_w) + ' W' : '-') + '</td>' +
+              '<td class="fit-' + c.fit_status + '">' + fitLabel(c.fit_status) + '</td>' +
+              '<td><a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a></td>' +
+              '</tr>';
+    }
+
+    el.insertAdjacentHTML('beforeend',
+      '<details class="model-row">' +
+        '<summary>' +
+          '<span class="toggle-arrow">&#9654;</span>' +
+          summaryHtml +
+        '</summary>' +
+        '<div class="config-list">' +
+          '<table>' +
+            '<thead><tr>' +
+              '<th>Config</th><th>Tier</th>' +
+              '<th class="num">Eval t/s</th>' +
+              '<th class="num">VRAM</th><th class="num">Shared</th>' +
+              '<th class="num">TTFT s</th>' +
+              '<th class="num">GPU W</th>' +
+              '<th>Fit</th><th></th>' +
+            '</tr></thead>' +
+            '<tbody>' + rows + '</tbody>' +
+          '</table>' +
+        '</div>' +
+      '</details>'
+    );
+  }
+}
+
+// ===========================================================================
+// Tabbed bars widget (eval t/s OR vram peak, switched by tab).
+// ===========================================================================
 function vramHeadroom(d) {
-  const cap = CFG.hardware && CFG.hardware.vram_total_mib ? CFG.hardware.vram_total_mib : 0;
+  const cap = (CFG.hardware && CFG.hardware.vram_total_mib) ? CFG.hardware.vram_total_mib : 0;
   if (cap > 0 && d.vram_peak_mib >= cap) return '<span class="meta">saturated</span>';
   const left = d.headroom_mib != null ? d.headroom_mib : 0;
   if (d.kv_cache_mib && d.ctx_size && d.kv_cache_mib > 0) {
     const tokens = Math.round(left / (d.kv_cache_mib / d.ctx_size));
-    return '+' + left + ' MiB ≈ +' + tokens + ' tok';
+    return '+' + left + ' MiB &asymp; +' + tokens + ' tok';
   }
   return '+' + left + ' MiB';
 }
 
-const maxEval = Math.max(...DATA.filter(d => d.ok).map(d => d.eval_tps), 1);
-bars('eval-bars', 'eval_tps', Math.ceil(maxEval*1.1), 't/s');
-bars('vram-bars', 'vram_peak_mib', CFG.hardware.vram_total_mib || 8192, 'MiB',
-     { dir: 'asc', annotate: vramHeadroom });
+function renderBars() {
+  const el = document.getElementById('bars');
+  el.innerHTML = '';
+  const okData = DATA.filter(d => d.ok);
+  if (okData.length === 0) {
+    el.innerHTML = '<p class="meta">No ok runs to display.</p>';
+    return;
+  }
 
-// ---- Scatter: memory vs latency ----
-// Deterministic model -> hue. Same model always lands on the same color;
-// different models spread around the wheel. Sat/lightness fixed for legibility.
+  let sorted, field, maxv, unit, annotate;
+  if (STATE.bars === 'eval') {
+    field = 'eval_tps'; unit = 't/s'; annotate = null;
+    maxv = Math.ceil(Math.max(...okData.map(d => +d[field] || 0)) * 1.1);
+    sorted = okData.slice().sort((a, b) => (+b[field] || 0) - (+a[field] || 0));
+  } else { // vram
+    field = 'vram_peak_mib'; unit = 'MiB'; annotate = vramHeadroom;
+    maxv = (CFG.hardware && CFG.hardware.vram_total_mib) || 8192;
+    sorted = okData.slice().sort((a, b) => (+a[field] || 0) - (+b[field] || 0));
+  }
+
+  for (const d of sorted) {
+    const pctVal = Math.min(100, ((+d[field] || 0) / maxv) * 100);
+    const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM+' + d.shared_peak_mib + 'MiB]</span>' :
+                  d.wddm_flag_high_vram  ? ' <span class="wddm">[WDDM?' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
+    const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
+    const winCls = isWinnerId(d.id) ? ' is-winner' : '';
+    el.insertAdjacentHTML('beforeend',
+      '<div class="bar-row' + (annotate ? ' bar-row-ann' : '') + winCls + '">' +
+        '<div class="name"><span class="tier-' + d.tier + '">[' + d.tier + ']</span> ' + escapeHtml(d.label) + badge + '</div>' +
+        '<div class="track"><div class="fill tier-' + d.tier + '" style="width:' + pctVal + '%"></div></div>' +
+        '<div class="val">' + (+d[field] || 0).toFixed(1) + ' ' + unit + '</div>' +
+        annHtml +
+      '</div>'
+    );
+  }
+}
+
+document.getElementById('bars-tabs').querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.getElementById('bars-tabs').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    STATE.bars = tab.dataset.bars;
+    renderBars();
+  });
+});
+
+// ===========================================================================
+// Scatter (now the first chart). Winner dots get a thicker outline so the
+// user can find them at a glance among the cloud.
+// ===========================================================================
 function modelColor(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
@@ -212,13 +544,10 @@ function renderScatter() {
     svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" class="scatter-tick">No ok runs to plot.</text>';
     return;
   }
-  // X axis: log-10 so configs spanning sub-second (Tier A) to ~100 s
-  // (Tier C) all stay readable. xMin floor at 0.05 keeps log() defined
-  // when only one ok config exists, or when the fastest config is < 0.05 s.
   const xMin    = Math.max(0.05, Math.min(...pts.map(p => p.x)) * 0.5);
   const xMaxRaw = Math.max(...pts.map(p => p.x)) * 1.5;
   const lxMin   = Math.log10(xMin);
-  const lxMax   = Math.log10(Math.max(xMaxRaw, xMin * 10));  // guard against degenerate single-point span
+  const lxMax   = Math.log10(Math.max(xMaxRaw, xMin * 10));
   const yMaxRaw = Math.max(Math.max(...pts.map(p => p.y)), cap + 4096);
   const yMax    = Math.ceil(yMaxRaw / 1024) * 1024;
   const xs = v => M.l + ((Math.log10(Math.max(v, xMin)) - lxMin) / (lxMax - lxMin)) * innerW;
@@ -226,19 +555,15 @@ function renderScatter() {
   const yGpu = ys(cap);
 
   let p = [];
-  // RAM region tint (above the GPU line)
   p.push('<rect class="scatter-bg-ram" x="' + M.l + '" y="' + M.t + '" width="' + innerW + '" height="' + (yGpu - M.t) + '"/>');
-  // Axes
   p.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + M.t + '" x2="' + M.l + '" y2="' + (M.t + innerH) + '"/>');
   p.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + (M.t + innerH) + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
-  // Y ticks (memory in MiB)
   for (let i = 0; i <= 5; i++) {
     const v = (yMax * i / 5);
     const y = ys(v);
     p.push('<line class="scatter-axis" x1="' + (M.l - 4) + '" y1="' + y + '" x2="' + M.l + '" y2="' + y + '"/>');
     p.push('<text class="scatter-tick" x="' + (M.l - 8) + '" y="' + (y + 4) + '" text-anchor="end">' + Math.round(v) + '</text>');
   }
-  // X ticks: 5 ticks spaced evenly in log space; render the linear value.
   for (let i = 0; i <= 5; i++) {
     const lv = lxMin + (lxMax - lxMin) * i / 5;
     const v = Math.pow(10, lv);
@@ -247,13 +572,10 @@ function renderScatter() {
     p.push('<line class="scatter-axis" x1="' + x + '" y1="' + (M.t + innerH) + '" x2="' + x + '" y2="' + (M.t + innerH + 4) + '"/>');
     p.push('<text class="scatter-tick" x="' + x + '" y="' + (M.t + innerH + 16) + '" text-anchor="middle">' + label + '</text>');
   }
-  // Axis labels
   p.push('<text class="scatter-tick" x="' + (M.l + innerW/2) + '" y="' + (H - 6) + '" text-anchor="middle">Total time (s, log-10)</text>');
   p.push('<text class="scatter-tick" transform="translate(14,' + (M.t + innerH/2) + ') rotate(-90)" text-anchor="middle">Memory used (MiB)</text>');
-  // GPU VRAM reference line + label
   p.push('<line class="scatter-line-gpu" x1="' + M.l + '" y1="' + yGpu + '" x2="' + (M.l + innerW) + '" y2="' + yGpu + '"/>');
   p.push('<text class="scatter-tick" x="' + (M.l + innerW - 6) + '" y="' + (yGpu - 4) + '" text-anchor="end">GPU VRAM (' + cap + ' MiB)</text>');
-  // Dots
   pts.forEach(pt => {
     const d = pt.d;
     const cx = xs(pt.x);
@@ -261,14 +583,17 @@ function renderScatter() {
     const fill = modelColor(d.model);
     const stroke = d.tier === 'A' ? 'var(--c-a)' : d.tier === 'B' ? 'var(--c-b)' : 'var(--c-c)';
     const tip = d.label + ' · vram peak ' + d.vram_peak_mib + ' · shared +' + (d.shared_peak_mib || 0) +
-                ' · time ' + pt.x + 's · eval ' + d.eval_tps.toFixed(1) + ' t/s';
-    p.push('<circle class="scatter-dot" cx="' + cx + '" cy="' + cy + '" r="5" fill="' + fill + '" stroke="' + stroke + '"><title>' + tip + '</title></circle>');
+                ' · time ' + pt.x + 's · eval ' + (+d.eval_tps).toFixed(1) + ' t/s';
+    const winCls = isWinnerId(d.id) ? ' is-winner' : '';
+    const r = isWinnerId(d.id) ? 6 : 5;
+    p.push('<circle class="scatter-dot' + winCls + '" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + fill + '" stroke="' + stroke + '"><title>' + tip + '</title></circle>');
   });
   svg.innerHTML = p.join('');
 }
-renderScatter();
 
-// ---- WDDM watchlist ----
+// ===========================================================================
+// WDDM watchlist (unchanged)
+// ===========================================================================
 const flagged = DATA.filter(d => d.ok && (d.wddm_flag_shared_pos || d.wddm_flag_high_vram));
 const wddmEl = document.getElementById('wddm-list');
 if (flagged.length === 0) {
@@ -276,18 +601,18 @@ if (flagged.length === 0) {
 } else {
   let html = '<table><thead><tr><th>ID</th><th>Label</th><th class="num">VRAM</th><th class="num">Shared</th><th class="num">Sat.</th><th class="num">Eval t/s</th></tr></thead><tbody>';
   flagged.forEach(d => {
-    html += '<tr><td><code>' + d.id + '</code></td><td>' + d.label + '</td>' +
+    html += '<tr><td><code>' + d.id + '</code></td><td>' + escapeHtml(d.label) + '</td>' +
             '<td class="num">' + d.vram_peak_mib + '</td>' +
             '<td class="num wddm">' + (d.shared_peak_mib > 0 ? '+' + d.shared_peak_mib : '-') + '</td>' +
             '<td class="num">' + Math.round(d.wddm_vram_saturation*100) + '%</td>' +
-            '<td class="num">' + d.eval_tps.toFixed(1) + '</td></tr>';
+            '<td class="num">' + (+d.eval_tps).toFixed(1) + '</td></tr>';
   });
   wddmEl.innerHTML = html + '</tbody></table>';
 }
 
-// Friendly labels for the fit_status enum the engine writes. Keep the raw
-// values as the CSS class (.fit-failed_but_running etc.) so styling stays
-// stable; only the displayed text is humanized.
+// ===========================================================================
+// All-results table (winner-aware)
+// ===========================================================================
 function fitLabel(s) {
   switch (s) {
     case 'success':            return 'fits OK';
@@ -297,7 +622,12 @@ function fitLabel(s) {
   }
 }
 
-// ---- Tabs for all results ----
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 const tiers = ['all', ...new Set(DATA.map(d => d.tier))].filter((v, i, a) => a.indexOf(v) === i);
 const tabsEl = document.getElementById('tier-tabs');
 tiers.forEach((t, i) => {
@@ -305,25 +635,27 @@ tiers.forEach((t, i) => {
     '<div class="tab' + (i === 0 ? ' active' : '') + '" data-tier="' + t + '">' + (t === 'all' ? 'All' : 'Tier ' + t) + ' (' + (t === 'all' ? DATA.length : DATA.filter(d => d.tier === t).length) + ')</div>'
   );
 });
-function buildTable(filter) {
+
+function renderAllTable() {
   const tb = document.querySelector('#all tbody');
   tb.innerHTML = '';
-  DATA.filter(d => filter === 'all' || d.tier === filter).forEach(d => {
+  DATA.filter(d => STATE.tierTab === 'all' || d.tier === STATE.tierTab).forEach(d => {
     const wddm = d.wddm_flag_shared_pos ? '<span class="wddm">+' + d.shared_peak_mib + '</span>' :
                  (d.shared_peak_mib >= 0 ? d.shared_peak_mib : '-');
+    const winCls = isWinnerId(d.id) ? ' class="is-winner"' : '';
     tb.insertAdjacentHTML('beforeend',
-      '<tr>' +
+      '<tr' + winCls + '>' +
         '<td><code>' + d.id + '</code></td>' +
         '<td class="tier-' + d.tier + '">' + d.tier + '</td>' +
-        '<td>' + d.model + '</td>' +
-        '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + d.extra_args + '</td>' +
-        '<td class="num">' + (d.ttft_sec != null ? d.ttft_sec.toFixed(2) : '-') + '</td>' +
-        '<td class="num">' + (d.prompt_tps ? d.prompt_tps.toFixed(1) : '-') + '</td>' +
-        '<td class="num"><b>' + (d.eval_tps ? d.eval_tps.toFixed(1) : '-') + '</b></td>' +
+        '<td>' + escapeHtml(d.model) + '</td>' +
+        '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + escapeHtml(d.extra_args) + '</td>' +
+        '<td class="num">' + (d.ttft_sec != null ? (+d.ttft_sec).toFixed(2) : '-') + '</td>' +
+        '<td class="num">' + (d.prompt_tps ? (+d.prompt_tps).toFixed(1) : '-') + '</td>' +
+        '<td class="num"><b>' + (d.eval_tps ? (+d.eval_tps).toFixed(1) : '-') + '</b></td>' +
         '<td class="num">' + d.vram_peak_mib + '</td>' +
         '<td class="num">' + wddm + '</td>' +
         '<td class="num">' + (d.ram_used_peak_mib != null ? d.ram_used_peak_mib : '-') + '</td>' +
-        '<td class="num">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? d.gpu_power_peak_w.toFixed(0) : '-') + '</td>' +
+        '<td class="num">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? (+d.gpu_power_peak_w).toFixed(0) : '-') + '</td>' +
         '<td class="num">' + (d.gpu_temp_peak_c != null && d.gpu_temp_peak_c > 0 ? d.gpu_temp_peak_c : '-') + '</td>' +
         '<td class="num">' + (d.gpu_util_avg_pct != null && d.gpu_util_avg_pct > 0 ? d.gpu_util_avg_pct + '%' : '-') + '</td>' +
         '<td>' + (d.layers_offloaded || '-') + '</td>' +
@@ -332,14 +664,20 @@ function buildTable(filter) {
     );
   });
 }
-buildTable('all');
+
 tabsEl.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     tabsEl.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
-    buildTable(tab.dataset.tier);
+    STATE.tierTab = tab.dataset.tier;
+    renderAllTable();
   });
 });
+
+// ===========================================================================
+// Boot
+// ===========================================================================
+rerender();
 </script>
 </body>
 </html>

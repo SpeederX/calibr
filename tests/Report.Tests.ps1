@@ -6,41 +6,68 @@
 $labRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $tplPath = Join-Path $labRoot "report.template.html"
 
-Describe "report.template.html structure" {
+Describe "report.template.html structure (v1.2 redesign)" {
     $tpl = Get-Content $tplPath -Raw
 
     It "exists and is non-empty" {
         Assert-True ($tpl.Length -gt 1000) "template should have meaningful content"
     }
-    It "exposes the three placeholders Invoke-Report fills" {
+    It "exposes the four placeholders Invoke-Report fills" {
         Assert-True ($tpl -match '%%DATA%%')     "missing %%DATA%% placeholder"
         Assert-True ($tpl -match '%%WINNERS%%')  "missing %%WINNERS%% placeholder"
         Assert-True ($tpl -match '%%CFG%%')      "missing %%CFG%% placeholder"
         Assert-True ($tpl -match '%%NOW%%')      "missing %%NOW%% placeholder"
     }
-    It "embeds the new scatter section" {
-        Assert-True ($tpl -match 'id="scatter"')          "scatter SVG element missing"
+    It "embeds the scatter section (kept from v1.1)" {
+        Assert-True ($tpl -match 'id="scatter"')           "scatter SVG element missing"
         Assert-True ($tpl -match 'function renderScatter') "renderScatter function missing"
         Assert-True ($tpl -match 'function modelColor')    "modelColor function missing"
         Assert-True ($tpl -match 'class="scatter-line-gpu"') "scatter-line-gpu CSS class missing"
-        Assert-True ($tpl -match 'GPU VRAM \(')             "scatter chart should label the GPU VRAM reference line"
+        Assert-True ($tpl -match 'GPU VRAM \(')            "scatter chart should label the GPU VRAM reference line"
     }
     It "uses log-10 scale on the scatter X axis" {
         Assert-True ($tpl -match 'Math\.log10') "log-10 transform missing from renderScatter"
         Assert-True ($tpl -match 'log-10')      "X axis label should mention log-10 scale"
     }
-    It "sorts the VRAM bar chart ascending" {
-        Assert-True ($tpl -match "dir:\s*'asc'") "VRAM bars should be called with dir: 'asc'"
+    It "puts the scatter chart before the models list (Phase F: memory-vs-latency first)" {
+        $scatterIdx = $tpl.IndexOf('id="scatter"')
+        $modelsIdx  = $tpl.IndexOf('id="models-list"')
+        Assert-True ($scatterIdx -gt 0) "scatter not found"
+        Assert-True ($modelsIdx  -gt 0) "models list not found"
+        Assert-True ($scatterIdx -lt $modelsIdx) "scatter should appear before models list in document order"
     }
-    It "annotates VRAM bars with the headroom indicator" {
-        Assert-True ($tpl -match 'function vramHeadroom')    "vramHeadroom function missing"
-        Assert-True ($tpl -match 'annotate:\s*vramHeadroom') "VRAM bars should pass vramHeadroom as annotate"
+    It "exposes the filter selector with the four scoring profiles" {
+        Assert-True ($tpl -match 'class="filter-bar"')         "filter bar container missing"
+        Assert-True ($tpl -match 'data-filter="speed"')        "speed filter button missing"
+        Assert-True ($tpl -match 'data-filter="efficiency"')   "efficiency filter button missing"
+        Assert-True ($tpl -match 'data-filter="safety"')       "safety-balanced filter button missing"
+        Assert-True ($tpl -match 'data-filter="overall"')      "overall filter button missing"
+        Assert-True ($tpl -match 'const SCORERS = ')           "SCORERS registry missing"
+        Assert-True ($tpl -match 'function computeWinners')    "computeWinners function missing"
+    }
+    It "renders the models list as collapsible details/summary rows" {
+        Assert-True ($tpl -match 'id="models-list"')                 "models-list container missing"
+        Assert-True ($tpl -match 'details\.model-row')               "model-row CSS missing"
+        Assert-True ($tpl -match 'function renderModelsList')        "renderModelsList function missing"
+        Assert-True ($tpl -match 'details class="model-row"')        "details element for model row missing"
+    }
+    It "exposes the eval/vram tabbed widget that replaces the old separate bar sections" {
+        Assert-True ($tpl -match 'id="bars-tabs"')           "bars-tabs container missing"
+        Assert-True ($tpl -match 'data-bars="eval"')         "eval bars tab missing"
+        Assert-True ($tpl -match 'data-bars="vram"')         "vram bars tab missing"
+        Assert-True ($tpl -match 'function renderBars')      "renderBars function missing"
+        Assert-True ($tpl -match 'function vramHeadroom')    "vramHeadroom annotation function missing"
         Assert-True ($tpl -match '\.bar-row-ann')            "bar-row-ann CSS class missing"
     }
-    It "keeps the eval bar chart descending (top = fastest)" {
-        $evalCallMatch = [regex]::Match($tpl, "bars\('eval-bars'[^)]*\)")
-        Assert-True $evalCallMatch.Success "could not locate eval-bars call"
-        Assert-False ($evalCallMatch.Value -match "dir:\s*'asc'") "eval-bars should not be ascending"
+    It "supports client-side .bat generation for any config" {
+        Assert-True ($tpl -match 'function generateBatText')  "generateBatText function missing"
+        Assert-True ($tpl -match 'function downloadBat')      "downloadBat function missing"
+        Assert-True ($tpl -match 'data-cfg-id=')              "config-id data attribute missing on bat links"
+    }
+    It "marks winners visually in scatter, bars, and tables" {
+        Assert-True ($tpl -match 'is-winner')                 "is-winner CSS class missing"
+        Assert-True ($tpl -match 'scatter-dot\.is-winner')    "scatter winner styling missing"
+        Assert-True ($tpl -match 'bar-row\.is-winner')        "bars winner styling missing"
     }
 }
 
@@ -62,6 +89,10 @@ Describe "Invoke-Report end-to-end on canned data" {
         ok=$true; fit_status="success"; layers_offloaded="32/32"
         wddm_vram_saturation=0.25; wddm_flag_shared_pos=$false; wddm_flag_high_vram=$false
         timestamp="2026-04-26T12:00:00"
+        # Phase F additions: extended metrics + paths for client-side bat generation
+        ttft_sec=0.42; gpu_power_peak_w=120.0; gpu_temp_peak_c=65; gpu_util_avg_pct=92
+        ram_used_peak_mib=1024; ram_baseline_mib=512
+        model_path="C:\fake\model.gguf"; mmproj_path=$null
     }
     $cannedResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 (Join-Path $tmpData "results\T001_canned.json")
     $cannedPlan = @([ordered]@{
@@ -114,6 +145,17 @@ Describe "Invoke-Report end-to-end on canned data" {
             Assert-True ($html -match '"ctx_size"')       "DATA missing ctx_size"
             Assert-True ($html -match '"kv_cache_mib"')   "DATA missing kv_cache_mib"
         }
+        It "embeds the extended metrics for the scoring profiles (Phase F)" {
+            Assert-True ($html -match '"ttft_sec"')           "DATA missing ttft_sec"
+            Assert-True ($html -match '"gpu_power_peak_w"')   "DATA missing gpu_power_peak_w"
+            Assert-True ($html -match '"gpu_temp_peak_c"')    "DATA missing gpu_temp_peak_c"
+            Assert-True ($html -match '"gpu_util_avg_pct"')   "DATA missing gpu_util_avg_pct"
+            Assert-True ($html -match '"ram_used_peak_mib"')  "DATA missing ram_used_peak_mib"
+        }
+        It "embeds paths for client-side .bat generation (Phase F)" {
+            Assert-True ($html -match '"model_path"')         "DATA missing model_path"
+            Assert-True ($html -match '"mmproj_path"')        "DATA missing mmproj_path"
+        }
         It "computes headroom = vram_total - vram_peak for the canned record" {
             # vram_total=8192, vram_peak=2000 -> headroom=6192
             Assert-True ($html -match '"headroom_mib":6192') "expected headroom 6192 for canned record"
@@ -122,11 +164,34 @@ Describe "Invoke-Report end-to-end on canned data" {
             Assert-True ($html -match 'id="scatter"')
             Assert-True ($html -match 'function renderScatter')
         }
+        It "preserves the filter selector after substitution (Phase F)" {
+            Assert-True ($html -match 'data-filter="speed"')        "filter buttons stripped"
+            Assert-True ($html -match 'function computeWinners')    "computeWinners function stripped"
+        }
     } finally {
         # Clean up the canned result so it doesn't pollute the user's actual
         # data set. Don't touch any of the user's real result files.
         if (Test-Path $resPath) { Remove-Item $resPath -Force -ErrorAction SilentlyContinue }
         if (Test-Path $tmpRoot) { Remove-Item $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe "report.template.html script renders under a stubbed DOM" {
+    # tests/report-smoke.mjs extracts the <script> block, fills the
+    # placeholders with a small canned dataset, and runs it under a stubbed
+    # document. A syntax error or a runtime throw during the initial
+    # rerender() exits non-zero. Catches the kind of typo that would
+    # silently break the report when opened in a real browser.
+    It "node smoke completes with exit code 0" {
+        $node = (Get-Command node -ErrorAction SilentlyContinue)
+        if (-not $node) {
+            Write-Host "  [skip] node not on PATH" -ForegroundColor DarkYellow
+            return
+        }
+        $smokeScript = Join-Path $PSScriptRoot "report-smoke.mjs"
+        $stdout = & $node.Source $smokeScript 2>&1 | Out-String
+        Assert-True ($LASTEXITCODE -eq 0) "report-smoke.mjs exited $LASTEXITCODE`: $stdout"
+        Assert-True ($stdout -match 'OK: report\.template\.html renders') "expected OK line, got: $stdout"
     }
 }
 

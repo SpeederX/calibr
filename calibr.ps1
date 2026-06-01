@@ -1844,6 +1844,15 @@ function Invoke-Report {
         $r = $_
         $derived = Get-ResultDerivedFields -result $r -vramTotal $vramTotal
         $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
+        # Extended metrics may not exist on legacy result JSONs; fall back to
+        # $null so the JS side renders '-' for missing values without crashing
+        # the scorers (efficiency divides by gpu_power_peak_w; null is safe).
+        $ttft   = if ($null -ne $r.ttft_sec)           { [double]$r.ttft_sec } else { $null }
+        $gpuPw  = if ($null -ne $r.gpu_power_peak_w)   { [double]$r.gpu_power_peak_w } else { $null }
+        $gpuTc  = if ($null -ne $r.gpu_temp_peak_c)    { [int]$r.gpu_temp_peak_c } else { $null }
+        $gpuUt  = if ($null -ne $r.gpu_util_avg_pct)   { [int]$r.gpu_util_avg_pct } else { $null }
+        $ramPk  = if ($null -ne $r.ram_used_peak_mib)  { [int]$r.ram_used_peak_mib } else { $null }
+        $ramBl  = if ($null -ne $r.ram_baseline_mib)   { [int]$r.ram_baseline_mib } else { $null }
         [ordered]@{
             id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; tier=$r.tier
             prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
@@ -1852,11 +1861,24 @@ function Invoke-Report {
             fit_status=$r.fit_status; wddm_vram_saturation=([double]$r.wddm_vram_saturation)
             wddm_flag_high_vram=$r.wddm_flag_high_vram; wddm_flag_shared_pos=$r.wddm_flag_shared_pos
             extra_args=$r.extra_args; ok=$r.ok
+            # Paths exposed for client-side .bat generation in the report.
+            # Filesystem-local, fine to surface in the HTML (the report itself
+            # is meant to be opened on the same machine that ran the bench).
+            model_path=$r.model_path
+            mmproj_path=$r.mmproj_path
             # Derived for the new charts and the headroom annotation:
             time_total_sec=$derived.time_total_sec
             headroom_mib=$derived.headroom_mib
             ctx_size=$derived.ctx_size
             kv_cache_mib=$kvCache
+            # Extended metrics (added v1.2): used by the all-results table and
+            # by the 'efficiency' scoring profile in the new report UI.
+            ttft_sec=$ttft
+            gpu_power_peak_w=$gpuPw
+            gpu_temp_peak_c=$gpuTc
+            gpu_util_avg_pct=$gpuUt
+            ram_used_peak_mib=$ramPk
+            ram_baseline_mib=$ramBl
         }
     }) | ConvertTo-Json -Depth 5 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {

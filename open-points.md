@@ -12,26 +12,24 @@ group the rough order is "smaller / more isolated first".
 ## Engine + CLI: deferred but designed
 
 ### Phase F — report UI redesign
-*Estimate: 2-3h.*
+**Shipped.** See `report.template.html` + the `Phase F` markers in
+`tests/Report.Tests.ps1`. Visual demo: `node tests/generate-demo-report.mjs`
+writes `report_ui/demo-report.html` from synthetic data. What landed:
 
-Mockup from the user lives in `report_ui/Screenshot 2026-06-01 125229.png`
-(gitignored). Notes from the conversation:
-
-- **Memory vs latency chart moves to the FIRST visible section**, above
-  the winners grid. It is the most diagnostic single view of a bench
-  run.
-- **Per-config rows collapse under expandable model rows**. The
-  collapsed header row shows the WINNING config for the currently
-  selected filter; expand to see all configs for that model.
-- **Eval tokens / VRAM peak become tabs of the same widget** instead
-  of two separate sections.
-- **Top-level filter selector** that changes the winner criterion
-  (speed / efficiency / safety-balanced / overall-weighted). This is
-  effectively the embryo of *scoring profiles* — when item 10 lands,
-  the filter selector grows to expose configurable weighted matrices.
-- The "deduped N stale result file(s)" engine line means the report
-  ALREADY collapses legacy T###-prefix duplicates; that work doesn't
-  need to be redone in the UI.
+- Memory-vs-latency scatter is the first visible chart.
+- Filter selector at the top picks the winner criterion: speed /
+  efficiency / safety-balanced / overall-weighted (the embryo of
+  scoring profiles — item 10 expands it to configurable weights).
+- Models list is a collapsible `<details>` per model: collapsed row =
+  winning config for the current filter; expand = all configs for the
+  model with the winner highlighted.
+- Eval-tokens-per-second and VRAM-peak bars are tabs of one widget.
+- Client-side `.bat` generation for any config (the engine still
+  pre-generates one per model in `data/bats/` for the safety-first
+  winner).
+- Engine serializes the extended metrics (`ttft_sec`,
+  `gpu_power_peak_w`, etc.) and `model_path` / `mmproj_path` into the
+  report JSON so the efficiency scorer and the bat generator work.
 
 ### llama.cpp auto-fetch
 *Estimate: 0.5-1d.*
@@ -169,13 +167,19 @@ Open questions:
 - Result schema (one row per model, or per (model, config)?).
 - How to combine with the speed bench in the final report.
 
-### Scoring profiles in report
-*Depends on: extended metrics (done), abstention bench (above).*
+### Scoring profiles in report (configurable weights UI)
+*Depends on: extended metrics (done), abstention bench (above).
+Filter selector with four hard-coded profiles already shipped in Phase F.*
 
-Weighted matrix in the report: each row is a config; columns are
-speed / efficiency (perf/watt) / honesty / hardware-stress; the user
-picks a profile to re-sort the leaderboard. The filter selector
-landing in Phase F is the embryo of this.
+Replace the four hard-coded profile buttons with a UI that lets the
+user dial weights themselves: speed / efficiency (perf/watt) / safety
+(no-paging) / honesty / hardware-stress columns, each with a
+0-100 slider; "save as user profile" persists to
+`data/user_score_profiles.json` so the profile shows up alongside the
+defaults.
+
+Tied into the abstention bench for the honesty axis; without it, the
+profile can dim that slider as N/A.
 
 ### GGUF metadata parser
 *Estimate: 0.5d.*
