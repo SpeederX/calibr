@@ -853,22 +853,51 @@ function Get-GpuSnapshot {
 }
 
 function Get-AvailableMemoryMib {
-    # System-wide free RAM in MiB, via the Windows perf counter. The wddm
-    # shared-mem counter already justified taking the Get-Counter overhead
-    # on every poll tick; adding one more metric is cheap.
+    # System-wide free RAM in MiB. We use CIM/WMI rather than Get-Counter
+    # because perf-counter NAMES are localized on non-English Windows
+    # (Italian: '\Memoria\MByte disponibili' vs the English '\Memory\Available
+    # MBytes'), and Get-Counter rejects the English name on a localized
+    # system. Win32_OperatingSystem.FreePhysicalMemory is in kilobytes and
+    # language-independent.
     try {
-        $cs = (Get-Counter '\Memory\Available MBytes' -ErrorAction Stop).CounterSamples
-        return [int]$cs[0].CookedValue
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        return [int]($os.FreePhysicalMemory / 1024)   # KB -> MiB
     } catch { return -1 }
 }
 
+# Disk-read state cached between polls because the raw-byte counter is
+# monotonic; we compute a rate from two consecutive samples.
+$script:_lastDiskReadBytes  = [int64]0
+$script:_lastDiskReadAt     = [datetime]::MinValue
+
 function Get-DiskReadBytesPerSec {
-    # Total physical-disk read throughput across all drives. Polled during
-    # the load phase to surface cold-start I/O bottlenecks (NVMe at 7 GB/s
-    # vs HDD at 500 MB/s makes a huge difference on first-load timing).
+    # Total physical-disk read throughput. Same localization story as RAM:
+    # the perf-counter path '\PhysicalDisk(_Total)\Disk Read Bytes/sec' is
+    # translated on Italian Windows. We use the CIM PerfFormattedData class
+    # first (DiskReadBytesPersec is an English property name regardless of
+    # OS locale); if that fails we compute a rate from two raw-byte samples.
     try {
-        $cs = (Get-Counter '\PhysicalDisk(_Total)\Disk Read Bytes/sec' -ErrorAction Stop).CounterSamples
-        return [int64]$cs[0].CookedValue
+        $perf = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter "Name='_Total'" -ErrorAction Stop
+        if ($perf -and $null -ne $perf.DiskReadBytesPersec) {
+            return [int64]$perf.DiskReadBytesPersec
+        }
+    } catch { }
+    try {
+        $raw = Get-CimInstance -ClassName Win32_PerfRawData_PerfDisk_PhysicalDisk -Filter "Name='_Total'" -ErrorAction Stop
+        if (-not $raw) { return 0 }
+        $nowBytes = [int64]$raw.DiskReadBytesPersec
+        $nowAt    = Get-Date
+        $rate = 0
+        if ($script:_lastDiskReadAt -ne [datetime]::MinValue) {
+            $dt = ($nowAt - $script:_lastDiskReadAt).TotalSeconds
+            if ($dt -gt 0) {
+                $rate = [int64](($nowBytes - $script:_lastDiskReadBytes) / $dt)
+                if ($rate -lt 0) { $rate = 0 }
+            }
+        }
+        $script:_lastDiskReadBytes = $nowBytes
+        $script:_lastDiskReadAt    = $nowAt
+        return $rate
     } catch { return 0 }
 }
 
