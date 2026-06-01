@@ -68,6 +68,14 @@ param(
     [string]$Destination = "",       # override target root (default: scan_paths[0])
     [string]$Preset = "",            # named preset from default_bench_presets.json / data/user_bench_presets.json
 
+    # Disables the extended metric polling during bench (GPU power/temp/util,
+    # system RAM, disk I/O, and the [poll] emit consumed by the CLI live
+    # strip). Reduces polling-thread overhead from ~1-3% CPU to under 1%.
+    # The result JSON keeps the extended metric FIELDS but they all read 0
+    # / null. Useful when you want the cleanest possible bench numbers and
+    # don't need real-time visibility.
+    [switch]$MinimalPolling,
+
     # Used by report: how to group results when selecting winners
     [ValidateSet("model", "model+variant")]
     [string]$GroupBy = "model",
@@ -1003,37 +1011,48 @@ function Invoke-OneBenchRun {
     $wc = New-Object System.Net.WebClient
     while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
         Start-Sleep -Milliseconds 500
-        $snap = Get-GpuSnapshot
-        if ($snap.mem_mib  -gt $peakVram)  { $peakVram  = $snap.mem_mib }
-        if ($snap.power_w  -gt $peakPower) { $peakPower = $snap.power_w }
-        if ($snap.temp_c   -gt $peakTemp)  { $peakTemp  = $snap.temp_c }
-        if ($snap.util_pct -ge 0) { $utilSum += $snap.util_pct; $utilCount++ }
-        if ($cfg.wddm_detection.enable_shared_mem_counter) {
-            $s = Get-SharedGPUMemoryMib
-            if ($s -ge 0) {
-                $delta = $s - $sharedBaseline
-                if ($delta -gt $peakShared) { $peakShared = $delta }
+        if ($MinimalPolling) {
+            # Cheap path: just VRAM + readiness check, no power/temp/util/RAM/disk.
+            # Skips the [poll] emit entirely; the CLI's live strip stays blank.
+            $vNow = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
+            if ($vNow -gt $peakVram) { $peakVram = $vNow }
+            if ($cfg.wddm_detection.enable_shared_mem_counter) {
+                $s = Get-SharedGPUMemoryMib
+                if ($s -ge 0) {
+                    $delta = $s - $sharedBaseline
+                    if ($delta -gt $peakShared) { $peakShared = $delta }
+                }
             }
+        } else {
+            $snap = Get-GpuSnapshot
+            if ($snap.mem_mib  -gt $peakVram)  { $peakVram  = $snap.mem_mib }
+            if ($snap.power_w  -gt $peakPower) { $peakPower = $snap.power_w }
+            if ($snap.temp_c   -gt $peakTemp)  { $peakTemp  = $snap.temp_c }
+            if ($snap.util_pct -ge 0) { $utilSum += $snap.util_pct; $utilCount++ }
+            if ($cfg.wddm_detection.enable_shared_mem_counter) {
+                $s = Get-SharedGPUMemoryMib
+                if ($s -ge 0) {
+                    $delta = $s - $sharedBaseline
+                    if ($delta -gt $peakShared) { $peakShared = $delta }
+                }
+            }
+            $ramNow = Get-AvailableMemoryMib
+            if ($ramNow -ge 0 -and ($minRam -lt 0 -or $ramNow -lt $minRam)) { $minRam = $ramNow }
+            $diskNow = Get-DiskReadBytesPerSec
+            if ($diskNow -gt $peakDiskRead) { $peakDiskRead = $diskNow }
+            # Live poll marker for the CLI's real-time strip. Structured
+            # key=value, grep-stable, filtered from the visible log on the
+            # CLI side. Floats formatted with InvariantCulture so the
+            # decimal point is always '.' (PowerShell on Italian Windows
+            # would otherwise emit '42,14' and the JS parser would
+            # Number("42,14") -> NaN -> 0 on the CLI).
+            $ramUsedNow = if ($ramBaseline -ge 0 -and $ramNow -ge 0) { $ramBaseline - $ramNow } else { 0 }
+            $diskMBNow  = [math]::Round($diskNow / 1MB, 1)
+            $inv = [System.Globalization.CultureInfo]::InvariantCulture
+            $powStr  = $snap.power_w.ToString($inv)
+            $diskStr = $diskMBNow.ToString($inv)
+            Write-Host ("[poll] gpu_mem={0} gpu_pow={1} gpu_temp={2} gpu_util={3} ram_used={4} disk_r={5}" -f $snap.mem_mib, $powStr, $snap.temp_c, $snap.util_pct, $ramUsedNow, $diskStr)
         }
-        $ramNow = Get-AvailableMemoryMib
-        if ($ramNow -ge 0 -and ($minRam -lt 0 -or $ramNow -lt $minRam)) { $minRam = $ramNow }
-        $diskNow = Get-DiskReadBytesPerSec
-        if ($diskNow -gt $peakDiskRead) { $peakDiskRead = $diskNow }
-        # Live poll marker for the CLI's real-time strip. Structured key=value
-        # so the parser is grep-stable. The CLI filters these out of the
-        # visible log so they don't bloat the scroll buffer.
-        #
-        # Floats are formatted with InvariantCulture so the decimal point is
-        # always '.' regardless of the host's locale. PowerShell on Italian
-        # Windows would otherwise emit '42,14' and the JS parser would
-        # Number("42,14") -> NaN -> 0 on the CLI side, which is exactly the
-        # 'power and disk stuck at zero' bug we hit in real testing.
-        $ramUsedNow = if ($ramBaseline -ge 0 -and $ramNow -ge 0) { $ramBaseline - $ramNow } else { 0 }
-        $diskMBNow  = [math]::Round($diskNow / 1MB, 1)
-        $inv = [System.Globalization.CultureInfo]::InvariantCulture
-        $powStr  = $snap.power_w.ToString($inv)
-        $diskStr = $diskMBNow.ToString($inv)
-        Write-Host ("[poll] gpu_mem={0} gpu_pow={1} gpu_temp={2} gpu_util={3} ram_used={4} disk_r={5}" -f $snap.mem_mib, $powStr, $snap.temp_c, $snap.util_pct, $ramUsedNow, $diskStr)
         try {
             $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
             if ($content.Length -gt 10) { $ready = $true; break }

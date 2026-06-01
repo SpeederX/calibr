@@ -74,6 +74,7 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   const [tier, setTier] = useState<"" | "A" | "B" | "C">("");
   const [runs, setRuns] = useState<number>(0);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
+  const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
@@ -86,6 +87,7 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
     { kind: "tier" as const,     label: `tier:    ${TIER_DESCRIPTIONS[tier] ?? tier}` },
     { kind: "runs" as const,     label: `runs:    ${runsLabel}` },
     { kind: "rotate" as const,   label: `rotate:  ${keepDownloads ? "no (keep downloaded files)" : "yes (delete each model after its configs succeed)"}` },
+    { kind: "polling" as const,  label: `polling: ${minimalPolling ? "minimal (lowest overhead, no live strip / power / RAM / disk)" : "full (default — live metrics strip + extended fields in results)"}` },
     { kind: "run" as const,      label: "> start bench" },
     { kind: "cancel" as const,   label: "  cancel" },
   ];
@@ -101,6 +103,7 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
     if (runs > 0) { args.push("-Runs", String(runs)); parts.push(`-Runs ${runs}`); }
     if (rerunAll) { args.push("-Force"); parts.push("-Force"); }
     if (keepDownloads) { args.push("-KeepDownloads"); parts.push("-KeepDownloads"); }
+    if (minimalPolling) { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
     return { args, label: parts.length ? `bench ${parts.join(" ")}` : "bench" };
   };
 
@@ -110,7 +113,8 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
       case "model":  setModel(next(modelChoices, model)); break;
       case "tier":   setTier(next(TIERS, tier)); break;
       case "runs":   setRuns(next(RUNS_VALUES, runs)); break;
-      case "rotate": setKeepDownloads(!keepDownloads); break;
+      case "rotate":  setKeepDownloads(!keepDownloads); break;
+      case "polling": setMinimalPolling(!minimalPolling); break;
       case "run": {
         // No cache → launch immediately. Cache present → ask y/n.
         if (cachedCount > 0) {

@@ -36,6 +36,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const [fetchCatalog, setFetchCatalog] = useState<boolean>(true);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
+  const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
@@ -75,6 +76,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     { kind: "preset"   as const, label: `preset:   ${presetLabel}`, disabled: !fetchCatalog },
     { kind: "rotate"   as const, label: `rotate:   ${keepDownloads ? "no (keep downloaded files after bench)" : "yes (default — delete each model after success)"}` },
     { kind: "prefer"   as const, label: `picker:   ${preferSpeed ? "speed (ignore WDDM safety)" : "safety (default — non-paging wins ties)"}` },
+    { kind: "polling"  as const, label: `polling:  ${minimalPolling ? "minimal (lowest overhead, no live strip / power / RAM / disk)" : "full (default — live metrics strip + extended fields in results)"}` },
     { kind: "run"      as const, label: "> start all" },
     { kind: "cancel"   as const, label: "  cancel" },
   ];
@@ -94,6 +96,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     if (keepDownloads)   { args.push("-KeepDownloads");   parts.push("-KeepDownloads"); }
     if (rerunAll)        { args.push("-Force");           parts.push("-Force"); }
     if (preferSpeed)     { args.push("-PreferSpeed");     parts.push("-PreferSpeed"); }
+    if (minimalPolling)  { args.push("-MinimalPolling");  parts.push("-MinimalPolling"); }
     return { args, label: parts.length ? `all ${parts.join(" ")}` : "all" };
   };
 
@@ -130,6 +133,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       case "preset":   if (fetchCatalog) setPresetIdx((presetIdx + 1) % presetNames.length); break;
       case "rotate":   setKeepDownloads(!keepDownloads); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
+      case "polling":  setMinimalPolling(!minimalPolling); break;
       case "run": {
         if (fetchCatalog) {
           runGate();
