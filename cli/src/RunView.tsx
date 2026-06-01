@@ -126,8 +126,11 @@ export function RunView({ args, label, onExit }: Props) {
   const [exitCode, setExitCode] = useState<number | null>(null);
   // Total elapsed time for this RunView mount (≈ the whole run, since
   // RunView is created the moment the user hits 'start' in the form).
-  // Tick once per 100 ms so the milliseconds digit changes visibly.
+  // Tick once per 100 ms so the milliseconds digit changes visibly, but
+  // stop the moment the process exits so the displayed value freezes on
+  // the final total instead of running past it.
   const startedAtRef = useRef<number>(Date.now());
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number>(0);
   // Scroll offset measured from the bottom of the buffer in lines. 0 means
   // 'follow the tail'; positive values mean 'show N lines up from the
@@ -229,23 +232,24 @@ export function RunView({ args, label, onExit }: Props) {
     run.proc.stderr?.on("data", append);
     run.done.then((code) => setExitCode(code));
 
-    // Stop ticking the elapsed timer once the process exits — the value
-    // freezes on the final total so the user can read it. While running,
-    // tick 10×/sec for milli digit visibility.
-    const tick = setInterval(() => {
+    // Tick 10×/sec for milli digit visibility while the process is alive.
+    tickRef.current = setInterval(() => {
       setElapsedMs(Date.now() - startedAtRef.current);
     }, 100);
 
     return () => {
-      clearInterval(tick);
+      if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
       killTree(run.proc.pid);
     };
   }, []);
 
-  // Freeze the timer at exit. Without this, the interval is cleared by the
-  // unmount path only — but exitCode can flip while we're still mounted.
+  // Freeze the timer at exit: clear the interval (without this the timer
+  // keeps incrementing past the exit moment) AND set the final value once.
   useEffect(() => {
-    if (exitCode !== null) setElapsedMs(Date.now() - startedAtRef.current);
+    if (exitCode !== null) {
+      if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+      setElapsedMs(Date.now() - startedAtRef.current);
+    }
   }, [exitCode]);
 
   useInput((input, key) => {

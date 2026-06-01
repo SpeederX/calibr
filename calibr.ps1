@@ -590,8 +590,25 @@ function Get-Tier {
 
 function New-PlanItem {
     param($meta, $tier, $extraArgs, $label, $idx)
-    $sanitized = ($meta.model + "_" + $meta.variant) -replace '[^\w]', '_'
-    $id = "T{0:D3}_{1}_{2}" -f $idx, $sanitized.Substring(0, [Math]::Min(30, $sanitized.Length)), ($label -replace '[^\w]', '_').Substring(0, [Math]::Min(20, ($label -replace '[^\w]', '_').Length))
+    # IDs used to be 'T{idx:D3}_{model_variant}_{label}'. The idx prefix made
+    # them NON-deterministic across plan regenerations: re-running discover
+    # with a different catalog (or the per-sample loop in 'all -DownloadSamples'
+    # where each iteration plans against a single model) shifted idx and
+    # produced new IDs for the SAME logical config. Two consequences in the
+    # wild:
+    #   1. result JSONs accumulated in data/results/ with the same suffix but
+    #      different idx, and the report rendered them as visual duplicates
+    #      (one bar per file, same model + same config).
+    #   2. cache hits missed across plan regenerations because the cache check
+    #      is keyed off the ID, so the same config got re-benched.
+    # The fix: ID is now '{model_variant}__{label}' — deterministic over
+    # (model, variant, label), which is unique within any single plan. The
+    # `$idx` param is kept for backwards compat with callers but unused.
+    $sanitizedModel = ($meta.model + "_" + $meta.variant) -replace '[^\w]', '_'
+    $sanitizedLabel = $label -replace '[^\w]', '_'
+    if ($sanitizedModel.Length -gt 40) { $sanitizedModel = $sanitizedModel.Substring(0, 40) }
+    if ($sanitizedLabel.Length -gt 30) { $sanitizedLabel = $sanitizedLabel.Substring(0, 30) }
+    $id = "{0}__{1}" -f $sanitizedModel, $sanitizedLabel
     return @{
         id          = $id
         model_path  = $meta.path
@@ -1427,6 +1444,29 @@ function Invoke-Bench {
             Write-Host "Plan is empty. Run 'calibr discover' (with .gguf files in scan_paths) then 'calibr plan' first." -ForegroundColor Yellow
         } else {
             Write-Host "No configs match the current filter (-Model / -Tier / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
+            # Tier breakdown so the user immediately sees WHY the filter
+            # missed: typically the catalog has only Tier A models because
+            # no MoE (Tier B) or partial-offload (Tier C) sample is on disk
+            # at the moment. Lists the models in each tier too so the user
+            # knows what's available.
+            $byTier = @{}
+            foreach ($p in $plan) {
+                if (-not $p) { continue }
+                $t = if ($p.tier) { $p.tier } else { "?" }
+                if (-not $byTier.ContainsKey($t)) { $byTier[$t] = @() }
+                $byTier[$t] += $p.model
+            }
+            foreach ($t in @('A','B','C')) {
+                $modelsInTier = if ($byTier.ContainsKey($t)) {
+                    @($byTier[$t] | Sort-Object -Unique)
+                } else { @() }
+                $count = if ($byTier.ContainsKey($t)) { $byTier[$t].Count } else { 0 }
+                $modelStr = if ($modelsInTier.Count -gt 0) { " (" + ($modelsInTier -join ', ') + ")" } else { "" }
+                Write-Host ("  Tier {0}: {1} config{2}{3}" -f $t, $count, $(if ($count -eq 1) {''} else {'s'}), $modelStr) -ForegroundColor DarkGray
+            }
+            if ($Tier) {
+                Write-Host ("Hint: drop '-Tier {0}' to bench what's available, or run 'all -DownloadSamples -SampleId <a-tier-{1}-sample>' to add a Tier {0} model first." -f $Tier, $Tier.ToLower()) -ForegroundColor DarkGray
+            }
         }
         return
     }
@@ -1624,6 +1664,34 @@ function Invoke-Report {
         $results += $r
     }
     if ($results.Count -eq 0) { throw "No results. Run 'calibr bench' first." }
+
+    # Dedupe stale result JSONs. A legacy concern: pre-v0.1.3 plan IDs
+    # included an auto-incrementing index so the SAME logical config (same
+    # model + variant + label) could end up in two files, e.g.
+    # T001_Qwen3_5_0_8B_Q8_0_ctx_16384_kv_q8_0.json and
+    # T007_Qwen3_5_0_8B_Q8_0_ctx_16384_kv_q8_0.json — the report then drew
+    # two bars per config. New IDs are deterministic but old result files
+    # still exist on disk, so we group by (model, variant, label) and keep
+    # the newest timestamp per group. Counts before/after so the user
+    # notices if their data/results/ has accumulated leftover junk worth
+    # cleaning up.
+    $rawCount = $results.Count
+    $byKey = @{}
+    foreach ($r in $results) {
+        $key = "{0}|{1}|{2}" -f $r.model, $r.variant, $r.label
+        if (-not $byKey.ContainsKey($key)) {
+            $byKey[$key] = $r
+        } else {
+            $existingTs = if ($byKey[$key].timestamp) { $byKey[$key].timestamp } else { "" }
+            $newTs      = if ($r.timestamp)            { $r.timestamp }            else { "" }
+            if ($newTs -gt $existingTs) { $byKey[$key] = $r }
+        }
+    }
+    $results = @($byKey.Values)
+    if ($rawCount -gt $results.Count) {
+        $orphaned = $rawCount - $results.Count
+        Write-Host ("deduped {0} stale result file(s) (probably legacy T###-prefixed IDs); kept newest per (model, variant, config)" -f $orphaned) -ForegroundColor DarkYellow
+    }
 
     # v1.0 migration: pre-v1 result JSONs used `family` and `quant`. Detect
     # any in the loaded set, backfill model/variant/series, and rewrite the
