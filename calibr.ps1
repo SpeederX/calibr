@@ -2059,7 +2059,15 @@ function Invoke-FetchModels {
 
     # Filter by -Model or -CatalogId if provided
     $filtered = $samples
-    if ($CatalogId)  { $filtered = $filtered | Where-Object { $_.id -like $CatalogId } }
+    if ($CatalogId)  {
+        # Accept comma-separated lists same as the 'all' dispatcher so the
+        # CLI's CustomBenchView can pass a multi-pick selection here too.
+        $idPatterns = @(($CatalogId -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $filtered = $filtered | Where-Object {
+            foreach ($pat in $idPatterns) { if ($_.id -like $pat) { return $true } }
+            return $false
+        }
+    }
     if ($Model)    { $filtered = $filtered | Where-Object { $_.model -match $Model } }
 
     Write-Host "=== get-models ===" -ForegroundColor Cyan
@@ -2999,7 +3007,17 @@ switch ($Command) {
                 }
                 Write-Host ("[all] preset '{0}': {1} entries, max_ctx={2}" -f $Preset, $samples.Count, $(if ($presetMaxCtx -gt 0) { $presetMaxCtx } else { '(no cap)' })) -ForegroundColor Cyan
             }
-            if ($CatalogId) { $samples = $samples | Where-Object { $_.id -like $CatalogId } }
+            if ($CatalogId) {
+                # Accept a comma-separated list (e.g. 'qwen3.5-9b-q4km,gemma-4-e2b')
+                # so the CLI's CustomBenchView can pass a multi-pick selection,
+                # while a single id with wildcards (e.g. 'qwen*') keeps the
+                # old -like semantics.
+                $idPatterns = @(($CatalogId -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                $samples = $samples | Where-Object {
+                    foreach ($pat in $idPatterns) { if ($_.id -like $pat) { return $true } }
+                    return $false
+                }
+            }
             if ($Model)    { $samples = $samples | Where-Object { $_.model -match $Model } }
             $samples = @($samples)
             if ($samples.Count -eq 0) {

@@ -11,6 +11,7 @@ import {
   cachedResultsCount,
   readPresetCatalog,
 } from "./engine.js";
+import { CustomBenchView } from "./CustomBenchView.js";
 
 interface Props {
   onRun: (args: string[], label: string) => void;
@@ -25,6 +26,7 @@ interface Props {
 //                 user picks 'use cache' / 're-run all' / 'cancel'
 type Phase =
   | { kind: "form" }
+  | { kind: "custom" }   // CustomBenchView for model multi-pick
   | { kind: "gate"; required: number; available: number; entryCount: number; sufficient: boolean }
   | { kind: "cachePrompt" };
 
@@ -81,15 +83,22 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     { kind: "cancel"   as const, label: "  cancel" },
   ];
 
+  // Custom selection (CustomBenchView) writes its result here; when set,
+  // buildArgs ignores the named preset and passes -CatalogId with the
+  // comma-list of picked catalog ids.
+  const [customIds, setCustomIds] = useState<string>("");
+
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
     const args: string[] = ["all"];
     const parts: string[] = [];
     if (fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
-    // 'all' / 'custom' are not passed as -Preset; 'all' is a no-op filter and
-    // 'custom' would route to CustomBenchView (Phase C — not yet wired here).
-    if (fetchCatalog && currentPreset !== "all" && currentPreset !== "custom") {
+    // Custom selection overrides the named preset path entirely.
+    if (fetchCatalog && customIds) {
+      args.push("-CatalogId", customIds);
+      parts.push(`-CatalogId "${customIds}"`);
+    } else if (fetchCatalog && currentPreset !== "all" && currentPreset !== "custom") {
       args.push("-Preset", currentPreset);
       parts.push(`-Preset ${currentPreset}`);
     }
@@ -130,11 +139,28 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     const row = rows[i];
     switch (row.kind) {
       case "fetch":    setFetchCatalog(!fetchCatalog); break;
-      case "preset":   if (fetchCatalog) setPresetIdx((presetIdx + 1) % presetNames.length); break;
+      case "preset": {
+        if (!fetchCatalog) break;
+        const nextIdx = (presetIdx + 1) % presetNames.length;
+        setPresetIdx(nextIdx);
+        // Stepping off 'custom' clears any prior custom selection so
+        // subsequent runs use the named preset's expansion, not the
+        // stale picked-ids list.
+        if (presetNames[nextIdx] !== "custom" && customIds) setCustomIds("");
+        break;
+      }
       case "rotate":   setKeepDownloads(!keepDownloads); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
       case "polling":  setMinimalPolling(!minimalPolling); break;
       case "run": {
+        // If preset is 'custom' and the user hasn't yet picked any models
+        // (customIds empty), route into CustomBenchView first. After the
+        // picker submits, AllOptionsView re-enters this branch from the
+        // 'run' button — customIds will then be populated.
+        if (fetchCatalog && currentPreset === "custom" && !customIds) {
+          setPhase({ kind: "custom" });
+          break;
+        }
         if (fetchCatalog) {
           runGate();
         } else if (cachedCount > 0) {
@@ -150,6 +176,10 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   };
 
   useInput((input, key) => {
+    // The custom phase delegates all input handling to CustomBenchView
+    // (which has its own useInput inside) so we MUST not also consume
+    // keystrokes here — otherwise the picker can't toggle.
+    if (phase.kind === "custom") return;
     if (phase.kind === "gate") {
       if (key.escape || input === "q" || input === "n" || input === "N") {
         setPhase({ kind: "form" });
@@ -210,6 +240,21 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
           </Text>
         </Box>
       </Box>
+    );
+  }
+
+  if (phase.kind === "custom") {
+    return (
+      <CustomBenchView
+        onSubmit={(idList) => {
+          setCustomIds(idList);
+          // After picking, go straight to the disk gate; the user already
+          // accepted the form's other choices when they hit '> start all'.
+          setPhase({ kind: "form" });
+          runGate();
+        }}
+        onCancel={() => setPhase({ kind: "form" })}
+      />
     );
   }
 
