@@ -1465,14 +1465,30 @@ function Invoke-RotationCheck {
 
 function Invoke-Bench {
     $cfg = Get-Config
-    if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
-        throw "llama_server_exe missing or invalid. Run 'calibr init'."
-    }
     if (-not (Test-Path $CALIBR_PLAN)) { throw "plan.json missing. Run 'calibr plan'." }
     $planRaw = Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json
     $plan = ConvertTo-Hashtable -obj $planRaw
 
     Write-Host "=== bench ===" -ForegroundColor Cyan
+
+    # Cheap early exit: if the plan is empty (typical of an 'all
+    # -FetchCatalog' phase 0 on a fresh machine where discover found no
+    # pre-existing .gguf), there's nothing to bench and no reason to
+    # require llama_server_exe yet. Surface a friendly hint instead of
+    # throwing. The later per-sample iterations of the 'all' loop will
+    # re-enter this function with a populated plan.
+    $planCount = if ($plan) { @($plan).Count } else { 0 }
+    if ($planCount -eq 0) {
+        Write-Host "Plan is empty. Run 'calibr discover' (with .gguf files in scan_paths) then 'calibr plan' first." -ForegroundColor Yellow
+        return
+    }
+
+    # Now we actually need llama-server. Validate before the bench loop
+    # so the failure points at the real fix ('run init') rather than
+    # crashing inside Invoke-OneBench.
+    if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
+        throw "llama_server_exe missing or invalid. Run 'calibr init' to detect and write it to config.json."
+    }
 
     # Backend cross-check: detect available llama.cpp backends and warn if the
     # build doesn't match the GPU (e.g. NVIDIA card with a Vulkan-only build).
@@ -1485,37 +1501,31 @@ function Invoke-Bench {
     }
 
     $filtered = Select-PlanForBench -plan $plan -ModelFilter $Model -TierFilter $Tier -IdFilter $Id
-    $planCount = if ($plan) { @($plan).Count } else { 0 }
     Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $planCount)
 
     if ($filtered.Count -eq 0) {
-        if ($planCount -eq 0) {
-            Write-Host "Plan is empty. Run 'calibr discover' (with .gguf files in scan_paths) then 'calibr plan' first." -ForegroundColor Yellow
-        } else {
-            Write-Host "No configs match the current filter (-Model / -Tier / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
-            # Tier breakdown so the user immediately sees WHY the filter
-            # missed: typically the catalog has only Tier A models because
-            # no MoE (Tier B) or partial-offload (Tier C) sample is on disk
-            # at the moment. Lists the models in each tier too so the user
-            # knows what's available.
-            $byTier = @{}
-            foreach ($p in $plan) {
-                if (-not $p) { continue }
-                $t = if ($p.tier) { $p.tier } else { "?" }
-                if (-not $byTier.ContainsKey($t)) { $byTier[$t] = @() }
-                $byTier[$t] += $p.model
-            }
-            foreach ($t in @('A','B','C')) {
-                $modelsInTier = if ($byTier.ContainsKey($t)) {
-                    @($byTier[$t] | Sort-Object -Unique)
-                } else { @() }
-                $count = if ($byTier.ContainsKey($t)) { $byTier[$t].Count } else { 0 }
-                $modelStr = if ($modelsInTier.Count -gt 0) { " (" + ($modelsInTier -join ', ') + ")" } else { "" }
-                Write-Host ("  Tier {0}: {1} config{2}{3}" -f $t, $count, $(if ($count -eq 1) {''} else {'s'}), $modelStr) -ForegroundColor DarkGray
-            }
-            if ($Tier) {
-                Write-Host ("Hint: drop '-Tier {0}' to bench what's available, or run 'all -FetchCatalog -CatalogId <a-tier-{1}-sample>' to add a Tier {0} model first." -f $Tier, $Tier.ToLower()) -ForegroundColor DarkGray
-            }
+        # planCount > 0 here (the planCount == 0 case returned earlier
+        # before we even loaded llama-server). The user picked a filter
+        # that no config in the plan matches — show the tier breakdown so
+        # they see WHY the filter missed.
+        Write-Host "No configs match the current filter (-Model / -Tier / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
+        $byTier = @{}
+        foreach ($p in $plan) {
+            if (-not $p) { continue }
+            $t = if ($p.tier) { $p.tier } else { "?" }
+            if (-not $byTier.ContainsKey($t)) { $byTier[$t] = @() }
+            $byTier[$t] += $p.model
+        }
+        foreach ($t in @('A','B','C')) {
+            $modelsInTier = if ($byTier.ContainsKey($t)) {
+                @($byTier[$t] | Sort-Object -Unique)
+            } else { @() }
+            $count = if ($byTier.ContainsKey($t)) { $byTier[$t].Count } else { 0 }
+            $modelStr = if ($modelsInTier.Count -gt 0) { " (" + ($modelsInTier -join ', ') + ")" } else { "" }
+            Write-Host ("  Tier {0}: {1} config{2}{3}" -f $t, $count, $(if ($count -eq 1) {''} else {'s'}), $modelStr) -ForegroundColor DarkGray
+        }
+        if ($Tier) {
+            Write-Host ("Hint: drop '-Tier {0}' to bench what's available, or run 'all -FetchCatalog -CatalogId <a-tier-{1}-sample>' to add a Tier {0} model first." -f $Tier, $Tier.ToLower()) -ForegroundColor DarkGray
         }
         return
     }
@@ -3018,6 +3028,14 @@ switch ($Command) {
     "reset"              { Invoke-Reset }
     "get-models"  { Invoke-FetchModels }
     "all"                {
+        # Fail fast on missing llama-server BEFORE any download or
+        # discover work. Otherwise we'd hit it inside the bench loop
+        # after potentially fetching gigabytes. The friendlier error
+        # points the user at 'init' which is what fixes it.
+        $cfgUp = Get-Config
+        if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
+            throw "llama_server_exe missing or invalid. Run 'calibr init' first so the engine knows where llama-server.exe lives. ('all' will fail later in the bench step otherwise, after wasting time on download/discover.)"
+        }
         if ($FetchCatalog) {
             # Interleaved rotation: instead of fetching the entire curated set
             # up-front (~88 GB peak) and benching afterwards, we walk one
