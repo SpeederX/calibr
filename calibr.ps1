@@ -66,6 +66,7 @@ param(
     [switch]$DownloadAll,            # download every entry matching filters (prompts for confirmation)
     [switch]$FetchCatalog,           # `all` only: fetch curated models before running the pipeline
     [string]$Destination = "",       # override target root (default: scan_paths[0])
+    [string]$Preset = "",            # named preset from default_bench_presets.json / data/user_bench_presets.json
 
     # Used by report: how to group results when selecting winners
     [ValidateSet("model", "model+variant")]
@@ -123,6 +124,8 @@ $script:CALIBR_LOGS_DIR    = Join-Path $CALIBR_DATA_DIR "logs"
 $script:CALIBR_BATS_DIR    = Join-Path $CALIBR_DATA_DIR "bats"
 $script:CALIBR_REPORT      = Join-Path $CALIBR_DATA_DIR "report.html"
 $script:CALIBR_DOWNLOADS   = Join-Path $CALIBR_DATA_DIR "downloads.json"
+$script:CALIBR_DEFAULT_PRESETS = Join-Path $CALIBR_ROOT     "default_bench_presets.json"
+$script:CALIBR_USER_PRESETS    = Join-Path $CALIBR_DATA_DIR "user_bench_presets.json"
 
 foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
@@ -684,6 +687,16 @@ function Invoke-Plan {
     $base = $cfg.base_args + $threadsArg
 
     $globalCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
+    # If 'all -Preset' set a preset-level ctx ceiling, apply the MORE
+    # restrictive of (preset, config) as the effective global cap. This
+    # is how presets like 'low' (max_ctx 32k) actually narrow the Tier A
+    # sweep without needing a per-call -MaxCtx flag.
+    if ($script:_presetMaxCtx -and [int]$script:_presetMaxCtx -gt 0) {
+        $presetCap = [int]$script:_presetMaxCtx
+        if ($globalCtxCap -eq 0 -or $presetCap -lt $globalCtxCap) {
+            $globalCtxCap = $presetCap
+        }
+    }
     $perModelCaps = Get-CatalogMaxContextMap
 
     $plan = @()
@@ -1844,6 +1857,48 @@ function Get-ModelCatalog {
     return $raw.models
 }
 
+function Get-PresetCatalog {
+    # Returns a hashtable {presetName -> presetObject} merging defaults
+    # (default_bench_presets.json at repo root, ships in the tarball) and
+    # user-saved presets (data/user_bench_presets.json). Same-name user
+    # presets fully REPLACE the default — pick a different name if you
+    # want to keep both.
+    $merged = @{}
+    foreach ($path in @($CALIBR_DEFAULT_PRESETS, $CALIBR_USER_PRESETS)) {
+        if (-not (Test-Path $path)) { continue }
+        try {
+            $raw = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($raw -and $raw.presets) {
+                foreach ($prop in $raw.presets.PSObject.Properties) {
+                    $merged[$prop.Name] = $prop.Value
+                }
+            }
+        } catch {
+            Write-Warning ("preset file unreadable, skipped: {0} ({1})" -f $path, $_.Exception.Message)
+        }
+    }
+    return $merged
+}
+
+function Get-Preset {
+    param([Parameter(Mandatory)][string]$Name)
+    $all = Get-PresetCatalog
+    if ($all.ContainsKey($Name)) { return $all[$Name] }
+    return $null
+}
+
+function Select-CatalogByPreset {
+    # Pure filter: given the full catalog list and a preset object (with
+    # .models which is either '*' or an array of catalog ids), returns the
+    # subset of the catalog that the preset selects. Used by the `all`
+    # dispatcher and tested independently.
+    param($catalog, $preset)
+    if ($null -eq $preset) { return ,@($catalog) }
+    if ($preset.models -is [string] -and $preset.models -eq '*') { return ,@($catalog) }
+    $ids = @($preset.models)
+    return ,@($catalog | Where-Object { $ids -contains $_.id })
+}
+
 # Download manifest: records which .gguf files calibr itself fetched. Used by
 # bench's post-config rotation step to decide whether a file is safe to delete
 # (entries in the manifest = downloaded by calibr; absence = user-owned, never
@@ -2907,6 +2962,24 @@ switch ($Command) {
             # actually deliver the 'peak ~ largest single file' promise the
             # CLI's pre-flight gate shows.
             $samples = Get-ModelCatalog
+            # Preset narrows the catalog to a hardware-tier-curated subset
+            # (low / middle / high / user-saved). Applied BEFORE the
+            # other filters so -CatalogId / -Model can further narrow
+            # inside the preset.
+            $presetMaxCtx = 0
+            if ($Preset) {
+                $presetObj = Get-Preset -Name $Preset
+                if ($null -eq $presetObj) {
+                    $known = ((Get-PresetCatalog).Keys | Sort-Object) -join ', '
+                    throw "Preset '$Preset' not found. Known: $known"
+                }
+                $samples = Select-CatalogByPreset -catalog $samples -preset $presetObj
+                if ($null -ne $presetObj.max_ctx) {
+                    $presetMaxCtx = [int]$presetObj.max_ctx
+                    $script:_presetMaxCtx = $presetMaxCtx
+                }
+                Write-Host ("[all] preset '{0}': {1} entries, max_ctx={2}" -f $Preset, $samples.Count, $(if ($presetMaxCtx -gt 0) { $presetMaxCtx } else { '(no cap)' })) -ForegroundColor Cyan
+            }
             if ($CatalogId) { $samples = $samples | Where-Object { $_.id -like $CatalogId } }
             if ($Model)    { $samples = $samples | Where-Object { $_.model -match $Model } }
             $samples = @($samples)

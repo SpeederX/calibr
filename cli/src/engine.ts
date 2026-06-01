@@ -428,6 +428,43 @@ export function downloadFootprintBytes(entries: CatalogEntry[]): { totalBytes: n
 }
 
 // ---------------------------------------------------------------------------
+// Bench presets (default + user-saved)
+// ---------------------------------------------------------------------------
+export interface Preset {
+  label: string;
+  hardware_target?: string;
+  models: "*" | string[];
+  max_ctx?: number | null;
+}
+
+export function readPresetCatalog(): Record<string, Preset> {
+  // Merge default_bench_presets.json (shipped, at ENGINE_ROOT) with
+  // data/user_bench_presets.json (user-saved). Same-name user presets
+  // override defaults (replace, not merge).
+  const merged: Record<string, Preset> = {};
+  const paths = [
+    join(ENGINE_ROOT, "default_bench_presets.json"),
+    join(CALIBR_DATA_DIR, "user_bench_presets.json"),
+  ];
+  for (const p of paths) {
+    if (!existsSync(p)) continue;
+    try {
+      let raw = readFileSync(p, "utf8");
+      if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+      const parsed = JSON.parse(raw);
+      if (parsed?.presets && typeof parsed.presets === "object") {
+        for (const [name, preset] of Object.entries(parsed.presets)) {
+          merged[name] = preset as Preset;
+        }
+      }
+    } catch {
+      // skip unreadable preset file; the engine will warn at runtime
+    }
+  }
+  return merged;
+}
+
+// ---------------------------------------------------------------------------
 // Disk-space probing for the download destination
 // ---------------------------------------------------------------------------
 export function downloadDestination(cfg?: Config): string {

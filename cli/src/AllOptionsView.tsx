@@ -9,6 +9,7 @@ import {
   formatBytes,
   loadConfig,
   cachedResultsCount,
+  readPresetCatalog,
 } from "./engine.js";
 
 interface Props {
@@ -42,9 +43,36 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const cfg = useMemo(loadConfig, []);
   const destination = useMemo(() => downloadDestination(cfg), [cfg]);
   const cachedCount = useMemo(cachedResultsCount, []);
+  // Presets: built-in (default_bench_presets.json) + user-saved
+  // (data/user_bench_presets.json) merged into one dict.
+  const presets = useMemo(readPresetCatalog, []);
+  // Cycle order: all, low, middle, high, then any extra user-saved presets,
+  // then 'custom' as the last sentinel that routes to CustomBenchView
+  // (TODO: Phase C — for now it just behaves like 'all').
+  const presetNames = useMemo<string[]>(() => {
+    const builtin = ["all", "low", "middle", "high"].filter(n => presets[n]);
+    const extras = Object.keys(presets).filter(n => !builtin.includes(n)).sort();
+    return [...builtin, ...extras, "custom"];
+  }, [presets]);
+  const [presetIdx, setPresetIdx] = useState<number>(0);
+  const currentPreset = presetNames[presetIdx];
+  const presetCount = (() => {
+    if (currentPreset === "custom") return null;
+    const p = presets[currentPreset];
+    if (!p) return null;
+    if (p.models === "*") return catalog.length;
+    return Array.isArray(p.models) ? p.models.length : 0;
+  })();
+  const presetLabel = (() => {
+    if (currentPreset === "custom") return "custom (pick models + ctx — TODO Phase C)";
+    const p = presets[currentPreset];
+    if (!p) return currentPreset;
+    return `${p.label} · ${presetCount ?? "?"} entries${p.max_ctx ? `, max ctx ${p.max_ctx}` : ""}`;
+  })();
 
   const rows = [
     { kind: "fetch"    as const, label: `catalog:  ${fetchCatalog ? "fetch curated models first (-FetchCatalog)" : "off (use what's already in scan_paths)"}` },
+    { kind: "preset"   as const, label: `preset:   ${presetLabel}`, disabled: !fetchCatalog },
     { kind: "rotate"   as const, label: `rotate:   ${keepDownloads ? "no (keep downloaded files after bench)" : "yes (default — delete each model after success)"}` },
     { kind: "prefer"   as const, label: `picker:   ${preferSpeed ? "speed (ignore WDDM safety)" : "safety (default — non-paging wins ties)"}` },
     { kind: "run"      as const, label: "> start all" },
@@ -56,7 +84,13 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
     const args: string[] = ["all"];
     const parts: string[] = [];
-    if (fetchCatalog)    { args.push("-FetchCatalog");    parts.push("-FetchCatalog"); }
+    if (fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
+    // 'all' / 'custom' are not passed as -Preset; 'all' is a no-op filter and
+    // 'custom' would route to CustomBenchView (Phase C — not yet wired here).
+    if (fetchCatalog && currentPreset !== "all" && currentPreset !== "custom") {
+      args.push("-Preset", currentPreset);
+      parts.push(`-Preset ${currentPreset}`);
+    }
     if (keepDownloads)   { args.push("-KeepDownloads");   parts.push("-KeepDownloads"); }
     if (rerunAll)        { args.push("-Force");           parts.push("-Force"); }
     if (preferSpeed)     { args.push("-PreferSpeed");     parts.push("-PreferSpeed"); }
@@ -93,6 +127,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     const row = rows[i];
     switch (row.kind) {
       case "fetch":    setFetchCatalog(!fetchCatalog); break;
+      case "preset":   if (fetchCatalog) setPresetIdx((presetIdx + 1) % presetNames.length); break;
       case "rotate":   setKeepDownloads(!keepDownloads); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
       case "run": {
@@ -200,8 +235,9 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       <Box marginTop={1} flexDirection="column">
         {rows.map((row, i) => {
           const selected = i === cursor;
+          const isDisabled = (row as { disabled?: boolean }).disabled === true;
           return (
-            <Text key={row.kind} color={selected ? "cyan" : undefined} inverse={selected}>
+            <Text key={row.kind} color={selected ? "cyan" : undefined} inverse={selected} dimColor={isDisabled}>
               {selected ? "> " : "  "}{row.label}
             </Text>
           );

@@ -1,0 +1,50 @@
+{
+  "$schema_version": 1,
+  "_notes": [
+    "Pre-defined model groupings for the 'all' command. Each preset is a list of catalog_id entries from models_catalog.json plus an optional max_ctx ceiling that further narrows the Tier A context sweep.",
+    "The 'custom' name is reserved at the CLI level: it triggers CustomBenchView for fine-grained model + context picking and is not defined here.",
+    "User-saved presets live in data/user_bench_presets.json and override defaults with the same name (deep-replace, not merge — pick a different name if you want to keep both)."
+  ],
+
+  "presets": {
+    "all": {
+      "label": "all — every entry in models_catalog.json",
+      "hardware_target": "(any)",
+      "models": "*",
+      "max_ctx": null
+    },
+    "low": {
+      "label": "desktop-consumer-low — 2-4 GB VRAM + 8-24 GB RAM",
+      "hardware_target": "GTX 1650 / RTX 3050 / iGPU + 16 GB system",
+      "models": [
+        "qwen3.5-0.8b-q4xl",
+        "qwen3.5-0.8b-q8",
+        "qwen3.5-2b-q4xl",
+        "qwen3.5-4b-q4km",
+        "gemma-4-e2b"
+      ],
+      "max_ctx": 32768
+    },
+    "middle": {
+      "label": "desktop-consumer-middle — 8 GB VRAM + 24-32 GB RAM",
+      "hardware_target": "RTX 2070 / 3060 8 GB + 32 GB system",
+      "models": [
+        "qwen3.5-2b-bf16",
+        "qwen3.5-9b-q4km",
+        "qwen3.6-35b-a3b",
+        "gemma-4-e4b",
+        "gemma-4-26b-a4b"
+      ],
+      "max_ctx": 131072
+    },
+    "high": {
+      "label": "desktop-consumer-high-end — 16-24 GB VRAM + 32-96 GB RAM",
+      "hardware_target": "RTX 4090 / A6000 / etc + 64 GB system",
+      "models": [
+        "qwen3.5-27b-q4ks",
+        "gemma-4-31b-q4km"
+      ],
+      "max_ctx": 262144
+    }
+  }
+}

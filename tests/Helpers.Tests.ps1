@@ -580,6 +580,38 @@ Describe "Test-CtxAllowedForModel" {
     }
 }
 
+Describe "Select-CatalogByPreset" {
+    function _catalog {
+        return @(
+            @{ id = "qwen-mini";  model = "Qwen-Mini" }
+            @{ id = "qwen-9b";    model = "Qwen-9B" }
+            @{ id = "gemma-2b";   model = "Gemma-2B" }
+            @{ id = "gemma-31b";  model = "Gemma-31B" }
+        )
+    }
+    It "returns the full catalog when preset is \$null" {
+        $r = Select-CatalogByPreset -catalog (_catalog) -preset $null
+        Assert-Equal 4 $r.Count
+    }
+    It "returns the full catalog when preset.models is '*'" {
+        $p = @{ models = '*' }
+        $r = Select-CatalogByPreset -catalog (_catalog) -preset $p
+        Assert-Equal 4 $r.Count
+    }
+    It "filters to the listed ids when preset.models is an array" {
+        $p = @{ models = @('qwen-mini', 'gemma-2b') }
+        $r = Select-CatalogByPreset -catalog (_catalog) -preset $p
+        Assert-Equal 2 $r.Count
+        Assert-True (@($r | ForEach-Object { $_.id }) -contains 'qwen-mini')
+        Assert-True (@($r | ForEach-Object { $_.id }) -contains 'gemma-2b')
+    }
+    It "returns empty when no preset.models id matches the catalog" {
+        $p = @{ models = @('nope') }
+        $r = Select-CatalogByPreset -catalog (_catalog) -preset $p
+        Assert-Equal 0 $r.Count
+    }
+}
+
 Describe "Get-ResetTargets" {
     # Use a fresh per-test temp dir so we can create real files / dirs for
     # the existence checks without polluting the repo data/ folder.
