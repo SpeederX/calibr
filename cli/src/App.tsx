@@ -9,6 +9,7 @@ import { BenchOptionsView } from "./BenchOptionsView.js";
 import { AllOptionsView } from "./AllOptionsView.js";
 import { InitOptionsView } from "./InitOptionsView.js";
 import { ResetOptionsView } from "./ResetOptionsView.js";
+import { LlamaPathView } from "./LlamaPathView.js";
 
 type Screen =
   | { kind: "menu" }
@@ -16,6 +17,7 @@ type Screen =
   | { kind: "benchOptions" }
   | { kind: "allOptions" }
   | { kind: "resetOptions" }
+  | { kind: "llamaPath" }
   | { kind: "run"; args: string[]; label: string }
   | { kind: "results" };
 
@@ -95,12 +97,21 @@ export function App() {
     );
   }
 
+  if (screen.kind === "llamaPath") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <LlamaPathView onCancel={() => setScreen({ kind: "menu" })} />
+      </Box>
+    );
+  }
+
   const items: { label: string; value: string }[] = [
     { label: `${"results".padEnd(10)} — browse benchmark winners`, value: "__results" },
     ...ENGINE_COMMANDS.map((c) => ({
       label: `${c.label.padEnd(10)} — ${c.description}`,
       value: c.id,
     })),
+    { label: `${"llama".padEnd(10)} — change llama-server.exe path`, value: "__llamaPath" },
   ];
 
   return (
@@ -113,6 +124,10 @@ export function App() {
           onSelect={(item) => {
             if (item.value === "__results") {
               setScreen({ kind: "results" });
+              return;
+            }
+            if (item.value === "__llamaPath") {
+              setScreen({ kind: "llamaPath" });
               return;
             }
             if (item.value === "init") {
