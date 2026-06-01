@@ -3028,13 +3028,32 @@ switch ($Command) {
     "reset"              { Invoke-Reset }
     "get-models"  { Invoke-FetchModels }
     "all"                {
-        # Fail fast on missing llama-server BEFORE any download or
-        # discover work. Otherwise we'd hit it inside the bench loop
-        # after potentially fetching gigabytes. The friendlier error
-        # points the user at 'init' which is what fixes it.
+        # Auto-init when llama_server_exe is missing/invalid. Saves the
+        # user from having to know they were supposed to run 'init'
+        # first; on a fresh box the engine auto-detects llama-server in
+        # PATH or sibling folders and writes config.json. Only if the
+        # auto-init can't find anything do we throw — and at that point
+        # the message tells them WHERE we looked.
         $cfgUp = Get-Config
         if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
-            throw "llama_server_exe missing or invalid. Run 'calibr init' first so the engine knows where llama-server.exe lives. ('all' will fail later in the bench step otherwise, after wasting time on download/discover.)"
+            Write-Host "[all] llama_server_exe not configured — running 'init' first to auto-detect..." -ForegroundColor Cyan
+            $savedNI = $script:NonInteractive
+            $savedForce = $script:Force
+            $script:NonInteractive = $true   # don't prompt mid-pipeline
+            $script:Force          = $true   # if a partial config.json exists, overwrite the missing keys
+            try {
+                Invoke-Init
+            } catch {
+                Write-Host ("[all] init failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
+            } finally {
+                $script:NonInteractive = $savedNI
+                $script:Force          = $savedForce
+            }
+            $cfgUp = Get-Config
+            if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
+                throw "llama-server.exe could not be auto-detected. Install llama.cpp (https://github.com/ggml-org/llama.cpp/releases), then run 'calibr init -LlamaServer <path>' once. Future versions will fetch llama.cpp automatically — see open-points.md."
+            }
+            Write-Host ("[all] init done. llama_server_exe = {0}" -f $cfgUp.llama_server_exe) -ForegroundColor Green
         }
         if ($FetchCatalog) {
             # Interleaved rotation: instead of fetching the entire curated set
