@@ -508,10 +508,10 @@ Describe "Download manifest helpers" {
 
     It "Add-DownloadManifestEntry persists a new entry" {
         $tmp = _newTempDownloads
-        Add-DownloadManifestEntry -SampleId "qwen3.5-9b-q4km" -Model "Qwen3.5-9B" -ModelPath "C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf" -SizeBytes 5627040640
+        Add-DownloadManifestEntry -CatalogId "qwen3.5-9b-q4km" -Model "Qwen3.5-9B" -ModelPath "C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf" -SizeBytes 5627040640
         $m = @(Get-DownloadManifest)
         Assert-Equal 1 $m.Count
-        Assert-Equal "qwen3.5-9b-q4km" $m[0].sample_id
+        Assert-Equal "qwen3.5-9b-q4km" $m[0].catalog_id
         Assert-Equal "Qwen3.5-9B" $m[0].model
         Assert-Equal 5627040640 $m[0].size_bytes
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
@@ -519,9 +519,9 @@ Describe "Download manifest helpers" {
 
     It "Add-DownloadManifestEntry is idempotent on model_path (replaces, not duplicates)" {
         $tmp = _newTempDownloads
-        Add-DownloadManifestEntry -SampleId "g-e2b" -Model "Gemma-4-E2B" -ModelPath "C:\models\G\E2B.gguf" -SizeBytes 100
+        Add-DownloadManifestEntry -CatalogId "g-e2b" -Model "Gemma-4-E2B" -ModelPath "C:\models\G\E2B.gguf" -SizeBytes 100
         Start-Sleep -Milliseconds 10  # ensure a distinct timestamp
-        Add-DownloadManifestEntry -SampleId "g-e2b" -Model "Gemma-4-E2B" -ModelPath "C:\models\G\E2B.gguf" -SizeBytes 200
+        Add-DownloadManifestEntry -CatalogId "g-e2b" -Model "Gemma-4-E2B" -ModelPath "C:\models\G\E2B.gguf" -SizeBytes 200
         $m = @(Get-DownloadManifest)
         Assert-Equal 1 $m.Count
         Assert-Equal 200 $m[0].size_bytes  "newer entry's size_bytes should win"
@@ -530,7 +530,7 @@ Describe "Download manifest helpers" {
 
     It "Test-DownloadedByCalibr returns true for tracked paths and false otherwise" {
         $tmp = _newTempDownloads
-        Add-DownloadManifestEntry -SampleId "x" -Model "X" -ModelPath "D:\mine\foo.gguf"
+        Add-DownloadManifestEntry -CatalogId "x" -Model "X" -ModelPath "D:\mine\foo.gguf"
         Assert-True  (Test-DownloadedByCalibr -Path "D:\mine\foo.gguf")
         Assert-False (Test-DownloadedByCalibr -Path "D:\mine\bar.gguf")
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
@@ -538,7 +538,7 @@ Describe "Download manifest helpers" {
 
     It "Test-DownloadedByCalibr is case-insensitive (Windows filesystem semantics)" {
         $tmp = _newTempDownloads
-        Add-DownloadManifestEntry -SampleId "x" -Model "X" -ModelPath "D:\Mine\Foo.gguf"
+        Add-DownloadManifestEntry -CatalogId "x" -Model "X" -ModelPath "D:\Mine\Foo.gguf"
         Assert-True (Test-DownloadedByCalibr -Path "d:\mine\foo.gguf")
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
     }
@@ -811,7 +811,7 @@ Describe "Invoke-RotationCheck" {
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
         $script:CALIBR_DOWNLOADS = $tmp
         foreach ($p in $tracked) {
-            Add-DownloadManifestEntry -SampleId "s" -Model "M" -ModelPath $p
+            Add-DownloadManifestEntry -CatalogId "s" -Model "M" -ModelPath $p
         }
         return $tmp
     }

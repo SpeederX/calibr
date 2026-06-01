@@ -373,9 +373,13 @@ export const ENGINE_COMMANDS: EngineCommand[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Samples catalog (curated GGUF download list shipped with the engine)
+// Model catalog (curated GGUF download list shipped with the engine).
+// The 'Sample' / 'samples' naming was retired in v0.1.3 because it
+// overloaded 'sample' (which has a separate meaning in ML — token sampling
+// from a distribution). CatalogEntry / readModelCatalog / filterCatalog
+// make the intent explicit.
 // ---------------------------------------------------------------------------
-export interface Sample {
+export interface CatalogEntry {
   id: string;
   model: string;
   series?: string;
@@ -386,36 +390,37 @@ export interface Sample {
   target_dir: string;
   mmproj_file?: string;
   size_bytes: number;
+  max_context?: number;
   notes?: string;
 }
 
-export function readSamples(): Sample[] {
-  const path = join(ENGINE_ROOT, "samples.json");
-  const parsed = readJsonSafe<{ samples?: Sample[] }>(path, {});
-  return Array.isArray(parsed.samples) ? parsed.samples : [];
+export function readModelCatalog(): CatalogEntry[] {
+  const path = join(ENGINE_ROOT, "models_catalog.json");
+  const parsed = readJsonSafe<{ models?: CatalogEntry[] }>(path, {});
+  return Array.isArray(parsed.models) ? parsed.models : [];
 }
 
-export function filterSamples(samples: Sample[], opts: { sampleId?: string; model?: string }): Sample[] {
-  return samples.filter(s => {
-    if (opts.sampleId) {
+export function filterCatalog(entries: CatalogEntry[], opts: { catalogId?: string; model?: string }): CatalogEntry[] {
+  return entries.filter(e => {
+    if (opts.catalogId) {
       // Mirror PowerShell -like (case-insensitive glob).
-      const pattern = "^" + opts.sampleId.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
-      if (!new RegExp(pattern, "i").test(s.id)) return false;
+      const pattern = "^" + opts.catalogId.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+      if (!new RegExp(pattern, "i").test(e.id)) return false;
     }
     if (opts.model) {
       // Mirror PowerShell -match (case-insensitive regex).
-      try { if (!new RegExp(opts.model, "i").test(s.model)) return false; }
+      try { if (!new RegExp(opts.model, "i").test(e.model)) return false; }
       catch { return false; }
     }
     return true;
   });
 }
 
-export function downloadFootprintBytes(samples: Sample[]): { totalBytes: number; maxFileBytes: number } {
+export function downloadFootprintBytes(entries: CatalogEntry[]): { totalBytes: number; maxFileBytes: number } {
   let total = 0;
   let max = 0;
-  for (const s of samples) {
-    const b = Number(s.size_bytes) || 0;
+  for (const e of entries) {
+    const b = Number(e.size_bytes) || 0;
     total += b;
     if (b > max) max = b;
   }

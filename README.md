@@ -39,7 +39,7 @@ per-model optimized `.bat` launchers.
 - [Requirements](#requirements)
 - [Setup details](#setup-details)
 - [Usage](#usage)
-- [Reference dataset — `get-sample-models`](#reference-dataset--get-sample-models)
+- [Reference dataset — `get-models`](#reference-dataset--get-models)
 - [How it works](#how-it-works)
 - [WDDM paging detection](#wddm-paging-detection)
 - [Output layout](#output-layout)
@@ -81,15 +81,15 @@ start data\report.html           # open the dashboard
 Winning configurations land in `data/bats/{model}.bat` — double-click
 one and you have llama-server running with the optimized flags.
 
-Don't have any `.gguf` files yet? Add `-DownloadSamples` and calibr
+Don't have any `.gguf` files yet? Add `-FetchCatalog` and calibr
 walks the curated set one model at a time (download → bench → delete):
 
 ```powershell
 # full curated set, ~85 GB total bandwidth, ~20 GB peak on disk
-.\calibr.ps1 all -DownloadSamples
+.\calibr.ps1 all -FetchCatalog
 
 # just one sample (fast, ~500 MB, finishes in minutes)
-.\calibr.ps1 all -DownloadSamples -SampleId qwen3.5-0.8b-q4xl
+.\calibr.ps1 all -FetchCatalog -CatalogId qwen3.5-0.8b-q4xl
 ```
 
 ## Why not just …?
@@ -115,8 +115,8 @@ one wins.
 
 ## Want comparable numbers across machines?
 
-Run `.\calibr.ps1 get-sample-models -DownloadAll` (~100 GB) to populate a
-[curated reference set](#reference-dataset--get-sample-models) spanning 0.8B
+Run `.\calibr.ps1 get-models -DownloadAll` (~100 GB) to populate a
+[curated reference set](#reference-dataset--get-models) spanning 0.8B
 dense up to 31B MoE. Anyone running the same set on different hardware
 produces directly comparable `data/results/*.json` files — drop them into a
 shared repo to crowdsource a "what runs well on what GPU" dataset.
@@ -197,7 +197,7 @@ calibr status              # state + config + global-install indicator
 calibr config <list|get|set|unset>  [<key>] [<value>]   # inspect/edit config
 calibr install / uninstall # add or remove this dir from user PATH
 calibr help [<command>]    # general help, or detail for one command
-calibr get-sample-models   # curated reference shelf (see below)
+calibr get-models   # curated reference shelf (see below)
 ```
 
 Run `.\calibr.ps1 help <command>` for the usage block + flags + examples of
@@ -220,7 +220,7 @@ any subcommand (e.g. `help bench`, `help config`).
 | `-ScanPath <path[,path,...]>` | `discover`, `init`, `all` | Replaces `scan_paths` for this run |
 | `-LlamaServer <path>`         | `bench`, `report`, `init`, `all` | Replaces `llama_server_exe` for this run |
 | `-GroupBy {model,model+variant}` | `report`, `all` | How to group results when picking winners. Default `model`. With `model+variant` you get a separate winner (and `.bat`) per variant. |
-| `-DownloadSamples`            | `all` | Run `get-sample-models` before the pipeline. Without a filter implies "download everything"; combine with `-SampleId` or `-Model` to narrow. |
+| `-FetchCatalog`            | `all` | Run `get-models` before the pipeline. Without a filter implies "download everything"; combine with `-CatalogId` or `-Model` to narrow. |
 
 ```powershell
 # Compare Q4 vs Q8 of the same model by giving them separate winners
@@ -237,12 +237,12 @@ any subcommand (e.g. `help bench`, `help config`).
 .\calibr.ps1 all       # discover -> plan -> bench -> report
 
 # B. Start fresh with the curated reference set (one shot, download + bench)
-.\calibr.ps1 all -DownloadSamples                            # ~100 GB; prompts to confirm
-.\calibr.ps1 all -DownloadSamples -SampleId qwen3.5-9b-q4km  # one model, ~5 GB
-.\calibr.ps1 all -DownloadSamples -Model "Qwen3.5"           # one model
+.\calibr.ps1 all -FetchCatalog                            # ~100 GB; prompts to confirm
+.\calibr.ps1 all -FetchCatalog -CatalogId qwen3.5-9b-q4km  # one model, ~5 GB
+.\calibr.ps1 all -FetchCatalog -Model "Qwen3.5"           # one model
 
 # C. Pure CLI, no config.json (CI / try-and-throw-away)
-.\calibr.ps1 get-sample-models -SampleId qwen3.5-0.8b-q4xl -Destination .\models
+.\calibr.ps1 get-models -CatalogId qwen3.5-0.8b-q4xl -Destination .\models
 .\calibr.ps1 all -ScanPath .\models -LlamaServer "C:\bin\llama-server.exe"
 ```
 
@@ -271,25 +271,25 @@ the common workflow:
   typo doesn't silently bury a flag). Add new keys by editing
   `config.default.json` directly.
 
-When `-DownloadSamples` runs without a configured scan path (no `config.json`,
+When `-FetchCatalog` runs without a configured scan path (no `config.json`,
 no `-ScanPath`), calibr puts the files in `./downloaded-models/` under the
 project root and points `discover` there automatically.
 
-## Reference dataset — `get-sample-models`
+## Reference dataset — `get-models`
 
 To make benchmark numbers **comparable across machines**, the repo ships a
-curated list of reference GGUF models in [`samples.json`](samples.json)
-spanning 0.8B up to 31B, dense and MoE. Anyone running `get-sample-models`
+curated list of reference GGUF models in [`models_catalog.json`](models_catalog.json)
+spanning 0.8B up to 31B, dense and MoE. Anyone running `get-models`
 gets the same dataset, so reported tokens/s on different hardware can be
 compared directly.
 
 ```powershell
-.\calibr.ps1 get-sample-models                                    # list (OK = on disk)
-.\calibr.ps1 get-sample-models -SampleId qwen3.5-9b-q4km          # download one
-.\calibr.ps1 get-sample-models -Model "Gemma-4"                   # by model
-.\calibr.ps1 get-sample-models -DownloadAll                       # all (~100 GB, prompts to confirm)
-.\calibr.ps1 get-sample-models -DownloadAll -DryRun               # preview
-.\calibr.ps1 get-sample-models -SampleId qwen3.5-9b-q4km -Destination "D:\models"
+.\calibr.ps1 get-models                                    # list (OK = on disk)
+.\calibr.ps1 get-models -CatalogId qwen3.5-9b-q4km          # download one
+.\calibr.ps1 get-models -Model "Gemma-4"                   # by model
+.\calibr.ps1 get-models -DownloadAll                       # all (~100 GB, prompts to confirm)
+.\calibr.ps1 get-models -DownloadAll -DryRun               # preview
+.\calibr.ps1 get-models -CatalogId qwen3.5-9b-q4km -Destination "D:\models"
 ```
 
 Files land at `{scan_paths[0]}/{target_dir}/{hf_file}` so a subsequent
@@ -308,7 +308,7 @@ Files land at `{scan_paths[0]}/{target_dir}/{hf_file}` so a subsequent
 | C | Gemma-4 31B Q4_K_M             | 18 GB        | Large dense, partial offload |
 
 When a download fails: 401 = accept license on HuggingFace; 404 = open a PR
-fixing `samples.json`; flaky network = fall back to `huggingface-cli download`.
+fixing `models_catalog.json`; flaky network = fall back to `huggingface-cli download`.
 
 ## How it works
 
@@ -316,7 +316,7 @@ fixing `samples.json`; flaky network = fall back to `huggingface-cli download`.
 next one reads:
 
 ```
-       you (or get-sample-models)
+       you (or get-models)
                 │
                 ▼
        ┌──────────────────┐
@@ -476,7 +476,7 @@ calibr/
 ├── config.default.json      # committed, no personal paths
 ├── config.json              # gitignored, written by `init`
 ├── calibr.ps1              # the tool
-├── samples.json             # committed, the reference shelf
+├── models_catalog.json             # committed, the reference shelf
 ├── report.template.html     # committed, HTML skeleton with %%placeholders%%
 ├── README.md
 ├── LICENSE
@@ -513,14 +513,14 @@ calibr/
   the tradeoff, look at the report's per-model table and pick by hand —
   every number is preserved. (A future opt-in quality bench is being
   explored — see Roadmap.)
-- **No HuggingFace authentication for `get-sample-models`.** Models that
+- **No HuggingFace authentication for `get-models`.** Models that
   require accepting a license (notably some Gemma variants) will return 401.
   Accept the license once on the website, or download those particular files
   with `huggingface-cli` separately.
 - **Per-model `max_context` only honored for curated samples.** Entries in
-  `samples.json` carry `max_context` (scraped from the upstream model card),
+  `models_catalog.json` carry `max_context` (scraped from the upstream model card),
   and `plan` skips Tier A candidates above it. User-owned `.gguf` files
-  outside `samples.json` fall back to the global `max_context_cap` (default
+  outside `models_catalog.json` fall back to the global `max_context_cap` (default
   262 144) — a future GGUF metadata parser would derive the per-model cap
   from the file itself.
 
@@ -558,7 +558,7 @@ CLI → backend → web UI). Concrete near-term ideas being explored:
 
 ## Contributing
 
-The fastest first contribution is a new entry in `samples.json` for a
+The fastest first contribution is a new entry in `models_catalog.json` for a
 model not yet covered (verify the HuggingFace URL resolves and add the
 correct `max_context`).
 

@@ -57,7 +57,7 @@ A typical first session:
 2. Edit `config.json` and set `scan_paths` to the folders that contain
    your `.gguf` files. If you don't have any `.gguf` yet, skip this and
    let step 3 download the curated set.
-3. **all** → configure: turn `samples: on (-DownloadSamples)`, leave
+3. **all** → configure: turn `catalog: on (-FetchCatalog)`, leave
    `rotate: yes` (default). The CLI shows the peak disk requirement
    (~20 GB for the largest model in the curated set) and the free space
    on your destination, then asks for confirmation. After you accept,
@@ -113,9 +113,9 @@ The menu exposes the engine verbs verbatim. Brief summary:
 | `init` | Detect hardware, write `config.json` with sane defaults. |
 | `discover` | Scan `scan_paths` for `*.gguf`, build the model catalog. |
 | `plan` | Expand the catalog into a sweep of bench configurations per tier. |
-| `bench` | Run each pending plan entry, write a result JSON per config. When models came from `get-sample-models`, each model's .gguf is deleted from disk after its configs all finish (use `-KeepDownloads` to opt out). |
+| `bench` | Run each pending plan entry, write a result JSON per config. When models came from `get-models`, each model's .gguf is deleted from disk after its configs all finish (use `-KeepDownloads` to opt out). |
 | `report` | Build the HTML dashboard and per-config `.bat` launchers. |
-| `all` | discover → plan → bench → report, end to end. With `samples: on`, fetches the curated set first; the CLI runs a pre-flight disk-space gate before launching. |
+| `all` | discover → plan → bench → report, end to end. With `catalog: on`, fetches the curated set first; the CLI runs a pre-flight disk-space gate before launching. |
 | `status` | Print current config + counts (also shown as a card in the menu). |
 
 ## Status keybinds

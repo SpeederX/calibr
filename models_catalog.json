@@ -10,7 +10,7 @@
     "max_context is the model's officially-supported context length, scraped from HuggingFace model cards. Invoke-Plan uses it to skip Tier A candidates above this ceiling (no point benching ctx=160k on a model that maxes at 128k)."
   ],
 
-  "samples": [
+  "models": [
     {
       "id": "qwen3.5-0.8b-q8",
       "model": "Qwen3.5-0.8B",

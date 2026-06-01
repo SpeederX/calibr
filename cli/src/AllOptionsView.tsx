@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import {
-  readSamples,
-  filterSamples,
+  readModelCatalog,
+  filterCatalog,
   downloadFootprintBytes,
   freeBytesOn,
   downloadDestination,
@@ -24,27 +24,27 @@ interface Props {
 //                 user picks 'use cache' / 're-run all' / 'cancel'
 type Phase =
   | { kind: "form" }
-  | { kind: "gate"; required: number; available: number; sampleCount: number; sufficient: boolean }
+  | { kind: "gate"; required: number; available: number; entryCount: number; sufficient: boolean }
   | { kind: "cachePrompt" };
 
 export function AllOptionsView({ onRun, onCancel }: Props) {
-  // 'all' is the typical "I want everything" path; defaulting samples on
-  // matches what most users want (download the curated set + bench it).
+  // 'all' is the typical "I want everything" path; defaulting fetch on
+  // matches what most users want (download the curated catalog + bench it).
   // Users with their own .gguf collections in scan_paths toggle it off
   // in one keystroke.
-  const [downloadSamples, setDownloadSamples] = useState<boolean>(true);
+  const [fetchCatalog, setFetchCatalog] = useState<boolean>(true);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
-  const samples = useMemo(readSamples, []);
+  const catalog = useMemo(readModelCatalog, []);
   const cfg = useMemo(loadConfig, []);
   const destination = useMemo(() => downloadDestination(cfg), [cfg]);
   const cachedCount = useMemo(cachedResultsCount, []);
 
   const rows = [
-    { kind: "download" as const, label: `samples:  ${downloadSamples ? "download curated set first (-DownloadSamples)" : "off (use catalog as-is)"}` },
+    { kind: "fetch"    as const, label: `catalog:  ${fetchCatalog ? "fetch curated models first (-FetchCatalog)" : "off (use what's already in scan_paths)"}` },
     { kind: "rotate"   as const, label: `rotate:   ${keepDownloads ? "no (keep downloaded files after bench)" : "yes (default — delete each model after success)"}` },
     { kind: "prefer"   as const, label: `picker:   ${preferSpeed ? "speed (ignore WDDM safety)" : "safety (default — non-paging wins ties)"}` },
     { kind: "run"      as const, label: "> start all" },
@@ -56,7 +56,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
     const args: string[] = ["all"];
     const parts: string[] = [];
-    if (downloadSamples) { args.push("-DownloadSamples"); parts.push("-DownloadSamples"); }
+    if (fetchCatalog)    { args.push("-FetchCatalog");    parts.push("-FetchCatalog"); }
     if (keepDownloads)   { args.push("-KeepDownloads");   parts.push("-KeepDownloads"); }
     if (rerunAll)        { args.push("-Force");           parts.push("-Force"); }
     if (preferSpeed)     { args.push("-PreferSpeed");     parts.push("-PreferSpeed"); }
@@ -64,7 +64,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   };
 
   // Decide which phase comes next after the user clears the current step.
-  // Order: disk gate (if downloading) → cache prompt (if cache exists) →
+  // Order: disk gate (if fetching) → cache prompt (if cache exists) →
   // launch.
   const advanceFromGate = () => {
     if (cachedCount > 0) {
@@ -76,7 +76,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   };
 
   const runGate = () => {
-    const filtered = filterSamples(samples, {});
+    const filtered = filterCatalog(catalog, {});
     const { maxFileBytes } = downloadFootprintBytes(filtered);
     const available = freeBytesOn(destination);
     const required = maxFileBytes;
@@ -84,7 +84,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       kind: "gate",
       required,
       available,
-      sampleCount: filtered.length,
+      entryCount: filtered.length,
       sufficient: available < 0 ? false : available >= required,
     });
   };
@@ -92,11 +92,11 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const activate = (i: number) => {
     const row = rows[i];
     switch (row.kind) {
-      case "download": setDownloadSamples(!downloadSamples); break;
+      case "fetch":    setFetchCatalog(!fetchCatalog); break;
       case "rotate":   setKeepDownloads(!keepDownloads); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
       case "run": {
-        if (downloadSamples) {
+        if (fetchCatalog) {
           runGate();
         } else if (cachedCount > 0) {
           setPhase({ kind: "cachePrompt" });
@@ -148,7 +148,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         <Text bold color={sufficient ? "yellow" : "red"}>pre-flight: download space check</Text>
         <Box marginTop={1} flexDirection="column">
           <Text>destination: <Text color="cyan">{destination}</Text></Text>
-          <Text>samples in scope: <Text color="cyan">{phase.sampleCount}</Text></Text>
+          <Text>catalog entries in scope: <Text color="cyan">{phase.entryCount}</Text></Text>
           <Text>peak working-set (largest single file): <Text color="cyan">{formatBytes(phase.required)}</Text></Text>
           <Text>free on destination: <Text color={sufficient ? "green" : "red"}>{formatBytes(phase.available)}</Text></Text>
         </Box>
