@@ -16,8 +16,8 @@
     calibr bench -Model Qwen3.5-9B  # run only this model
     calibr report                   # build HTML + .bat
     calibr all                      # full pipeline (works on whatever .gguf are on disk)
-    calibr all -DownloadSamples     # fetch curated samples first, then run the pipeline
-    calibr all -DownloadSamples -SampleId qwen3.5-9b-q4km   # only one sample (~5 GB)
+    calibr all -FetchCatalog     # fetch curated catalog first, then run the pipeline
+    calibr all -FetchCatalog -CatalogId qwen3.5-9b-q4km   # only one entry (~5 GB)
 
     # One-shot without editing config.json (useful for CI / try-and-throw-away):
     calibr discover -ScanPath "D:\models","E:\llm-cache"
@@ -30,7 +30,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position=0)]
-    [ValidateSet("init","discover","plan","bench","report","all","status","help","get-sample-models","config","install","uninstall","")]
+    [ValidateSet("init","discover","plan","bench","report","all","status","help","get-models","config","install","uninstall","reset","")]
     [string]$Command = "help",
 
     # Sub-action / target name. Meaning depends on $Command:
@@ -61,11 +61,20 @@ param(
     [string]$LlamaServer = "",
     [string[]]$ExcludePattern = @(),
 
-    # Used by get-sample-models
-    [string]$SampleId = "",          # download only the matching sample id
-    [switch]$DownloadAll,            # download all samples (prompts for confirmation)
-    [switch]$DownloadSamples,        # `all` only: fetch curated samples before running the pipeline
+    # Used by get-models
+    [string]$CatalogId = "",         # download only the matching catalog entry id
+    [switch]$DownloadAll,            # download every entry matching filters (prompts for confirmation)
+    [switch]$FetchCatalog,           # `all` only: fetch curated models before running the pipeline
     [string]$Destination = "",       # override target root (default: scan_paths[0])
+    [string]$Preset = "",            # named preset from default_bench_presets.json / data/user_bench_presets.json
+
+    # Disables the extended metric polling during bench (GPU power/temp/util,
+    # system RAM, disk I/O, and the [poll] emit consumed by the CLI live
+    # strip). Reduces polling-thread overhead from ~1-3% CPU to under 1%.
+    # The result JSON keeps the extended metric FIELDS but they all read 0
+    # / null. Useful when you want the cleanest possible bench numbers and
+    # don't need real-time visibility.
+    [switch]$MinimalPolling,
 
     # Used by report: how to group results when selecting winners
     [ValidateSet("model", "model+variant")]
@@ -88,7 +97,23 @@ param(
     # to keep peak working-set bounded to one model. -KeepDownloads disables
     # the cleanup so files survive the bench. User-owned files (those not in
     # the manifest) are never touched regardless of this flag.
-    [switch]$KeepDownloads
+    [switch]$KeepDownloads,
+
+    # Used by 'reset': pick which buckets of runtime state to wipe. Each
+    # flag is opt-in (default is no-op). -All toggles every bucket on.
+    # User-owned files in scan_paths are NEVER touched by reset; only the
+    # downloaded models tracked in data/downloads.json can be wiped, and
+    # only when -DownloadedModels is set.
+    [switch]$Results,           # data/results/*.json
+    [switch]$Catalog,           # data/catalog.json
+    [switch]$Plan,              # data/plan.json
+    [switch]$Report,            # data/report.html
+    [switch]$Logs,              # data/logs/*.log
+    [switch]$Bats,              # data/bats/*.bat
+    [switch]$Downloads,         # data/downloads.json (manifest only, not the files)
+    [switch]$DownloadedModels,  # the actual .gguf + mmproj listed in the manifest
+    [switch]$LocalConfig,       # config.json (the user's local override)
+    [switch]$All                # convenience: all of the above
 )
 
 $ErrorActionPreference = "Stop"
@@ -106,9 +131,12 @@ $script:CALIBR_RESULTS_DIR = Join-Path $CALIBR_DATA_DIR "results"
 $script:CALIBR_LOGS_DIR    = Join-Path $CALIBR_DATA_DIR "logs"
 $script:CALIBR_BATS_DIR    = Join-Path $CALIBR_DATA_DIR "bats"
 $script:CALIBR_REPORT      = Join-Path $CALIBR_DATA_DIR "report.html"
+$script:CALIBR_REPORTS_DIR = Join-Path $CALIBR_DATA_DIR "reports"   # archived old reports
 $script:CALIBR_DOWNLOADS   = Join-Path $CALIBR_DATA_DIR "downloads.json"
+$script:CALIBR_DEFAULT_PRESETS = Join-Path $CALIBR_ROOT     "default_bench_presets.json"
+$script:CALIBR_USER_PRESETS    = Join-Path $CALIBR_DATA_DIR "user_bench_presets.json"
 
-foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR)) {
+foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR, $CALIBR_REPORTS_DIR)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
 
@@ -590,8 +618,25 @@ function Get-Tier {
 
 function New-PlanItem {
     param($meta, $tier, $extraArgs, $label, $idx)
-    $sanitized = ($meta.model + "_" + $meta.variant) -replace '[^\w]', '_'
-    $id = "T{0:D3}_{1}_{2}" -f $idx, $sanitized.Substring(0, [Math]::Min(30, $sanitized.Length)), ($label -replace '[^\w]', '_').Substring(0, [Math]::Min(20, ($label -replace '[^\w]', '_').Length))
+    # IDs used to be 'T{idx:D3}_{model_variant}_{label}'. The idx prefix made
+    # them NON-deterministic across plan regenerations: re-running discover
+    # with a different catalog (or the per-sample loop in 'all -FetchCatalog'
+    # where each iteration plans against a single model) shifted idx and
+    # produced new IDs for the SAME logical config. Two consequences in the
+    # wild:
+    #   1. result JSONs accumulated in data/results/ with the same suffix but
+    #      different idx, and the report rendered them as visual duplicates
+    #      (one bar per file, same model + same config).
+    #   2. cache hits missed across plan regenerations because the cache check
+    #      is keyed off the ID, so the same config got re-benched.
+    # The fix: ID is now '{model_variant}__{label}' — deterministic over
+    # (model, variant, label), which is unique within any single plan. The
+    # `$idx` param is kept for backwards compat with callers but unused.
+    $sanitizedModel = ($meta.model + "_" + $meta.variant) -replace '[^\w]', '_'
+    $sanitizedLabel = $label -replace '[^\w]', '_'
+    if ($sanitizedModel.Length -gt 40) { $sanitizedModel = $sanitizedModel.Substring(0, 40) }
+    if ($sanitizedLabel.Length -gt 30) { $sanitizedLabel = $sanitizedLabel.Substring(0, 30) }
+    $id = "{0}__{1}" -f $sanitizedModel, $sanitizedLabel
     return @{
         id          = $id
         model_path  = $meta.path
@@ -605,14 +650,14 @@ function New-PlanItem {
     }
 }
 
-function Get-SampleMaxContextMap {
+function Get-CatalogMaxContextMap {
     # Builds a hashtable {hf_file.ToLower() -> max_context (int)} from
-    # samples.json. Used by Invoke-Plan to skip Tier A candidates above
+    # models_catalog.json. Used by Invoke-Plan to skip Tier A candidates above
     # the model's officially-supported ctx. User-owned models (not in
-    # samples.json by basename) fall through to the global max_context_cap
+    # models_catalog.json by basename) fall through to the global max_context_cap
     # only — a per-model cap for those would require reading GGUF metadata,
     # which is a separate (larger) piece of work.
-    $samples = Get-SampleList
+    $samples = Get-ModelCatalog
     $map = @{}
     foreach ($s in $samples) {
         if ($null -ne $s.max_context -and $s.hf_file) {
@@ -651,7 +696,17 @@ function Invoke-Plan {
     $base = $cfg.base_args + $threadsArg
 
     $globalCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
-    $perModelCaps = Get-SampleMaxContextMap
+    # If 'all -Preset' set a preset-level ctx ceiling, apply the MORE
+    # restrictive of (preset, config) as the effective global cap. This
+    # is how presets like 'low' (max_ctx 32k) actually narrow the Tier A
+    # sweep without needing a per-call -MaxCtx flag.
+    if ($script:_presetMaxCtx -and [int]$script:_presetMaxCtx -gt 0) {
+        $presetCap = [int]$script:_presetMaxCtx
+        if ($globalCtxCap -eq 0 -or $presetCap -lt $globalCtxCap) {
+            $globalCtxCap = $presetCap
+        }
+    }
+    $perModelCaps = Get-CatalogMaxContextMap
 
     $plan = @()
     $idx = 1
@@ -853,22 +908,51 @@ function Get-GpuSnapshot {
 }
 
 function Get-AvailableMemoryMib {
-    # System-wide free RAM in MiB, via the Windows perf counter. The wddm
-    # shared-mem counter already justified taking the Get-Counter overhead
-    # on every poll tick; adding one more metric is cheap.
+    # System-wide free RAM in MiB. We use CIM/WMI rather than Get-Counter
+    # because perf-counter NAMES are localized on non-English Windows
+    # (Italian: '\Memoria\MByte disponibili' vs the English '\Memory\Available
+    # MBytes'), and Get-Counter rejects the English name on a localized
+    # system. Win32_OperatingSystem.FreePhysicalMemory is in kilobytes and
+    # language-independent.
     try {
-        $cs = (Get-Counter '\Memory\Available MBytes' -ErrorAction Stop).CounterSamples
-        return [int]$cs[0].CookedValue
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        return [int]($os.FreePhysicalMemory / 1024)   # KB -> MiB
     } catch { return -1 }
 }
 
+# Disk-read state cached between polls because the raw-byte counter is
+# monotonic; we compute a rate from two consecutive samples.
+$script:_lastDiskReadBytes  = [int64]0
+$script:_lastDiskReadAt     = [datetime]::MinValue
+
 function Get-DiskReadBytesPerSec {
-    # Total physical-disk read throughput across all drives. Polled during
-    # the load phase to surface cold-start I/O bottlenecks (NVMe at 7 GB/s
-    # vs HDD at 500 MB/s makes a huge difference on first-load timing).
+    # Total physical-disk read throughput. Same localization story as RAM:
+    # the perf-counter path '\PhysicalDisk(_Total)\Disk Read Bytes/sec' is
+    # translated on Italian Windows. We use the CIM PerfFormattedData class
+    # first (DiskReadBytesPersec is an English property name regardless of
+    # OS locale); if that fails we compute a rate from two raw-byte samples.
     try {
-        $cs = (Get-Counter '\PhysicalDisk(_Total)\Disk Read Bytes/sec' -ErrorAction Stop).CounterSamples
-        return [int64]$cs[0].CookedValue
+        $perf = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter "Name='_Total'" -ErrorAction Stop
+        if ($perf -and $null -ne $perf.DiskReadBytesPersec) {
+            return [int64]$perf.DiskReadBytesPersec
+        }
+    } catch { }
+    try {
+        $raw = Get-CimInstance -ClassName Win32_PerfRawData_PerfDisk_PhysicalDisk -Filter "Name='_Total'" -ErrorAction Stop
+        if (-not $raw) { return 0 }
+        $nowBytes = [int64]$raw.DiskReadBytesPersec
+        $nowAt    = Get-Date
+        $rate = 0
+        if ($script:_lastDiskReadAt -ne [datetime]::MinValue) {
+            $dt = ($nowAt - $script:_lastDiskReadAt).TotalSeconds
+            if ($dt -gt 0) {
+                $rate = [int64](($nowBytes - $script:_lastDiskReadBytes) / $dt)
+                if ($rate -lt 0) { $rate = 0 }
+            }
+        }
+        $script:_lastDiskReadBytes = $nowBytes
+        $script:_lastDiskReadAt    = $nowAt
+        return $rate
     } catch { return 0 }
 }
 
@@ -928,28 +1012,48 @@ function Invoke-OneBenchRun {
     $wc = New-Object System.Net.WebClient
     while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
         Start-Sleep -Milliseconds 500
-        $snap = Get-GpuSnapshot
-        if ($snap.mem_mib  -gt $peakVram)  { $peakVram  = $snap.mem_mib }
-        if ($snap.power_w  -gt $peakPower) { $peakPower = $snap.power_w }
-        if ($snap.temp_c   -gt $peakTemp)  { $peakTemp  = $snap.temp_c }
-        if ($snap.util_pct -ge 0) { $utilSum += $snap.util_pct; $utilCount++ }
-        if ($cfg.wddm_detection.enable_shared_mem_counter) {
-            $s = Get-SharedGPUMemoryMib
-            if ($s -ge 0) {
-                $delta = $s - $sharedBaseline
-                if ($delta -gt $peakShared) { $peakShared = $delta }
+        if ($MinimalPolling) {
+            # Cheap path: just VRAM + readiness check, no power/temp/util/RAM/disk.
+            # Skips the [poll] emit entirely; the CLI's live strip stays blank.
+            $vNow = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
+            if ($vNow -gt $peakVram) { $peakVram = $vNow }
+            if ($cfg.wddm_detection.enable_shared_mem_counter) {
+                $s = Get-SharedGPUMemoryMib
+                if ($s -ge 0) {
+                    $delta = $s - $sharedBaseline
+                    if ($delta -gt $peakShared) { $peakShared = $delta }
+                }
             }
+        } else {
+            $snap = Get-GpuSnapshot
+            if ($snap.mem_mib  -gt $peakVram)  { $peakVram  = $snap.mem_mib }
+            if ($snap.power_w  -gt $peakPower) { $peakPower = $snap.power_w }
+            if ($snap.temp_c   -gt $peakTemp)  { $peakTemp  = $snap.temp_c }
+            if ($snap.util_pct -ge 0) { $utilSum += $snap.util_pct; $utilCount++ }
+            if ($cfg.wddm_detection.enable_shared_mem_counter) {
+                $s = Get-SharedGPUMemoryMib
+                if ($s -ge 0) {
+                    $delta = $s - $sharedBaseline
+                    if ($delta -gt $peakShared) { $peakShared = $delta }
+                }
+            }
+            $ramNow = Get-AvailableMemoryMib
+            if ($ramNow -ge 0 -and ($minRam -lt 0 -or $ramNow -lt $minRam)) { $minRam = $ramNow }
+            $diskNow = Get-DiskReadBytesPerSec
+            if ($diskNow -gt $peakDiskRead) { $peakDiskRead = $diskNow }
+            # Live poll marker for the CLI's real-time strip. Structured
+            # key=value, grep-stable, filtered from the visible log on the
+            # CLI side. Floats formatted with InvariantCulture so the
+            # decimal point is always '.' (PowerShell on Italian Windows
+            # would otherwise emit '42,14' and the JS parser would
+            # Number("42,14") -> NaN -> 0 on the CLI).
+            $ramUsedNow = if ($ramBaseline -ge 0 -and $ramNow -ge 0) { $ramBaseline - $ramNow } else { 0 }
+            $diskMBNow  = [math]::Round($diskNow / 1MB, 1)
+            $inv = [System.Globalization.CultureInfo]::InvariantCulture
+            $powStr  = $snap.power_w.ToString($inv)
+            $diskStr = $diskMBNow.ToString($inv)
+            Write-Host ("[poll] gpu_mem={0} gpu_pow={1} gpu_temp={2} gpu_util={3} ram_used={4} disk_r={5}" -f $snap.mem_mib, $powStr, $snap.temp_c, $snap.util_pct, $ramUsedNow, $diskStr)
         }
-        $ramNow = Get-AvailableMemoryMib
-        if ($ramNow -ge 0 -and ($minRam -lt 0 -or $ramNow -lt $minRam)) { $minRam = $ramNow }
-        $diskNow = Get-DiskReadBytesPerSec
-        if ($diskNow -gt $peakDiskRead) { $peakDiskRead = $diskNow }
-        # Live poll marker for the CLI's real-time strip. Structured key=value
-        # so the parser is grep-stable. The CLI filters these out of the
-        # visible log so they don't bloat the scroll buffer.
-        $ramUsedNow = if ($ramBaseline -ge 0 -and $ramNow -ge 0) { $ramBaseline - $ramNow } else { 0 }
-        $diskMBNow = [math]::Round($diskNow / 1MB, 1)
-        Write-Host ("[poll] gpu_mem={0} gpu_pow={1} gpu_temp={2} gpu_util={3} ram_used={4} disk_r={5}" -f $snap.mem_mib, $snap.power_w, $snap.temp_c, $snap.util_pct, $ramUsedNow, $diskMBNow)
         try {
             $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
             if ($content.Length -gt 10) { $ready = $true; break }
@@ -1361,14 +1465,30 @@ function Invoke-RotationCheck {
 
 function Invoke-Bench {
     $cfg = Get-Config
-    if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
-        throw "llama_server_exe missing or invalid. Run 'calibr init'."
-    }
     if (-not (Test-Path $CALIBR_PLAN)) { throw "plan.json missing. Run 'calibr plan'." }
     $planRaw = Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json
     $plan = ConvertTo-Hashtable -obj $planRaw
 
     Write-Host "=== bench ===" -ForegroundColor Cyan
+
+    # Cheap early exit: if the plan is empty (typical of an 'all
+    # -FetchCatalog' phase 0 on a fresh machine where discover found no
+    # pre-existing .gguf), there's nothing to bench and no reason to
+    # require llama_server_exe yet. Surface a friendly hint instead of
+    # throwing. The later per-sample iterations of the 'all' loop will
+    # re-enter this function with a populated plan.
+    $planCount = if ($plan) { @($plan).Count } else { 0 }
+    if ($planCount -eq 0) {
+        Write-Host "Plan is empty. Run 'calibr discover' (with .gguf files in scan_paths) then 'calibr plan' first." -ForegroundColor Yellow
+        return
+    }
+
+    # Now we actually need llama-server. Validate before the bench loop
+    # so the failure points at the real fix ('run init') rather than
+    # crashing inside Invoke-OneBench.
+    if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
+        throw "llama_server_exe missing or invalid. Run 'calibr init' to detect and write it to config.json."
+    }
 
     # Backend cross-check: detect available llama.cpp backends and warn if the
     # build doesn't match the GPU (e.g. NVIDIA card with a Vulkan-only build).
@@ -1381,14 +1501,31 @@ function Invoke-Bench {
     }
 
     $filtered = Select-PlanForBench -plan $plan -ModelFilter $Model -TierFilter $Tier -IdFilter $Id
-    $planCount = if ($plan) { @($plan).Count } else { 0 }
     Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $planCount)
 
     if ($filtered.Count -eq 0) {
-        if ($planCount -eq 0) {
-            Write-Host "Plan is empty. Run 'calibr discover' (with .gguf files in scan_paths) then 'calibr plan' first." -ForegroundColor Yellow
-        } else {
-            Write-Host "No configs match the current filter (-Model / -Tier / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
+        # planCount > 0 here (the planCount == 0 case returned earlier
+        # before we even loaded llama-server). The user picked a filter
+        # that no config in the plan matches — show the tier breakdown so
+        # they see WHY the filter missed.
+        Write-Host "No configs match the current filter (-Model / -Tier / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
+        $byTier = @{}
+        foreach ($p in $plan) {
+            if (-not $p) { continue }
+            $t = if ($p.tier) { $p.tier } else { "?" }
+            if (-not $byTier.ContainsKey($t)) { $byTier[$t] = @() }
+            $byTier[$t] += $p.model
+        }
+        foreach ($t in @('A','B','C')) {
+            $modelsInTier = if ($byTier.ContainsKey($t)) {
+                @($byTier[$t] | Sort-Object -Unique)
+            } else { @() }
+            $count = if ($byTier.ContainsKey($t)) { $byTier[$t].Count } else { 0 }
+            $modelStr = if ($modelsInTier.Count -gt 0) { " (" + ($modelsInTier -join ', ') + ")" } else { "" }
+            Write-Host ("  Tier {0}: {1} config{2}{3}" -f $t, $count, $(if ($count -eq 1) {''} else {'s'}), $modelStr) -ForegroundColor DarkGray
+        }
+        if ($Tier) {
+            Write-Host ("Hint: drop '-Tier {0}' to bench what's available, or run 'all -FetchCatalog -CatalogId <a-tier-{1}-sample>' to add a Tier {0} model first." -f $Tier, $Tier.ToLower()) -ForegroundColor DarkGray
         }
         return
     }
@@ -1587,6 +1724,34 @@ function Invoke-Report {
     }
     if ($results.Count -eq 0) { throw "No results. Run 'calibr bench' first." }
 
+    # Dedupe stale result JSONs. A legacy concern: pre-v0.1.3 plan IDs
+    # included an auto-incrementing index so the SAME logical config (same
+    # model + variant + label) could end up in two files, e.g.
+    # T001_Qwen3_5_0_8B_Q8_0_ctx_16384_kv_q8_0.json and
+    # T007_Qwen3_5_0_8B_Q8_0_ctx_16384_kv_q8_0.json — the report then drew
+    # two bars per config. New IDs are deterministic but old result files
+    # still exist on disk, so we group by (model, variant, label) and keep
+    # the newest timestamp per group. Counts before/after so the user
+    # notices if their data/results/ has accumulated leftover junk worth
+    # cleaning up.
+    $rawCount = $results.Count
+    $byKey = @{}
+    foreach ($r in $results) {
+        $key = "{0}|{1}|{2}" -f $r.model, $r.variant, $r.label
+        if (-not $byKey.ContainsKey($key)) {
+            $byKey[$key] = $r
+        } else {
+            $existingTs = if ($byKey[$key].timestamp) { $byKey[$key].timestamp } else { "" }
+            $newTs      = if ($r.timestamp)            { $r.timestamp }            else { "" }
+            if ($newTs -gt $existingTs) { $byKey[$key] = $r }
+        }
+    }
+    $results = @($byKey.Values)
+    if ($rawCount -gt $results.Count) {
+        $orphaned = $rawCount - $results.Count
+        Write-Host ("deduped {0} stale result file(s) (probably legacy T###-prefixed IDs); kept newest per (model, variant, config)" -f $orphaned) -ForegroundColor DarkYellow
+    }
+
     # v1.0 migration: pre-v1 result JSONs used `family` and `quant`. Detect
     # any in the loaded set, backfill model/variant/series, and rewrite the
     # file so subsequent runs are clean. Idempotent.
@@ -1708,25 +1873,92 @@ function Invoke-Report {
     # as 'valid' UTF-8 on write.
     $html = Get-Content $templatePath -Raw -Encoding UTF8
     $html = $html.Replace("%%NOW%%", $now).Replace("%%DATA%%", $resJson).Replace("%%WINNERS%%", $winJson).Replace("%%CFG%%", $cfgJson)
+
+    # Preserve the previous report under data/reports/ before overwriting.
+    # The 'current' report path stays stable so the CLI's `o` keybind and
+    # the per-winner .bat launchers continue to point at one well-known
+    # location, while history accumulates next door for after-the-fact
+    # comparisons. Timestamp uses the OLD file's LastWriteTime (not now)
+    # so the archive name reflects when that report was actually built.
+    if (Test-Path -LiteralPath $CALIBR_REPORT) {
+        try {
+            $prevStamp = (Get-Item -LiteralPath $CALIBR_REPORT).LastWriteTime.ToString("yyyyMMdd-HHmmss")
+            $archived  = Join-Path $CALIBR_REPORTS_DIR ("report-{0}.html" -f $prevStamp)
+            # Collision guard: in the unlikely event two reports were
+            # generated within the same second, suffix a numeric tag.
+            $i = 1
+            while (Test-Path -LiteralPath $archived) {
+                $archived = Join-Path $CALIBR_REPORTS_DIR ("report-{0}-{1}.html" -f $prevStamp, $i)
+                $i++
+            }
+            Move-Item -LiteralPath $CALIBR_REPORT -Destination $archived -Force -ErrorAction Stop
+            Write-Host ("Archived previous report -> {0}" -f $archived) -ForegroundColor DarkGray
+        } catch {
+            Write-Host ("Could not archive previous report ({0}); overwriting in place." -f $_.Exception.Message) -ForegroundColor DarkYellow
+        }
+    }
+
     $html | Out-File -Encoding utf8 $CALIBR_REPORT
     Write-Host "Report: $CALIBR_REPORT" -ForegroundColor Green
 }
 
 # ============================================================================
-# SUBCOMMAND: get-sample-models
+# SUBCOMMAND: get-models
 # ============================================================================
-function Get-SampleList {
-    $samplesFile = Join-Path $CALIBR_ROOT "samples.json"
-    if (-not (Test-Path $samplesFile)) { throw "samples.json missing at $samplesFile" }
+function Get-ModelCatalog {
+    $samplesFile = Join-Path $CALIBR_ROOT "models_catalog.json"
+    if (-not (Test-Path $samplesFile)) { throw "models_catalog.json missing at $samplesFile" }
     $raw = Get-Content $samplesFile -Raw | ConvertFrom-Json
-    return $raw.samples
+    return $raw.models
+}
+
+function Get-PresetCatalog {
+    # Returns a hashtable {presetName -> presetObject} merging defaults
+    # (default_bench_presets.json at repo root, ships in the tarball) and
+    # user-saved presets (data/user_bench_presets.json). Same-name user
+    # presets fully REPLACE the default — pick a different name if you
+    # want to keep both.
+    $merged = @{}
+    foreach ($path in @($CALIBR_DEFAULT_PRESETS, $CALIBR_USER_PRESETS)) {
+        if (-not (Test-Path $path)) { continue }
+        try {
+            $raw = Get-Content $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($raw -and $raw.presets) {
+                foreach ($prop in $raw.presets.PSObject.Properties) {
+                    $merged[$prop.Name] = $prop.Value
+                }
+            }
+        } catch {
+            Write-Warning ("preset file unreadable, skipped: {0} ({1})" -f $path, $_.Exception.Message)
+        }
+    }
+    return $merged
+}
+
+function Get-Preset {
+    param([Parameter(Mandatory)][string]$Name)
+    $all = Get-PresetCatalog
+    if ($all.ContainsKey($Name)) { return $all[$Name] }
+    return $null
+}
+
+function Select-CatalogByPreset {
+    # Pure filter: given the full catalog list and a preset object (with
+    # .models which is either '*' or an array of catalog ids), returns the
+    # subset of the catalog that the preset selects. Used by the `all`
+    # dispatcher and tested independently.
+    param($catalog, $preset)
+    if ($null -eq $preset) { return ,@($catalog) }
+    if ($preset.models -is [string] -and $preset.models -eq '*') { return ,@($catalog) }
+    $ids = @($preset.models)
+    return ,@($catalog | Where-Object { $ids -contains $_.id })
 }
 
 # Download manifest: records which .gguf files calibr itself fetched. Used by
 # bench's post-config rotation step to decide whether a file is safe to delete
 # (entries in the manifest = downloaded by calibr; absence = user-owned, never
 # touched). Manifest entries are kept after the file is rotated off disk so a
-# re-download via `get-sample-models -SampleId` is one command.
+# re-download via `get-models -CatalogId` is one command.
 function Get-DownloadManifest {
     # Emits each manifest entry as its own pipeline value (or no values if
     # the file is missing/empty/corrupt). Enumerating here, instead of
@@ -1749,10 +1981,10 @@ function Get-DownloadManifest {
 
 function Add-DownloadManifestEntry {
     # Idempotent on $ModelPath: replaces an existing entry rather than duplicating
-    # so re-running `get-sample-models` for the same sample updates the timestamp
+    # so re-running `get-models` for the same sample updates the timestamp
     # in place.
     param(
-        [Parameter(Mandatory)][string]$SampleId,
+        [Parameter(Mandatory)][string]$CatalogId,
         [Parameter(Mandatory)][string]$Model,
         [Parameter(Mandatory)][string]$ModelPath,
         [string]$MmprojPath = "",
@@ -1764,7 +1996,7 @@ function Add-DownloadManifestEntry {
     # an empty/corrupt manifest could otherwise let through.
     $existing = @(Get-DownloadManifest | Where-Object { $_ -and $_.model_path -ne $ModelPath })
     $entry = [ordered]@{
-        sample_id     = $SampleId
+        catalog_id    = $CatalogId
         model         = $Model
         model_path    = $ModelPath
         mmproj_path   = if ($MmprojPath) { $MmprojPath } else { $null }
@@ -1800,7 +2032,7 @@ function Format-HumanSize {
     return "$bytes bytes"
 }
 
-function Get-SampleDestination {
+function Get-DownloadDestination {
     param($sample, $cfg)
     # Priority: -Destination flag > scan_paths[0] > ./downloaded-models
     $root = if ($Destination) { $Destination }
@@ -1857,18 +2089,26 @@ function Invoke-HFDownload {
     }
 }
 
-function Invoke-GetSampleModels {
+function Invoke-FetchModels {
     $cfg = Get-Config
-    $samples = Get-SampleList
+    $samples = Get-ModelCatalog
 
-    # Filter by -Model or -SampleId if provided
+    # Filter by -Model or -CatalogId if provided
     $filtered = $samples
-    if ($SampleId)  { $filtered = $filtered | Where-Object { $_.id -like $SampleId } }
+    if ($CatalogId)  {
+        # Accept comma-separated lists same as the 'all' dispatcher so the
+        # CLI's CustomBenchView can pass a multi-pick selection here too.
+        $idPatterns = @(($CatalogId -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $filtered = $filtered | Where-Object {
+            foreach ($pat in $idPatterns) { if ($_.id -like $pat) { return $true } }
+            return $false
+        }
+    }
     if ($Model)    { $filtered = $filtered | Where-Object { $_.model -match $Model } }
 
-    Write-Host "=== get-sample-models ===" -ForegroundColor Cyan
-    Write-Host ("Samples catalog: {0} entries" -f $samples.Count)
-    if ($Model -or $SampleId) {
+    Write-Host "=== get-models ===" -ForegroundColor Cyan
+    Write-Host ("Model catalog: {0} entries" -f $samples.Count)
+    if ($Model -or $CatalogId) {
         Write-Host ("Filtered: {0} matching" -f @($filtered).Count)
     }
     Write-Host ""
@@ -1878,7 +2118,7 @@ function Invoke-GetSampleModels {
     Write-Host ($fmt -f "", "ID", "Model", "Variant", "Size", "HF repo") -ForegroundColor White
     Write-Host ($fmt -f "", ("-"*24), ("-"*30), ("-"*14), ("-"*10), ("-"*40)) -ForegroundColor DarkGray
     foreach ($s in $filtered) {
-        $dest = Get-SampleDestination -sample $s -cfg $cfg
+        $dest = Get-DownloadDestination -sample $s -cfg $cfg
         $finalPath = Join-Path $dest $s.hf_file
         $status = if (Test-Path $finalPath) { "OK" } else { " " }
         $color = if ($status -eq "OK") { 'Green' } else { 'Gray' }
@@ -1890,14 +2130,14 @@ function Invoke-GetSampleModels {
     $toDownload = @()
     if ($DownloadAll) {
         $toDownload = @($filtered)
-    } elseif ($SampleId -or $Model) {
+    } elseif ($CatalogId -or $Model) {
         $toDownload = @($filtered)
     } else {
-        Write-Host "`nNo -SampleId, -Model or -DownloadAll passed: nothing to download. This was a dry listing." -ForegroundColor Yellow
+        Write-Host "`nNo -CatalogId, -Model or -DownloadAll passed: nothing to download. This was a dry listing." -ForegroundColor Yellow
         Write-Host "Examples:" -ForegroundColor Yellow
-        Write-Host "  calibr get-sample-models -SampleId qwen3.5-9b-q4km"
-        Write-Host "  calibr get-sample-models -Model 'Qwen3.5'"
-        Write-Host "  calibr get-sample-models -DownloadAll   # requires confirmation"
+        Write-Host "  calibr get-models -CatalogId qwen3.5-9b-q4km"
+        Write-Host "  calibr get-models -Model 'Qwen3.5'"
+        Write-Host "  calibr get-models -DownloadAll   # requires confirmation"
         return
     }
 
@@ -1928,7 +2168,7 @@ function Invoke-GetSampleModels {
     $okCount = 0; $failCount = 0
     foreach ($s in $toDownload) {
         Write-Host ("`n[{0}] {1} ({2})" -f $s.id, $s.model, (Format-HumanSize ([long]$s.size_bytes))) -ForegroundColor Cyan
-        $dest = Get-SampleDestination -sample $s -cfg $cfg
+        $dest = Get-DownloadDestination -sample $s -cfg $cfg
         $modelPath = Join-Path $dest $s.hf_file
         # Remember whether the file was already there before the call. If
         # Invoke-HFDownload returns OK because the file existed, we treat it
@@ -1948,12 +2188,12 @@ function Invoke-GetSampleModels {
         # Record in the download manifest only when we actually fetched the
         # file in this call (it didn't already exist). This guarantees that
         # files the user pre-downloaded — even into the same curated path
-        # samples.json points to — are never tagged calibr-owned and never
+        # models_catalog.json points to — are never tagged calibr-owned and never
         # rotated.
         if ($ok -and -not $modelExistedBefore) {
             $modelAbs = (Get-Item -LiteralPath $modelPath).FullName
             $mmAbs = if ($mmPath -and (Test-Path $mmPath)) { (Get-Item -LiteralPath $mmPath).FullName } else { "" }
-            Add-DownloadManifestEntry -SampleId $s.id -Model $s.model -ModelPath $modelAbs -MmprojPath $mmAbs -SizeBytes ([long]$s.size_bytes)
+            Add-DownloadManifestEntry -CatalogId $s.id -Model $s.model -ModelPath $modelAbs -MmprojPath $mmAbs -SizeBytes ([long]$s.size_bytes)
         }
     }
 
@@ -1962,7 +2202,7 @@ function Invoke-GetSampleModels {
         Write-Host "[$okCount OK / $failCount FAIL] Done. Run 'calibr discover' to include them." -ForegroundColor Green
     } else {
         Write-Host "[$okCount OK / $failCount FAIL] Some downloads failed. Possible causes:" -ForegroundColor Yellow
-        Write-Host "  - Repo moved or file renamed on HuggingFace -> edit samples.json"
+        Write-Host "  - Repo moved or file renamed on HuggingFace -> edit models_catalog.json"
         Write-Host "  - Model requires accepting a license (Gemma) -> log into HF and accept, then retry"
         Write-Host "  - Network issue -> retry, or use 'huggingface-cli download' manually"
     }
@@ -1971,6 +2211,157 @@ function Invoke-GetSampleModels {
 # ============================================================================
 # SUBCOMMAND: status
 # ============================================================================
+function Get-ResetTargets {
+    # Pure: given the toggle hashtable + paths, returns an ordered list of
+    # @{kind; path; description} entries describing what would be wiped.
+    # Caller decides whether to actually act. Keeps Invoke-Reset itself a
+    # thin wrapper that's easy to dry-run and easy to test.
+    #
+    # The `-All` toggle is expanded here, NOT in Invoke-Reset, so a single
+    # source of truth governs what 'reset everything' means.
+    param(
+        [hashtable]$Toggles,         # { Results=$true; Catalog=$false; ... }
+        [hashtable]$Paths,           # { ResultsDir=...; CatalogFile=...; ... }
+        [string[]]$ManagedFiles      # absolute paths of files currently in download manifest
+    )
+    $t = $Toggles
+    if ($t.All) {
+        # -All implies every bucket. We DO include DownloadedModels and
+        # LocalConfig in 'all' on purpose — those are the two most
+        # destructive ones and we want -All to mean 'truly factory reset'.
+        $t = @{
+            Results = $true; Catalog = $true; Plan = $true; Report = $true
+            Logs = $true; Bats = $true; Downloads = $true
+            DownloadedModels = $true; LocalConfig = $true
+        }
+    }
+    $out = @()
+    if ($t.Results -and (Test-Path $Paths.ResultsDir)) {
+        $count = (Get-ChildItem $Paths.ResultsDir -Filter '*.json' -ErrorAction SilentlyContinue).Count
+        $out += @{ kind = 'results'; path = $Paths.ResultsDir; description = "$count bench result JSON file(s)" }
+    }
+    if ($t.Catalog -and (Test-Path $Paths.CatalogFile)) {
+        $out += @{ kind = 'catalog'; path = $Paths.CatalogFile; description = "catalog.json (model index from discover)" }
+    }
+    if ($t.Plan -and (Test-Path $Paths.PlanFile)) {
+        $out += @{ kind = 'plan'; path = $Paths.PlanFile; description = "plan.json (expanded bench configs)" }
+    }
+    if ($t.Report -and (Test-Path $Paths.ReportFile)) {
+        $out += @{ kind = 'report'; path = $Paths.ReportFile; description = "report.html (regenerable from results)" }
+    }
+    if ($t.Report -and $Paths.ReportsArchiveDir -and (Test-Path $Paths.ReportsArchiveDir)) {
+        $archived = (Get-ChildItem $Paths.ReportsArchiveDir -Filter '*.html' -ErrorAction SilentlyContinue).Count
+        if ($archived -gt 0) {
+            $out += @{ kind = 'reports_archive'; path = $Paths.ReportsArchiveDir; description = "$archived archived report(s) under data/reports/" }
+        }
+    }
+    if ($t.Logs -and (Test-Path $Paths.LogsDir)) {
+        $count = (Get-ChildItem $Paths.LogsDir -Filter '*.log' -ErrorAction SilentlyContinue).Count
+        $out += @{ kind = 'logs'; path = $Paths.LogsDir; description = "$count llama-server log file(s)" }
+    }
+    if ($t.Bats -and (Test-Path $Paths.BatsDir)) {
+        $count = (Get-ChildItem $Paths.BatsDir -Filter '*.bat' -ErrorAction SilentlyContinue).Count
+        $out += @{ kind = 'bats'; path = $Paths.BatsDir; description = "$count winner launch script(s)" }
+    }
+    if ($t.Downloads -and (Test-Path $Paths.DownloadsFile)) {
+        $out += @{ kind = 'downloads'; path = $Paths.DownloadsFile; description = "downloads.json manifest (rotation tracking; the .gguf files themselves are a SEPARATE bucket)" }
+    }
+    if ($t.DownloadedModels) {
+        foreach ($p in $ManagedFiles) {
+            if ($p -and (Test-Path -LiteralPath $p)) {
+                $sz = [math]::Round((Get-Item -LiteralPath $p).Length / 1GB, 2)
+                $out += @{ kind = 'downloaded_model'; path = $p; description = "$sz GB .gguf (calibr-downloaded)" }
+            }
+        }
+    }
+    if ($t.LocalConfig -and (Test-Path $Paths.LocalConfigFile)) {
+        $out += @{ kind = 'local_config'; path = $Paths.LocalConfigFile; description = "config.json (your local overrides; default config.default.json stays)" }
+    }
+    return ,@($out)
+}
+
+function Invoke-Reset {
+    # Wipes the runtime state pieces selected by the param-block toggles.
+    # Confirmation in interactive mode; -NonInteractive (the CLI sets it
+    # automatically) skips the prompt and trusts the caller's earlier
+    # confirmation. User-owned .gguf files in scan_paths are NEVER touched
+    # — only files recorded in data/downloads.json can be deleted, and
+    # only when -DownloadedModels (or -All) is on.
+    $toggles = @{
+        Results          = [bool]$Results
+        Catalog          = [bool]$Catalog
+        Plan             = [bool]$Plan
+        Report           = [bool]$Report
+        Logs             = [bool]$Logs
+        Bats             = [bool]$Bats
+        Downloads        = [bool]$Downloads
+        DownloadedModels = [bool]$DownloadedModels
+        LocalConfig      = [bool]$LocalConfig
+        All              = [bool]$All
+    }
+    $paths = @{
+        ResultsDir         = $CALIBR_RESULTS_DIR
+        CatalogFile        = $CALIBR_CATALOG
+        PlanFile           = $CALIBR_PLAN
+        ReportFile         = $CALIBR_REPORT
+        ReportsArchiveDir  = $CALIBR_REPORTS_DIR
+        LogsDir            = $CALIBR_LOGS_DIR
+        BatsDir            = $CALIBR_BATS_DIR
+        DownloadsFile      = $CALIBR_DOWNLOADS
+        LocalConfigFile    = $CALIBR_LOCAL_CFG
+    }
+    $managed = @(Get-DownloadManifest | Where-Object { $_ -and $_.model_path } | ForEach-Object {
+        # Include the mmproj too if the entry tracked one.
+        $_.model_path
+        if ($_.mmproj_path) { $_.mmproj_path }
+    })
+
+    $targets = Get-ResetTargets -Toggles $toggles -Paths $paths -ManagedFiles $managed
+
+    Write-Host "=== reset ===" -ForegroundColor Cyan
+    if ($targets.Count -eq 0) {
+        Write-Host "Nothing selected. Pass one or more of: -Results -Catalog -Plan -Report -Logs -Bats -Downloads -DownloadedModels -LocalConfig -All" -ForegroundColor Yellow
+        return
+    }
+    foreach ($t in $targets) {
+        Write-Host ("  [{0}] {1}  ({2})" -f $t.kind, $t.path, $t.description) -ForegroundColor DarkGray
+    }
+    if (-not $NonInteractive) {
+        $ok = Read-Host "`nProceed? This cannot be undone. (y/N)"
+        if ($ok -notmatch '^[yY]') { Write-Host "Cancelled." -ForegroundColor Yellow; return }
+    }
+
+    $okCount = 0; $failCount = 0
+    foreach ($t in $targets) {
+        try {
+            if (Test-Path -LiteralPath $t.path) {
+                $isDir = (Get-Item -LiteralPath $t.path).PSIsContainer
+                if ($t.kind -in @('results','logs','bats','reports_archive') -and $isDir) {
+                    # Wipe contents but keep the directory; the engine
+                    # recreates it on demand and removing the dir itself
+                    # buys nothing.
+                    $glob = switch ($t.kind) {
+                        'results'          { '*.json' }
+                        'logs'             { '*.log' }
+                        'bats'             { '*.bat' }
+                        'reports_archive'  { '*.html' }
+                    }
+                    Get-ChildItem $t.path -Filter $glob -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction Stop
+                } else {
+                    Remove-Item -LiteralPath $t.path -Force -ErrorAction Stop
+                }
+            }
+            Write-Host ("  removed: {0}" -f $t.path) -ForegroundColor DarkCyan
+            $okCount++
+        } catch {
+            Write-Host ("  FAILED: {0} ({1})" -f $t.path, $_.Exception.Message) -ForegroundColor Red
+            $failCount++
+        }
+    }
+    Write-Host ""
+    Write-Host ("reset done: {0} removed, {1} failed" -f $okCount, $failCount) -ForegroundColor $(if ($failCount -eq 0) { 'Green' } else { 'Yellow' })
+}
+
 function Invoke-Status {
     $cfg = Get-Config
     Write-Host "=== status ===" -ForegroundColor Cyan
@@ -2379,12 +2770,13 @@ function Invoke-Help {
         "plan"              = "Expand the catalog into a sweep of test configs (data/plan.json)."
         "bench"             = "Run pending tests against llama-server, save data/results/*.json."
         "report"            = "Build data/report.html and data/bats/{model}.bat per winner."
-        "all"               = "discover + plan + bench + report (optionally + download samples)."
+        "all"               = "discover + plan + bench + report (optionally + fetch from model catalog)."
         "status"            = "Show config + counts (catalog/plan/results) + global-install state."
         "config"            = "Get / set / list / unset config values from CLI."
-        "get-sample-models" = "List or download curated reference GGUFs from HuggingFace."
+        "get-models" = "List or download entries from the curated model catalog (HuggingFace)."
         "install"           = "Add this directory to user PATH so 'calibr' works globally."
         "uninstall"         = "Remove this directory from user PATH."
+        "reset"             = "Wipe runtime state (results, catalog, plan, report, logs, bats, downloads, calibr-downloaded models, local config)."
         "help"              = "This screen, or 'help <command>' for details."
     }
 
@@ -2448,25 +2840,26 @@ function Invoke-Help {
             Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "calibr all [-DownloadSamples [-SampleId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-KeepDownloads]"
+            Usage    = "calibr all [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-KeepDownloads]"
             Flags    = @(
-                "-DownloadSamples         Interleaved mode: walk samples one-by-one, download"
-                "                         -> discover -> plan -> bench -> rotate per sample so"
-                "                         peak disk stays bounded to one model. Pre-existing"
-                "                         models in scan_paths are benched first (phase 0)."
-                "-SampleId <id>           (with -DownloadSamples) only fetch the matching sample"
+                "-FetchCatalog         Interleaved mode: walk catalog entries one-by-one,"
+                "                         download -> discover -> plan -> bench -> rotate per"
+                "                         entry so peak disk stays bounded to one model."
+                "                         Pre-existing models in scan_paths are benched first"
+                "                         (phase 0)."
+                "-CatalogId <id>           (with -FetchCatalog) only fetch the matching entry"
                 "-Model <regex>           Filter download AND bench by model name"
                 "-Force                   Re-run all benchmarks (skip cache)"
                 "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
                 "-KeepDownloads           Opt out of post-bench rotation. By default with"
-                "                         -DownloadSamples, calibr-downloaded files are deleted"
+                "                         -FetchCatalog, calibr-downloaded files are deleted"
                 "                         after a clean bench to bound peak disk to one model."
             )
             Examples = @(
                 "calibr all"
-                "calibr all -DownloadSamples"
-                "calibr all -DownloadSamples -SampleId qwen3.5-9b-q4km"
-                "calibr all -DownloadSamples -KeepDownloads"
+                "calibr all -FetchCatalog"
+                "calibr all -FetchCatalog -CatalogId qwen3.5-9b-q4km"
+                "calibr all -FetchCatalog -KeepDownloads"
                 "calibr all -PreferSpeed"
             )
         }
@@ -2500,20 +2893,20 @@ function Invoke-Help {
             Flags    = @()
             Examples = @( "calibr status" )
         }
-        "get-sample-models" = @{
-            Usage    = "calibr get-sample-models [-DownloadAll | -SampleId <id> | -Model <regex>] [-Destination <path>] [-DryRun]"
+        "get-models" = @{
+            Usage    = "calibr get-models [-DownloadAll | -CatalogId <id> | -Model <regex>] [-Destination <path>] [-DryRun]"
             Flags    = @(
                 "(no flag)                  Print catalog as a dry listing"
-                "-DownloadAll               Download every sample (asks confirmation, ~100 GB)"
-                "-SampleId <id>             Download only the matching sample id"
-                "-Model <regex>             Filter samples by model name"
+                "-DownloadAll               Download every entry (asks confirmation, ~100 GB)"
+                "-CatalogId <id>             Download only the matching catalog entry id"
+                "-Model <regex>             Filter catalog entries by model name"
                 "-Destination <path>        Override target root (default: scan_paths[0])"
                 "-DryRun                    Show what would be downloaded without doing it"
             )
             Examples = @(
-                "calibr get-sample-models"
-                "calibr get-sample-models -SampleId qwen3.5-9b-q4km"
-                "calibr get-sample-models -DownloadAll"
+                "calibr get-models"
+                "calibr get-models -CatalogId qwen3.5-9b-q4km"
+                "calibr get-models -DownloadAll"
             )
         }
         "install" = @{
@@ -2533,6 +2926,33 @@ function Invoke-Help {
                 "                           Files in the project remain untouched."
             )
             Examples = @( "calibr uninstall" )
+        }
+        "reset" = @{
+            Usage    = "calibr reset [-Results] [-Catalog] [-Plan] [-Report] [-Logs] [-Bats] [-Downloads] [-DownloadedModels] [-LocalConfig] [-All]"
+            Flags    = @(
+                "-Results           Wipe data/results/*.json (clear the bench cache)"
+                "-Catalog           Wipe data/catalog.json (forces re-discover)"
+                "-Plan              Wipe data/plan.json (forces re-plan)"
+                "-Report            Wipe data/report.html"
+                "-Logs              Wipe data/logs/*.log (llama-server stderr per config)"
+                "-Bats              Wipe data/bats/*.bat (per-winner launchers)"
+                "-Downloads         Wipe data/downloads.json (rotation manifest only)"
+                "-DownloadedModels  Delete the .gguf+mmproj files calibr fetched"
+                "                   (the ones tracked in data/downloads.json)."
+                "                   User-owned .gguf files in scan_paths are NEVER touched."
+                "-LocalConfig       Wipe config.json (your local overrides). The default"
+                "                   config.default.json stays — calibr remains runnable."
+                "-All               Convenience flag for every bucket above (factory reset)."
+                ""
+                "Interactive mode prompts y/N before deleting; -NonInteractive (which"
+                "the calibr CLI sets automatically) trusts the caller and proceeds."
+            )
+            Examples = @(
+                "calibr reset -Results -Report                 # ri-bench tutto, riusa download e catalog"
+                "calibr reset -Catalog -Plan                   # forza ri-discover + ri-plan"
+                "calibr reset -DownloadedModels                # libera disco da modelli scaricati"
+                "calibr reset -All -NonInteractive             # factory reset, niente prompt"
+            )
         }
         "help" = @{
             Usage    = "calibr help [<command>]"
@@ -2605,9 +3025,37 @@ switch ($Command) {
     "help"               { Invoke-Help }
     "install"            { Invoke-Install }
     "uninstall"          { Invoke-Uninstall }
-    "get-sample-models"  { Invoke-GetSampleModels }
+    "reset"              { Invoke-Reset }
+    "get-models"  { Invoke-FetchModels }
     "all"                {
-        if ($DownloadSamples) {
+        # Auto-init when llama_server_exe is missing/invalid. Saves the
+        # user from having to know they were supposed to run 'init'
+        # first; on a fresh box the engine auto-detects llama-server in
+        # PATH or sibling folders and writes config.json. Only if the
+        # auto-init can't find anything do we throw — and at that point
+        # the message tells them WHERE we looked.
+        $cfgUp = Get-Config
+        if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
+            Write-Host "[all] llama_server_exe not configured — running 'init' first to auto-detect..." -ForegroundColor Cyan
+            $savedNI = $script:NonInteractive
+            $savedForce = $script:Force
+            $script:NonInteractive = $true   # don't prompt mid-pipeline
+            $script:Force          = $true   # if a partial config.json exists, overwrite the missing keys
+            try {
+                Invoke-Init
+            } catch {
+                Write-Host ("[all] init failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
+            } finally {
+                $script:NonInteractive = $savedNI
+                $script:Force          = $savedForce
+            }
+            $cfgUp = Get-Config
+            if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
+                throw "llama-server.exe could not be auto-detected. Install llama.cpp (https://github.com/ggml-org/llama.cpp/releases), then run 'calibr init -LlamaServer <path>' once. Future versions will fetch llama.cpp automatically — see open-points.md."
+            }
+            Write-Host ("[all] init done. llama_server_exe = {0}" -f $cfgUp.llama_server_exe) -ForegroundColor Green
+        }
+        if ($FetchCatalog) {
             # Interleaved rotation: instead of fetching the entire curated set
             # up-front (~88 GB peak) and benching afterwards, we walk one
             # sample at a time — download → discover → plan → bench just this
@@ -2615,12 +3063,40 @@ switch ($Command) {
             # bounded to one model. This is what makes -KeepDownloads=off
             # actually deliver the 'peak ~ largest single file' promise the
             # CLI's pre-flight gate shows.
-            $samples = Get-SampleList
-            if ($SampleId) { $samples = $samples | Where-Object { $_.id -like $SampleId } }
+            $samples = Get-ModelCatalog
+            # Preset narrows the catalog to a hardware-tier-curated subset
+            # (low / middle / high / user-saved). Applied BEFORE the
+            # other filters so -CatalogId / -Model can further narrow
+            # inside the preset.
+            $presetMaxCtx = 0
+            if ($Preset) {
+                $presetObj = Get-Preset -Name $Preset
+                if ($null -eq $presetObj) {
+                    $known = ((Get-PresetCatalog).Keys | Sort-Object) -join ', '
+                    throw "Preset '$Preset' not found. Known: $known"
+                }
+                $samples = Select-CatalogByPreset -catalog $samples -preset $presetObj
+                if ($null -ne $presetObj.max_ctx) {
+                    $presetMaxCtx = [int]$presetObj.max_ctx
+                    $script:_presetMaxCtx = $presetMaxCtx
+                }
+                Write-Host ("[all] preset '{0}': {1} entries, max_ctx={2}" -f $Preset, $samples.Count, $(if ($presetMaxCtx -gt 0) { $presetMaxCtx } else { '(no cap)' })) -ForegroundColor Cyan
+            }
+            if ($CatalogId) {
+                # Accept a comma-separated list (e.g. 'qwen3.5-9b-q4km,gemma-4-e2b')
+                # so the CLI's CustomBenchView can pass a multi-pick selection,
+                # while a single id with wildcards (e.g. 'qwen*') keeps the
+                # old -like semantics.
+                $idPatterns = @(($CatalogId -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                $samples = $samples | Where-Object {
+                    foreach ($pat in $idPatterns) { if ($_.id -like $pat) { return $true } }
+                    return $false
+                }
+            }
             if ($Model)    { $samples = $samples | Where-Object { $_.model -match $Model } }
             $samples = @($samples)
             if ($samples.Count -eq 0) {
-                Write-Host "No samples match the current -SampleId / -Model filters. Nothing to do." -ForegroundColor Yellow
+                Write-Host "No samples match the current -CatalogId / -Model filters. Nothing to do." -ForegroundColor Yellow
                 return
             }
 
@@ -2637,14 +3113,14 @@ switch ($Command) {
             }
 
             Write-Host ""
-            Write-Host ("=== all -DownloadSamples : {0} sample(s), rotated ===" -f $samples.Count) -ForegroundColor Cyan
+            Write-Host ("=== all -FetchCatalog : {0} sample(s), rotated ===" -f $samples.Count) -ForegroundColor Cyan
 
             # Phase 0: bench whatever is already on disk so existing models
             # don't get orphaned by the per-sample loop (each iteration's
             # bench is narrowed to the current sample's model). Skipped if
-            # the user explicitly scoped with -SampleId or -Model — then
+            # the user explicitly scoped with -CatalogId or -Model — then
             # they want a narrow run, not a sweep over everything.
-            if (-not $SampleId -and -not $Model) {
+            if (-not $CatalogId -and -not $Model) {
                 Write-Host ""
                 Write-Host "--- pre-existing models ---" -ForegroundColor DarkCyan
                 Invoke-Discover
@@ -2653,7 +3129,7 @@ switch ($Command) {
             }
 
             # Phase 1+: per-sample download + bench + rotate.
-            $savedSampleId = $script:SampleId
+            $savedCatalogId = $script:CatalogId
             $savedModel    = $script:Model
             $idx = 0
             foreach ($s in $samples) {
@@ -2665,13 +3141,13 @@ switch ($Command) {
                 Write-Host ("[sample {0}/{1}] {2}" -f $idx, $samples.Count, $s.id)
                 Write-Host ("--- sample {0}/{1} : {2} ({3}) ---" -f $idx, $samples.Count, $s.id, $s.model) -ForegroundColor Cyan
 
-                $script:SampleId = $s.id
-                $script:Model    = ""   # SampleId narrows enough on its own
-                Invoke-GetSampleModels
+                $script:CatalogId = $s.id
+                $script:Model    = ""   # CatalogId narrows enough on its own
+                Invoke-FetchModels
 
                 # Re-discover so the freshly-downloaded file enters the catalog;
                 # re-plan because the catalog grew.
-                $script:SampleId = $savedSampleId
+                $script:CatalogId = $savedCatalogId
                 Invoke-Discover
                 Invoke-Plan
 
@@ -2681,7 +3157,7 @@ switch ($Command) {
                 $script:Model = $s.model
                 Invoke-Bench
             }
-            $script:SampleId = $savedSampleId
+            $script:CatalogId = $savedCatalogId
             $script:Model    = $savedModel
 
             Write-Host ""

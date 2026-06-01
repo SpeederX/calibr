@@ -37,16 +37,16 @@ check(
 );
 check("config.default.json exists", existsSync(mod.CALIBR_DEFAULT_CFG), mod.CALIBR_DEFAULT_CFG);
 
-// samples.json drives the pre-bench download-footprint gate; bundling it
-// is part of the engine contract.
-const samples = mod.readSamples();
+// models_catalog.json drives the pre-bench download-footprint gate;
+// bundling it is part of the engine contract.
+const catalog = mod.readModelCatalog();
 check(
-  "samples.json is bundled and parseable",
-  Array.isArray(samples) && samples.length > 0,
-  `got ${Array.isArray(samples) ? samples.length + " entries" : typeof samples}`,
+  "models_catalog.json is bundled and parseable",
+  Array.isArray(catalog) && catalog.length > 0,
+  `got ${Array.isArray(catalog) ? catalog.length + " entries" : typeof catalog}`,
 );
-if (samples.length > 0) {
-  const fp = mod.downloadFootprintBytes(samples);
+if (catalog.length > 0) {
+  const fp = mod.downloadFootprintBytes(catalog);
   check(
     "downloadFootprintBytes returns sensible numbers",
     fp.totalBytes > 0 && fp.maxFileBytes > 0 && fp.maxFileBytes <= fp.totalBytes,

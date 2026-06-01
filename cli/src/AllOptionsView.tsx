@@ -1,15 +1,17 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import {
-  readSamples,
-  filterSamples,
+  readModelCatalog,
+  filterCatalog,
   downloadFootprintBytes,
   freeBytesOn,
   downloadDestination,
   formatBytes,
   loadConfig,
   cachedResultsCount,
+  readPresetCatalog,
 } from "./engine.js";
+import { CustomBenchView } from "./CustomBenchView.js";
 
 interface Props {
   onRun: (args: string[], label: string) => void;
@@ -24,47 +26,91 @@ interface Props {
 //                 user picks 'use cache' / 're-run all' / 'cancel'
 type Phase =
   | { kind: "form" }
-  | { kind: "gate"; required: number; available: number; sampleCount: number; sufficient: boolean }
+  | { kind: "custom" }   // CustomBenchView for model multi-pick
+  | { kind: "gate"; required: number; available: number; entryCount: number; sufficient: boolean }
   | { kind: "cachePrompt" };
 
 export function AllOptionsView({ onRun, onCancel }: Props) {
-  // 'all' is the typical "I want everything" path; defaulting samples on
-  // matches what most users want (download the curated set + bench it).
+  // 'all' is the typical "I want everything" path; defaulting fetch on
+  // matches what most users want (download the curated catalog + bench it).
   // Users with their own .gguf collections in scan_paths toggle it off
   // in one keystroke.
-  const [downloadSamples, setDownloadSamples] = useState<boolean>(true);
+  const [fetchCatalog, setFetchCatalog] = useState<boolean>(true);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
+  const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
-  const samples = useMemo(readSamples, []);
+  const catalog = useMemo(readModelCatalog, []);
   const cfg = useMemo(loadConfig, []);
   const destination = useMemo(() => downloadDestination(cfg), [cfg]);
   const cachedCount = useMemo(cachedResultsCount, []);
+  // Presets: built-in (default_bench_presets.json) + user-saved
+  // (data/user_bench_presets.json) merged into one dict.
+  const presets = useMemo(readPresetCatalog, []);
+  // Cycle order: all, low, middle, high, then any extra user-saved presets,
+  // then 'custom' as the last sentinel that routes to CustomBenchView
+  // (TODO: Phase C — for now it just behaves like 'all').
+  const presetNames = useMemo<string[]>(() => {
+    const builtin = ["all", "low", "middle", "high"].filter(n => presets[n]);
+    const extras = Object.keys(presets).filter(n => !builtin.includes(n)).sort();
+    return [...builtin, ...extras, "custom"];
+  }, [presets]);
+  const [presetIdx, setPresetIdx] = useState<number>(0);
+  const currentPreset = presetNames[presetIdx];
+  const presetCount = (() => {
+    if (currentPreset === "custom") return null;
+    const p = presets[currentPreset];
+    if (!p) return null;
+    if (p.models === "*") return catalog.length;
+    return Array.isArray(p.models) ? p.models.length : 0;
+  })();
+  const presetLabel = (() => {
+    if (currentPreset === "custom") return "custom (pick models + ctx — TODO Phase C)";
+    const p = presets[currentPreset];
+    if (!p) return currentPreset;
+    return `${p.label} · ${presetCount ?? "?"} entries${p.max_ctx ? `, max ctx ${p.max_ctx}` : ""}`;
+  })();
 
   const rows = [
-    { kind: "download" as const, label: `samples:  ${downloadSamples ? "download curated set first (-DownloadSamples)" : "off (use catalog as-is)"}` },
-    { kind: "rotate"   as const, label: `rotate:   ${keepDownloads ? "no (keep downloaded files after bench)" : "yes (default — delete each model after success)"}` },
-    { kind: "prefer"   as const, label: `picker:   ${preferSpeed ? "speed (ignore WDDM safety)" : "safety (default — non-paging wins ties)"}` },
+    { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — only bench what's already in scan_paths"}` },
+    { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog },
+    { kind: "rotate"   as const, label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its bench finishes)"}` },
+    { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
+    { kind: "polling"  as const, label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
     { kind: "run"      as const, label: "> start all" },
     { kind: "cancel"   as const, label: "  cancel" },
   ];
+
+  // Custom selection (CustomBenchView) writes its result here; when set,
+  // buildArgs ignores the named preset and passes -CatalogId with the
+  // comma-list of picked catalog ids.
+  const [customIds, setCustomIds] = useState<string>("");
 
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
     const args: string[] = ["all"];
     const parts: string[] = [];
-    if (downloadSamples) { args.push("-DownloadSamples"); parts.push("-DownloadSamples"); }
+    if (fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
+    // Custom selection overrides the named preset path entirely.
+    if (fetchCatalog && customIds) {
+      args.push("-CatalogId", customIds);
+      parts.push(`-CatalogId "${customIds}"`);
+    } else if (fetchCatalog && currentPreset !== "all" && currentPreset !== "custom") {
+      args.push("-Preset", currentPreset);
+      parts.push(`-Preset ${currentPreset}`);
+    }
     if (keepDownloads)   { args.push("-KeepDownloads");   parts.push("-KeepDownloads"); }
     if (rerunAll)        { args.push("-Force");           parts.push("-Force"); }
     if (preferSpeed)     { args.push("-PreferSpeed");     parts.push("-PreferSpeed"); }
+    if (minimalPolling)  { args.push("-MinimalPolling");  parts.push("-MinimalPolling"); }
     return { args, label: parts.length ? `all ${parts.join(" ")}` : "all" };
   };
 
   // Decide which phase comes next after the user clears the current step.
-  // Order: disk gate (if downloading) → cache prompt (if cache exists) →
+  // Order: disk gate (if fetching) → cache prompt (if cache exists) →
   // launch.
   const advanceFromGate = () => {
     if (cachedCount > 0) {
@@ -76,7 +122,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   };
 
   const runGate = () => {
-    const filtered = filterSamples(samples, {});
+    const filtered = filterCatalog(catalog, {});
     const { maxFileBytes } = downloadFootprintBytes(filtered);
     const available = freeBytesOn(destination);
     const required = maxFileBytes;
@@ -84,7 +130,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       kind: "gate",
       required,
       available,
-      sampleCount: filtered.length,
+      entryCount: filtered.length,
       sufficient: available < 0 ? false : available >= required,
     });
   };
@@ -92,11 +138,30 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const activate = (i: number) => {
     const row = rows[i];
     switch (row.kind) {
-      case "download": setDownloadSamples(!downloadSamples); break;
+      case "fetch":    setFetchCatalog(!fetchCatalog); break;
+      case "preset": {
+        if (!fetchCatalog) break;
+        const nextIdx = (presetIdx + 1) % presetNames.length;
+        setPresetIdx(nextIdx);
+        // Stepping off 'custom' clears any prior custom selection so
+        // subsequent runs use the named preset's expansion, not the
+        // stale picked-ids list.
+        if (presetNames[nextIdx] !== "custom" && customIds) setCustomIds("");
+        break;
+      }
       case "rotate":   setKeepDownloads(!keepDownloads); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
+      case "polling":  setMinimalPolling(!minimalPolling); break;
       case "run": {
-        if (downloadSamples) {
+        // If preset is 'custom' and the user hasn't yet picked any models
+        // (customIds empty), route into CustomBenchView first. After the
+        // picker submits, AllOptionsView re-enters this branch from the
+        // 'run' button — customIds will then be populated.
+        if (fetchCatalog && currentPreset === "custom" && !customIds) {
+          setPhase({ kind: "custom" });
+          break;
+        }
+        if (fetchCatalog) {
           runGate();
         } else if (cachedCount > 0) {
           setPhase({ kind: "cachePrompt" });
@@ -111,6 +176,10 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   };
 
   useInput((input, key) => {
+    // The custom phase delegates all input handling to CustomBenchView
+    // (which has its own useInput inside) so we MUST not also consume
+    // keystrokes here — otherwise the picker can't toggle.
+    if (phase.kind === "custom") return;
     if (phase.kind === "gate") {
       if (key.escape || input === "q" || input === "n" || input === "N") {
         setPhase({ kind: "form" });
@@ -148,7 +217,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         <Text bold color={sufficient ? "yellow" : "red"}>pre-flight: download space check</Text>
         <Box marginTop={1} flexDirection="column">
           <Text>destination: <Text color="cyan">{destination}</Text></Text>
-          <Text>samples in scope: <Text color="cyan">{phase.sampleCount}</Text></Text>
+          <Text>catalog entries in scope: <Text color="cyan">{phase.entryCount}</Text></Text>
           <Text>peak working-set (largest single file): <Text color="cyan">{formatBytes(phase.required)}</Text></Text>
           <Text>free on destination: <Text color={sufficient ? "green" : "red"}>{formatBytes(phase.available)}</Text></Text>
         </Box>
@@ -171,6 +240,21 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
           </Text>
         </Box>
       </Box>
+    );
+  }
+
+  if (phase.kind === "custom") {
+    return (
+      <CustomBenchView
+        onSubmit={(idList) => {
+          setCustomIds(idList);
+          // After picking, go straight to the disk gate; the user already
+          // accepted the form's other choices when they hit '> start all'.
+          setPhase({ kind: "form" });
+          runGate();
+        }}
+        onCancel={() => setPhase({ kind: "form" })}
+      />
     );
   }
 
@@ -200,8 +284,9 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       <Box marginTop={1} flexDirection="column">
         {rows.map((row, i) => {
           const selected = i === cursor;
+          const isDisabled = (row as { disabled?: boolean }).disabled === true;
           return (
-            <Text key={row.kind} color={selected ? "cyan" : undefined} inverse={selected}>
+            <Text key={row.kind} color={selected ? "cyan" : undefined} inverse={selected} dimColor={isDisabled}>
               {selected ? "> " : "  "}{row.label}
             </Text>
           );

@@ -39,11 +39,15 @@ const RUNS_VALUES: number[] = [0, 1, 3, 5];
 
 // Short summary of what each tier means; mirrors the engine's tier
 // classification in calibr.ps1 Get-Tier and Invoke-Plan.
+// Human labels for the tier classification. The single-letter A/B/C
+// abstraction lives in the engine for terseness; here we surface what
+// each tier MEANS for the bench (which dimension we sweep) so a first-
+// time user isn't left guessing.
 const TIER_DESCRIPTIONS: Record<string, string> = {
-  "":  "all tiers",
-  "A": "A — fits fully on GPU; sweep (ctx_size, KV quant) pairs",
-  "B": "B — MoE; sweep --n-cpu-moe values",
-  "C": "C — partial offload required; sweep --gpu-layers values",
+  "":  "all model sizes",
+  "A": "A — small enough for full GPU offload · sweep context size + KV cache quant",
+  "B": "B — mixture-of-experts · sweep how many MoE layers stay on CPU",
+  "C": "C — too big for one GPU · sweep how many layers we offload",
 };
 
 function next<T>(values: T[], current: T): T {
@@ -74,6 +78,7 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   const [tier, setTier] = useState<"" | "A" | "B" | "C">("");
   const [runs, setRuns] = useState<number>(0);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
+  const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
@@ -82,10 +87,11 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
     : String(runs);
 
   const rows = [
-    { kind: "model" as const,    label: `model:   ${fmt(model, "all (no filter)")}` },
-    { kind: "tier" as const,     label: `tier:    ${TIER_DESCRIPTIONS[tier] ?? tier}` },
-    { kind: "runs" as const,     label: `runs:    ${runsLabel}` },
-    { kind: "rotate" as const,   label: `rotate:  ${keepDownloads ? "no (keep downloaded files)" : "yes (delete each model after its configs succeed)"}` },
+    { kind: "model" as const,    label: `model filter:    ${fmt(model, "all models in catalog")}` },
+    { kind: "tier" as const,     label: `size class:      ${TIER_DESCRIPTIONS[tier] ?? tier}` },
+    { kind: "runs" as const,     label: `runs per config: ${runsLabel}` },
+    { kind: "rotate" as const,   label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its configs finish)"}` },
+    { kind: "polling" as const,  label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
     { kind: "run" as const,      label: "> start bench" },
     { kind: "cancel" as const,   label: "  cancel" },
   ];
@@ -101,6 +107,7 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
     if (runs > 0) { args.push("-Runs", String(runs)); parts.push(`-Runs ${runs}`); }
     if (rerunAll) { args.push("-Force"); parts.push("-Force"); }
     if (keepDownloads) { args.push("-KeepDownloads"); parts.push("-KeepDownloads"); }
+    if (minimalPolling) { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
     return { args, label: parts.length ? `bench ${parts.join(" ")}` : "bench" };
   };
 
@@ -110,7 +117,8 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
       case "model":  setModel(next(modelChoices, model)); break;
       case "tier":   setTier(next(TIERS, tier)); break;
       case "runs":   setRuns(next(RUNS_VALUES, runs)); break;
-      case "rotate": setKeepDownloads(!keepDownloads); break;
+      case "rotate":  setKeepDownloads(!keepDownloads); break;
+      case "polling": setMinimalPolling(!minimalPolling); break;
       case "run": {
         // No cache → launch immediately. Cache present → ask y/n.
         if (cachedCount > 0) {

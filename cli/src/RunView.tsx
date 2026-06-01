@@ -1,7 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import Spinner from "ink-spinner";
+import { spawnSync } from "node:child_process";
 import { runEngine } from "./engine.js";
+
+// Kill the whole process tree rooted at pid. On Windows, Node's
+// child.kill() doesn't propagate to grandchildren — we spawn powershell
+// which then spawns llama-server.exe via System.Diagnostics.Process, and
+// llama-server keeps running after powershell dies. taskkill /T /F walks
+// the tree and force-terminates everything.
+function killTree(pid: number | undefined): void {
+  if (!pid || pid <= 0) return;
+  try {
+    spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
+      windowsHide: true,
+      stdio: "ignore",
+      shell: false,
+    });
+  } catch {}
+}
 
 interface Props {
   args: string[];
@@ -80,6 +97,26 @@ interface LiveMetrics {
   updatedAt: number; // ms since epoch; goes stale after a few seconds
 }
 
+// Format ms as MM:SS.mmm under 1h, HH:MM:SS.mmm under 24h, Xd HH:MM:SS.mmm
+// beyond. Used by the total-elapsed timer + (later) the per-config timer.
+function fmtElapsed(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalMs   = Math.floor(ms);
+  const days      = Math.floor(totalMs / 86_400_000);
+  const remDay    = totalMs % 86_400_000;
+  const hours     = Math.floor(remDay / 3_600_000);
+  const remHr     = remDay % 3_600_000;
+  const minutes   = Math.floor(remHr / 60_000);
+  const remMin    = remHr % 60_000;
+  const seconds   = Math.floor(remMin / 1_000);
+  const milli     = remMin % 1_000;
+  const pad2      = (n: number) => n.toString().padStart(2, "0");
+  const pad3      = (n: number) => n.toString().padStart(3, "0");
+  if (days > 0) return `${days}d ${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}.${pad3(milli)}`;
+  if (hours > 0) return `${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}.${pad3(milli)}`;
+  return `${pad2(minutes)}:${pad2(seconds)}.${pad3(milli)}`;
+}
+
 export function RunView({ args, label, onExit }: Props) {
   const [lines, setLines] = useState<string[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -87,12 +124,26 @@ export function RunView({ args, label, onExit }: Props) {
   const [rotation, setRotation] = useState<RotationStats>({ deleted: 0, kept: 0, failed: 0, lastEvent: null });
   const [live, setLive] = useState<LiveMetrics | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
+  // Total elapsed time for this RunView mount (≈ the whole run, since
+  // RunView is created the moment the user hits 'start' in the form).
+  // Tick once per 100 ms so the milliseconds digit changes visibly, but
+  // stop the moment the process exits so the displayed value freezes on
+  // the final total instead of running past it.
+  const startedAtRef = useRef<number>(Date.now());
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number>(0);
   // Scroll offset measured from the bottom of the buffer in lines. 0 means
   // 'follow the tail'; positive values mean 'show N lines up from the
   // bottom'. When the user scrolls up we stop auto-following so new output
   // doesn't yank them back. End key resumes follow.
   const [scrollOffset, setScrollOffset] = useState(0);
   const procRef = useRef<ReturnType<typeof runEngine> | null>(null);
+  // Stream re-assembly buffer: chunks of stdout don't necessarily end on a
+  // newline, so we keep the trailing partial here and prepend it to the
+  // next chunk. Filtering [poll] BEFORE reassembly was the bug: a poll
+  // line that straddled two chunks would have its prefix matched + stripped
+  // and its suffix leak into the visible log as garbage / blank lines.
+  const partialRef = useRef<string>("");
   const isBench = useMemo(() => args[0] === "bench" || args[0] === "all", [args]);
 
   useEffect(() => {
@@ -100,26 +151,30 @@ export function RunView({ args, label, onExit }: Props) {
     procRef.current = run;
 
     const append = (chunk: Buffer) => {
-      const text = chunk.toString("utf8");
-      const incoming = text.split(/\r?\n/);
-      // Filter [poll] markers out of the visible log: they're real-time
-      // telemetry, not narrative output. The strip below renders them.
-      const visible = incoming.filter(l => !POLL_RE.test(l));
-      setLines((prev) => {
-        const merged = [...prev];
-        if (merged.length === 0) merged.push("");
-        merged[merged.length - 1] += visible[0] ?? "";
-        for (let i = 1; i < visible.length; i++) merged.push(visible[i]);
-        return merged.length > MAX_LINES ? merged.slice(-MAX_LINES) : merged;
-      });
-      // Scan all incoming lines for the most recent [X/Y] config marker
-      // and the most recent [sample X/N] outer marker. Scanning newest-first
-      // lets us pick the latest event from a chunk that bundles many lines.
+      const text = partialRef.current + chunk.toString("utf8");
+      const allLines = text.split(/\r?\n/);
+      // Last element is whatever came after the final \n — possibly empty,
+      // possibly a partial line. Save it for next chunk; process only the
+      // complete lines (everything before).
+      partialRef.current = allLines.pop() ?? "";
+      // Now every entry in `complete` is a definitively-terminated line,
+      // so we can safely test it against POLL_RE without false negatives
+      // from mid-chunk truncation.
+      const complete = allLines;
+      const visible = complete.filter(l => !POLL_RE.test(l));
+      if (visible.length > 0) {
+        setLines((prev) => {
+          const merged = prev.concat(visible);
+          return merged.length > MAX_LINES ? merged.slice(-MAX_LINES) : merged;
+        });
+      }
+      // Scan complete lines for the most recent [X/Y] config marker and
+      // the most recent [sample X/N] outer marker. Newest-first.
       let foundConfig = false;
       let foundSample = false;
-      for (let i = incoming.length - 1; i >= 0 && (!foundConfig || !foundSample); i--) {
+      for (let i = complete.length - 1; i >= 0 && (!foundConfig || !foundSample); i--) {
         if (!foundConfig) {
-          const m = incoming[i].match(PROGRESS_RE);
+          const m = complete[i].match(PROGRESS_RE);
           if (m) {
             setProgress({ current: Number(m[1]), total: Number(m[2]), label: m[3] });
             foundConfig = true;
@@ -127,7 +182,7 @@ export function RunView({ args, label, onExit }: Props) {
           }
         }
         if (!foundSample) {
-          const s = incoming[i].match(SAMPLE_RE);
+          const s = complete[i].match(SAMPLE_RE);
           if (s) {
             setSampleProgress({ current: Number(s[1]), total: Number(s[2]), sampleId: s[3] });
             // When a new sample starts, the inner [X/Y] from a previous
@@ -138,12 +193,12 @@ export function RunView({ args, label, onExit }: Props) {
           }
         }
       }
-      // Accumulate rotation events from every incoming line.
+      // Accumulate rotation events from every complete line.
       let dDelta = 0, kDelta = 0, fDelta = 0;
       let lastRot: string | null = null;
       // Most recent [poll] line wins for the live strip.
       let lastPoll: Record<string, number> | null = null;
-      for (const line of incoming) {
+      for (const line of complete) {
         if (ROTATE_DELETE_RE.test(line))     { dDelta++; lastRot = line.trim(); }
         else if (ROTATE_KEEP_RE.test(line))  { kDelta++; lastRot = line.trim(); }
         else if (ROTATE_FAIL_RE.test(line))  { fDelta++; lastRot = line.trim(); }
@@ -177,10 +232,25 @@ export function RunView({ args, label, onExit }: Props) {
     run.proc.stderr?.on("data", append);
     run.done.then((code) => setExitCode(code));
 
+    // Tick 10×/sec for milli digit visibility while the process is alive.
+    tickRef.current = setInterval(() => {
+      setElapsedMs(Date.now() - startedAtRef.current);
+    }, 100);
+
     return () => {
-      try { run.proc.kill(); } catch {}
+      if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+      killTree(run.proc.pid);
     };
   }, []);
+
+  // Freeze the timer at exit: clear the interval (without this the timer
+  // keeps incrementing past the exit moment) AND set the final value once.
+  useEffect(() => {
+    if (exitCode !== null) {
+      if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; }
+      setElapsedMs(Date.now() - startedAtRef.current);
+    }
+  }, [exitCode]);
 
   useInput((input, key) => {
     // Scroll bindings work whether the run is live or finished.
@@ -188,14 +258,30 @@ export function RunView({ args, label, onExit }: Props) {
     if (key.downArrow) { setScrollOffset(o => Math.max(0, o - 1)); return; }
     if (key.pageUp)    { setScrollOffset(o => Math.min(Math.max(0, lines.length - VIEWPORT), o + VIEWPORT)); return; }
     if (key.pageDown)  { setScrollOffset(o => Math.max(0, o - VIEWPORT)); return; }
-    if (input === "g") { setScrollOffset(Math.max(0, lines.length - VIEWPORT)); return; }  // top
-    if (input === "G") { setScrollOffset(0); return; }                                       // bottom (resume tail)
+    // Lowercase mnemonics for top/bottom (uppercase G felt awkward in a
+    // PowerShell terminal where Shift+letter is muscle-memory for caps).
+    // Home/End are kept as the universal escape hatch.
+    if (input === "g" || key.meta && key.upArrow)   { setScrollOffset(Math.max(0, lines.length - VIEWPORT)); return; }  // top
+    if (input === "h" || key.meta && key.downArrow) { setScrollOffset(0); return; }                                       // bottom (resume tail)
 
-    if (exitCode !== null && (key.return || input === "q" || key.escape)) {
-      onExit();
+    // q / esc: cancel a live run, exit the screen after the run is done.
+    // We kill the WHOLE PowerShell process tree because the engine
+    // spawns llama-server as a grandchild — Node's child.kill() only
+    // hits the immediate child, leaving llama-server orphaned and still
+    // emitting stdout. taskkill /T /F walks the tree.
+    if (input === "q" || key.escape) {
+      if (exitCode === null) {
+        killTree(procRef.current?.proc.pid);
+        // Don't onExit() yet — let the natural process close handler
+        // set exitCode so the user sees the final '[err] ... (exit -1)'
+        // banner with the elapsed time. They press q/esc again to leave.
+      } else {
+        onExit();
+      }
+      return;
     }
-    if (exitCode === null && (input === "q" || key.escape)) {
-      try { procRef.current?.proc.kill(); } catch {}
+    if (exitCode !== null && key.return) {
+      onExit();
     }
   });
 
@@ -216,11 +302,11 @@ export function RunView({ args, label, onExit }: Props) {
     <Box flexDirection="column">
       <Box>
         {exitCode === null ? (
-          <Text color="cyan"><Spinner type="dots" /> running calibr {label}…</Text>
+          <Text color="cyan"><Spinner type="dots" /> running calibr {label}… <Text dimColor>· {fmtElapsed(elapsedMs)}</Text></Text>
         ) : exitCode === 0 ? (
-          <Text color="green">[ok] calibr {label} finished (exit 0)</Text>
+          <Text color="green">[ok] calibr {label} finished in {fmtElapsed(elapsedMs)} (exit 0)</Text>
         ) : (
-          <Text color="red">[err] calibr {label} failed (exit {exitCode})</Text>
+          <Text color="red">[err] calibr {label} failed after {fmtElapsed(elapsedMs)} (exit {exitCode})</Text>
         )}
       </Box>
       {sampleProgress !== null && (
@@ -268,7 +354,7 @@ export function RunView({ args, label, onExit }: Props) {
           </Text>
         )}
         <Text dimColor>
-          ↑/↓ scroll · PgUp/PgDn page · g top · G bottom · {exitCode === null ? "q/esc cancel" : "enter/q/esc back"}
+          ↑/↓ scroll · PgUp/PgDn page · g top · h bottom · {exitCode === null ? "q/esc cancel run" : "enter/q/esc back"}
         </Text>
       </Box>
     </Box>

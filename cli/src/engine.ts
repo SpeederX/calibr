@@ -369,12 +369,17 @@ export const ENGINE_COMMANDS: EngineCommand[] = [
   { id: "bench",    label: "bench",    description: "run pending bench configs",            args: ["bench"] },
   { id: "report",   label: "report",   description: "build HTML report + .bat launchers",   args: ["report"] },
   { id: "all",      label: "all",      description: "discover -> plan -> bench -> report",  args: ["all"] },
+  { id: "reset",    label: "reset",    description: "wipe runtime state (results, downloads, ...) with confirm", args: ["reset"] },
 ];
 
 // ---------------------------------------------------------------------------
-// Samples catalog (curated GGUF download list shipped with the engine)
+// Model catalog (curated GGUF download list shipped with the engine).
+// The 'Sample' / 'samples' naming was retired in v0.1.3 because it
+// overloaded 'sample' (which has a separate meaning in ML — token sampling
+// from a distribution). CatalogEntry / readModelCatalog / filterCatalog
+// make the intent explicit.
 // ---------------------------------------------------------------------------
-export interface Sample {
+export interface CatalogEntry {
   id: string;
   model: string;
   series?: string;
@@ -385,40 +390,78 @@ export interface Sample {
   target_dir: string;
   mmproj_file?: string;
   size_bytes: number;
+  max_context?: number;
   notes?: string;
 }
 
-export function readSamples(): Sample[] {
-  const path = join(ENGINE_ROOT, "samples.json");
-  const parsed = readJsonSafe<{ samples?: Sample[] }>(path, {});
-  return Array.isArray(parsed.samples) ? parsed.samples : [];
+export function readModelCatalog(): CatalogEntry[] {
+  const path = join(ENGINE_ROOT, "models_catalog.json");
+  const parsed = readJsonSafe<{ models?: CatalogEntry[] }>(path, {});
+  return Array.isArray(parsed.models) ? parsed.models : [];
 }
 
-export function filterSamples(samples: Sample[], opts: { sampleId?: string; model?: string }): Sample[] {
-  return samples.filter(s => {
-    if (opts.sampleId) {
+export function filterCatalog(entries: CatalogEntry[], opts: { catalogId?: string; model?: string }): CatalogEntry[] {
+  return entries.filter(e => {
+    if (opts.catalogId) {
       // Mirror PowerShell -like (case-insensitive glob).
-      const pattern = "^" + opts.sampleId.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
-      if (!new RegExp(pattern, "i").test(s.id)) return false;
+      const pattern = "^" + opts.catalogId.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+      if (!new RegExp(pattern, "i").test(e.id)) return false;
     }
     if (opts.model) {
       // Mirror PowerShell -match (case-insensitive regex).
-      try { if (!new RegExp(opts.model, "i").test(s.model)) return false; }
+      try { if (!new RegExp(opts.model, "i").test(e.model)) return false; }
       catch { return false; }
     }
     return true;
   });
 }
 
-export function downloadFootprintBytes(samples: Sample[]): { totalBytes: number; maxFileBytes: number } {
+export function downloadFootprintBytes(entries: CatalogEntry[]): { totalBytes: number; maxFileBytes: number } {
   let total = 0;
   let max = 0;
-  for (const s of samples) {
-    const b = Number(s.size_bytes) || 0;
+  for (const e of entries) {
+    const b = Number(e.size_bytes) || 0;
     total += b;
     if (b > max) max = b;
   }
   return { totalBytes: total, maxFileBytes: max };
+}
+
+// ---------------------------------------------------------------------------
+// Bench presets (default + user-saved)
+// ---------------------------------------------------------------------------
+export interface Preset {
+  label: string;
+  hardware_target?: string;
+  models: "*" | string[];
+  max_ctx?: number | null;
+}
+
+export function readPresetCatalog(): Record<string, Preset> {
+  // Merge default_bench_presets.json (shipped, at ENGINE_ROOT) with
+  // data/user_bench_presets.json (user-saved). Same-name user presets
+  // override defaults (replace, not merge).
+  const merged: Record<string, Preset> = {};
+  const paths = [
+    join(ENGINE_ROOT, "default_bench_presets.json"),
+    join(CALIBR_DATA_DIR, "user_bench_presets.json"),
+  ];
+  for (const p of paths) {
+    if (!existsSync(p)) continue;
+    try {
+      let raw = readFileSync(p, "utf8");
+      if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+      const parsed = JSON.parse(raw);
+      if (parsed?.presets && typeof parsed.presets === "object") {
+        for (const [name, preset] of Object.entries(parsed.presets)) {
+          merged[name] = preset as Preset;
+        }
+      }
+    } catch {
+      // skip unreadable preset file; the engine will warn at runtime
+    }
+  }
+  return merged;
 }
 
 // ---------------------------------------------------------------------------

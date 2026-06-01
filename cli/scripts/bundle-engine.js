@@ -14,9 +14,12 @@ const engineDir = join(cliRoot, "engine");
 const sources = [
   { src: join(repoRoot, "calibr.ps1"), required: true },
   { src: join(repoRoot, "config.default.json"), required: true },
-  // samples.json drives the curated download catalog and the CLI's
-  // pre-bench disk-space gate (downloadFootprintBytes/readSamples).
-  { src: join(repoRoot, "samples.json"), required: true },
+  // models_catalog.json drives the curated download catalog and the CLI's
+  // pre-bench disk-space gate (downloadFootprintBytes / readModelCatalog).
+  { src: join(repoRoot, "models_catalog.json"), required: true },
+  // default_bench_presets.json: shipped hardware-tier presets
+  // (low/middle/high/all) that the CLI's AllOptionsView preset row reads.
+  { src: join(repoRoot, "default_bench_presets.json"), required: true },
 ];
 
 for (const { src, required } of sources) {
