@@ -30,7 +30,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position=0)]
-    [ValidateSet("init","discover","plan","bench","report","all","status","help","get-sample-models","config","install","uninstall","")]
+    [ValidateSet("init","discover","plan","bench","report","all","status","help","get-sample-models","config","install","uninstall","reset","")]
     [string]$Command = "help",
 
     # Sub-action / target name. Meaning depends on $Command:
@@ -88,7 +88,23 @@ param(
     # to keep peak working-set bounded to one model. -KeepDownloads disables
     # the cleanup so files survive the bench. User-owned files (those not in
     # the manifest) are never touched regardless of this flag.
-    [switch]$KeepDownloads
+    [switch]$KeepDownloads,
+
+    # Used by 'reset': pick which buckets of runtime state to wipe. Each
+    # flag is opt-in (default is no-op). -All toggles every bucket on.
+    # User-owned files in scan_paths are NEVER touched by reset; only the
+    # downloaded models tracked in data/downloads.json can be wiped, and
+    # only when -DownloadedModels is set.
+    [switch]$Results,           # data/results/*.json
+    [switch]$Catalog,           # data/catalog.json
+    [switch]$Plan,              # data/plan.json
+    [switch]$Report,            # data/report.html
+    [switch]$Logs,              # data/logs/*.log
+    [switch]$Bats,              # data/bats/*.bat
+    [switch]$Downloads,         # data/downloads.json (manifest only, not the files)
+    [switch]$DownloadedModels,  # the actual .gguf + mmproj listed in the manifest
+    [switch]$LocalConfig,       # config.json (the user's local override)
+    [switch]$All                # convenience: all of the above
 )
 
 $ErrorActionPreference = "Stop"
@@ -2077,6 +2093,145 @@ function Invoke-GetSampleModels {
 # ============================================================================
 # SUBCOMMAND: status
 # ============================================================================
+function Get-ResetTargets {
+    # Pure: given the toggle hashtable + paths, returns an ordered list of
+    # @{kind; path; description} entries describing what would be wiped.
+    # Caller decides whether to actually act. Keeps Invoke-Reset itself a
+    # thin wrapper that's easy to dry-run and easy to test.
+    #
+    # The `-All` toggle is expanded here, NOT in Invoke-Reset, so a single
+    # source of truth governs what 'reset everything' means.
+    param(
+        [hashtable]$Toggles,         # { Results=$true; Catalog=$false; ... }
+        [hashtable]$Paths,           # { ResultsDir=...; CatalogFile=...; ... }
+        [string[]]$ManagedFiles      # absolute paths of files currently in download manifest
+    )
+    $t = $Toggles
+    if ($t.All) {
+        # -All implies every bucket. We DO include DownloadedModels and
+        # LocalConfig in 'all' on purpose — those are the two most
+        # destructive ones and we want -All to mean 'truly factory reset'.
+        $t = @{
+            Results = $true; Catalog = $true; Plan = $true; Report = $true
+            Logs = $true; Bats = $true; Downloads = $true
+            DownloadedModels = $true; LocalConfig = $true
+        }
+    }
+    $out = @()
+    if ($t.Results -and (Test-Path $Paths.ResultsDir)) {
+        $count = (Get-ChildItem $Paths.ResultsDir -Filter '*.json' -ErrorAction SilentlyContinue).Count
+        $out += @{ kind = 'results'; path = $Paths.ResultsDir; description = "$count bench result JSON file(s)" }
+    }
+    if ($t.Catalog -and (Test-Path $Paths.CatalogFile)) {
+        $out += @{ kind = 'catalog'; path = $Paths.CatalogFile; description = "catalog.json (model index from discover)" }
+    }
+    if ($t.Plan -and (Test-Path $Paths.PlanFile)) {
+        $out += @{ kind = 'plan'; path = $Paths.PlanFile; description = "plan.json (expanded bench configs)" }
+    }
+    if ($t.Report -and (Test-Path $Paths.ReportFile)) {
+        $out += @{ kind = 'report'; path = $Paths.ReportFile; description = "report.html (regenerable from results)" }
+    }
+    if ($t.Logs -and (Test-Path $Paths.LogsDir)) {
+        $count = (Get-ChildItem $Paths.LogsDir -Filter '*.log' -ErrorAction SilentlyContinue).Count
+        $out += @{ kind = 'logs'; path = $Paths.LogsDir; description = "$count llama-server log file(s)" }
+    }
+    if ($t.Bats -and (Test-Path $Paths.BatsDir)) {
+        $count = (Get-ChildItem $Paths.BatsDir -Filter '*.bat' -ErrorAction SilentlyContinue).Count
+        $out += @{ kind = 'bats'; path = $Paths.BatsDir; description = "$count winner launch script(s)" }
+    }
+    if ($t.Downloads -and (Test-Path $Paths.DownloadsFile)) {
+        $out += @{ kind = 'downloads'; path = $Paths.DownloadsFile; description = "downloads.json manifest (rotation tracking; the .gguf files themselves are a SEPARATE bucket)" }
+    }
+    if ($t.DownloadedModels) {
+        foreach ($p in $ManagedFiles) {
+            if ($p -and (Test-Path -LiteralPath $p)) {
+                $sz = [math]::Round((Get-Item -LiteralPath $p).Length / 1GB, 2)
+                $out += @{ kind = 'downloaded_model'; path = $p; description = "$sz GB .gguf (calibr-downloaded)" }
+            }
+        }
+    }
+    if ($t.LocalConfig -and (Test-Path $Paths.LocalConfigFile)) {
+        $out += @{ kind = 'local_config'; path = $Paths.LocalConfigFile; description = "config.json (your local overrides; default config.default.json stays)" }
+    }
+    return ,@($out)
+}
+
+function Invoke-Reset {
+    # Wipes the runtime state pieces selected by the param-block toggles.
+    # Confirmation in interactive mode; -NonInteractive (the CLI sets it
+    # automatically) skips the prompt and trusts the caller's earlier
+    # confirmation. User-owned .gguf files in scan_paths are NEVER touched
+    # — only files recorded in data/downloads.json can be deleted, and
+    # only when -DownloadedModels (or -All) is on.
+    $toggles = @{
+        Results          = [bool]$Results
+        Catalog          = [bool]$Catalog
+        Plan             = [bool]$Plan
+        Report           = [bool]$Report
+        Logs             = [bool]$Logs
+        Bats             = [bool]$Bats
+        Downloads        = [bool]$Downloads
+        DownloadedModels = [bool]$DownloadedModels
+        LocalConfig      = [bool]$LocalConfig
+        All              = [bool]$All
+    }
+    $paths = @{
+        ResultsDir      = $CALIBR_RESULTS_DIR
+        CatalogFile     = $CALIBR_CATALOG
+        PlanFile        = $CALIBR_PLAN
+        ReportFile      = $CALIBR_REPORT
+        LogsDir         = $CALIBR_LOGS_DIR
+        BatsDir         = $CALIBR_BATS_DIR
+        DownloadsFile   = $CALIBR_DOWNLOADS
+        LocalConfigFile = $CALIBR_LOCAL_CFG
+    }
+    $managed = @(Get-DownloadManifest | Where-Object { $_ -and $_.model_path } | ForEach-Object {
+        # Include the mmproj too if the entry tracked one.
+        $_.model_path
+        if ($_.mmproj_path) { $_.mmproj_path }
+    })
+
+    $targets = Get-ResetTargets -Toggles $toggles -Paths $paths -ManagedFiles $managed
+
+    Write-Host "=== reset ===" -ForegroundColor Cyan
+    if ($targets.Count -eq 0) {
+        Write-Host "Nothing selected. Pass one or more of: -Results -Catalog -Plan -Report -Logs -Bats -Downloads -DownloadedModels -LocalConfig -All" -ForegroundColor Yellow
+        return
+    }
+    foreach ($t in $targets) {
+        Write-Host ("  [{0}] {1}  ({2})" -f $t.kind, $t.path, $t.description) -ForegroundColor DarkGray
+    }
+    if (-not $NonInteractive) {
+        $ok = Read-Host "`nProceed? This cannot be undone. (y/N)"
+        if ($ok -notmatch '^[yY]') { Write-Host "Cancelled." -ForegroundColor Yellow; return }
+    }
+
+    $okCount = 0; $failCount = 0
+    foreach ($t in $targets) {
+        try {
+            if (Test-Path -LiteralPath $t.path) {
+                $isDir = (Get-Item -LiteralPath $t.path).PSIsContainer
+                if ($t.kind -in @('results','logs','bats') -and $isDir) {
+                    # Wipe contents but keep the directory; the engine
+                    # recreates it on demand and removing the dir itself
+                    # buys nothing.
+                    $glob = switch ($t.kind) { 'results' { '*.json' } 'logs' { '*.log' } 'bats' { '*.bat' } }
+                    Get-ChildItem $t.path -Filter $glob -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction Stop
+                } else {
+                    Remove-Item -LiteralPath $t.path -Force -ErrorAction Stop
+                }
+            }
+            Write-Host ("  removed: {0}" -f $t.path) -ForegroundColor DarkCyan
+            $okCount++
+        } catch {
+            Write-Host ("  FAILED: {0} ({1})" -f $t.path, $_.Exception.Message) -ForegroundColor Red
+            $failCount++
+        }
+    }
+    Write-Host ""
+    Write-Host ("reset done: {0} removed, {1} failed" -f $okCount, $failCount) -ForegroundColor $(if ($failCount -eq 0) { 'Green' } else { 'Yellow' })
+}
+
 function Invoke-Status {
     $cfg = Get-Config
     Write-Host "=== status ===" -ForegroundColor Cyan
@@ -2491,6 +2646,7 @@ function Invoke-Help {
         "get-sample-models" = "List or download curated reference GGUFs from HuggingFace."
         "install"           = "Add this directory to user PATH so 'calibr' works globally."
         "uninstall"         = "Remove this directory from user PATH."
+        "reset"             = "Wipe runtime state (results, catalog, plan, report, logs, bats, downloads, calibr-downloaded models, local config)."
         "help"              = "This screen, or 'help <command>' for details."
     }
 
@@ -2640,6 +2796,33 @@ function Invoke-Help {
             )
             Examples = @( "calibr uninstall" )
         }
+        "reset" = @{
+            Usage    = "calibr reset [-Results] [-Catalog] [-Plan] [-Report] [-Logs] [-Bats] [-Downloads] [-DownloadedModels] [-LocalConfig] [-All]"
+            Flags    = @(
+                "-Results           Wipe data/results/*.json (clear the bench cache)"
+                "-Catalog           Wipe data/catalog.json (forces re-discover)"
+                "-Plan              Wipe data/plan.json (forces re-plan)"
+                "-Report            Wipe data/report.html"
+                "-Logs              Wipe data/logs/*.log (llama-server stderr per config)"
+                "-Bats              Wipe data/bats/*.bat (per-winner launchers)"
+                "-Downloads         Wipe data/downloads.json (rotation manifest only)"
+                "-DownloadedModels  Delete the .gguf+mmproj files calibr fetched"
+                "                   (the ones tracked in data/downloads.json)."
+                "                   User-owned .gguf files in scan_paths are NEVER touched."
+                "-LocalConfig       Wipe config.json (your local overrides). The default"
+                "                   config.default.json stays — calibr remains runnable."
+                "-All               Convenience flag for every bucket above (factory reset)."
+                ""
+                "Interactive mode prompts y/N before deleting; -NonInteractive (which"
+                "the calibr CLI sets automatically) trusts the caller and proceeds."
+            )
+            Examples = @(
+                "calibr reset -Results -Report                 # ri-bench tutto, riusa download e catalog"
+                "calibr reset -Catalog -Plan                   # forza ri-discover + ri-plan"
+                "calibr reset -DownloadedModels                # libera disco da modelli scaricati"
+                "calibr reset -All -NonInteractive             # factory reset, niente prompt"
+            )
+        }
         "help" = @{
             Usage    = "calibr help [<command>]"
             Flags    = @()
@@ -2711,6 +2894,7 @@ switch ($Command) {
     "help"               { Invoke-Help }
     "install"            { Invoke-Install }
     "uninstall"          { Invoke-Uninstall }
+    "reset"              { Invoke-Reset }
     "get-sample-models"  { Invoke-GetSampleModels }
     "all"                {
         if ($DownloadSamples) {

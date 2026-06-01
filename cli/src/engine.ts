@@ -369,6 +369,7 @@ export const ENGINE_COMMANDS: EngineCommand[] = [
   { id: "bench",    label: "bench",    description: "run pending bench configs",            args: ["bench"] },
   { id: "report",   label: "report",   description: "build HTML report + .bat launchers",   args: ["report"] },
   { id: "all",      label: "all",      description: "discover -> plan -> bench -> report",  args: ["all"] },
+  { id: "reset",    label: "reset",    description: "wipe runtime state (results, downloads, ...) with confirm", args: ["reset"] },
 ];
 
 // ---------------------------------------------------------------------------
