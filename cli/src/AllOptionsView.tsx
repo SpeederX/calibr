@@ -72,11 +72,11 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   })();
 
   const rows = [
-    { kind: "fetch"    as const, label: `catalog:  ${fetchCatalog ? "fetch curated models first (-FetchCatalog)" : "off (use what's already in scan_paths)"}` },
-    { kind: "preset"   as const, label: `preset:   ${presetLabel}`, disabled: !fetchCatalog },
-    { kind: "rotate"   as const, label: `rotate:   ${keepDownloads ? "no (keep downloaded files after bench)" : "yes (default — delete each model after success)"}` },
-    { kind: "prefer"   as const, label: `picker:   ${preferSpeed ? "speed (ignore WDDM safety)" : "safety (default — non-paging wins ties)"}` },
-    { kind: "polling"  as const, label: `polling:  ${minimalPolling ? "minimal (lowest overhead, no live strip / power / RAM / disk)" : "full (default — live metrics strip + extended fields in results)"}` },
+    { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — only bench what's already in scan_paths"}` },
+    { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog },
+    { kind: "rotate"   as const, label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its bench finishes)"}` },
+    { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
+    { kind: "polling"  as const, label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
     { kind: "run"      as const, label: "> start all" },
     { kind: "cancel"   as const, label: "  cancel" },
   ];
