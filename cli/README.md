@@ -39,8 +39,9 @@ README.
   first run (`init`) detects it if it is on `PATH`; otherwise you set the path
   in `config.json`.
 - An **NVIDIA GPU** for the headline use case. CPU-only and other backends
-  bench fine, but the WDDM-paging heuristic is NVIDIA + Windows shaped; on
-  non-NVIDIA Linux, GPU metrics degrade to temperature-only.
+  bench fine, but the WDDM-paging heuristic is NVIDIA + Windows shaped. On
+  **AMD Linux**, install `radeontop` + `mesa-utils` for VRAM + utilization
+  metrics (else temperature-only); GPU power draw isn't exposed.
 
 ## Quickstart
 

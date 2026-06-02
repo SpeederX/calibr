@@ -21,9 +21,10 @@ per-model optimized launchers (`.bat` on Windows, `.sh` on Linux).
 > counter and the driver OOMs cleanly, so that detection is **skipped**: the
 > engine benches throughput and picks winners on speed + fit. The Linux engine
 > runs under [PowerShell Core (`pwsh`)](https://github.com/PowerShell/PowerShell);
-> GPU VRAM/power metrics come from `nvidia-smi` when present (NVIDIA), otherwise
-> degrade to best-effort temperature from sysfs (e.g. AMD), with RAM/disk read
-> from `/proc`. See [`CLAUDE.md`](CLAUDE.md) for the phased direction.
+> GPU metrics come from `nvidia-smi` when present (NVIDIA); on AMD they come from
+> `radeontop` (live VRAM-used + GPU util) and `glxinfo`/mesa-utils (VRAM total)
+> if installed, otherwise just temperature from sysfs. RAM/disk come from
+> `/proc`. See [`CLAUDE.md`](CLAUDE.md) for the phased direction.
 
 > **For an LLM (or contributor) reading this**: start with
 > [`CLAUDE.md`](CLAUDE.md) — it documents the current methodology,
@@ -150,9 +151,12 @@ shared repo to crowdsource a "what runs well on what GPU" dataset.
 - **PowerShell Core (`pwsh`)** — [install guide](https://github.com/PowerShell/PowerShell).
   The engine is the same `calibr.ps1`, run under `pwsh`.
 - A GPU is optional. On **NVIDIA** with `nvidia-smi` on PATH you get VRAM /
-  power / temp / util metrics; on other GPUs (e.g. AMD) those degrade to
-  best-effort GPU temperature from sysfs, and VRAM-budget planning is opt-in
-  (set `hardware.vram_total_mib` yourself). CPU-only works too.
+  power / temp / util metrics. On **AMD**, install `radeontop` + `mesa-utils`
+  (`apt install radeontop mesa-utils`) for VRAM total (`glxinfo`) and live
+  VRAM-used + GPU utilization (`radeontop`); GPU temperature always comes from
+  sysfs, power isn't exposed. Without those tools, metrics fall back to
+  temperature-only and VRAM-budget planning is opt-in (set
+  `hardware.vram_total_mib` yourself). CPU-only works too.
 
 **Both platforms:**
 
@@ -546,11 +550,12 @@ calibr/
   a Windows-specific perf counter with no Linux equivalent. calibr now runs on
   Linux (under `pwsh`), but there it skips WDDM detection and picks winners on
   throughput + fit. macOS is untested.
-- **GPU metrics are limited on non-NVIDIA Linux.** Without `nvidia-smi`, VRAM /
-  power / utilization aren't read (the AMD `radeon` driver exposes no
-  `mem_info_vram`); only GPU temperature (sysfs `hwmon`) and system RAM/disk
-  (`/proc`) are captured. VRAM-budget tier planning needs a manual
-  `hardware.vram_total_mib`.
+- **GPU power is unavailable on AMD Linux, and metrics need extra tools.**
+  The `radeon`/`amdgpu` drivers don't expose `mem_info_vram` to calibr, so VRAM
+  comes from `radeontop` (live used + util) and `glxinfo`/mesa-utils (total)
+  when installed; GPU temperature comes from sysfs `hwmon`; **GPU power draw is
+  not exposed** (reported 0). Without `radeontop`/`glxinfo` it's temperature-only
+  and `hardware.vram_total_mib` must be set manually for tier planning.
 - **MoE detection is a regex on the filename.** `model =~ /A\d+B/` correctly
   matches `Qwen3.6-35B-A3B` and `Mixtral-8x7B`-style names but a model
   innocently named `something-A100B-special.gguf` would be false-flagged as
