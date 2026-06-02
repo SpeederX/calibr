@@ -297,6 +297,36 @@ structured, parseable data instead of vague bug reports. Graduates to an
 opt-in phone-home once the Phase-2 backend exists. (Captured separately
 once the design is settled.)
 
+### GPU-readiness check — guide the user to a working GPU path (esp. AMD APUs)
+*Estimate: ~0.5d. Concrete checklist discovered on the Mullins APU dev box.*
+
+App-side `doctor` step that detects whether GPU inference is even possible and
+tells the user exactly what's missing + the steps. The decision tree we hit:
+
+- **NVIDIA**: `nvidia-smi` present -> use a CUDA build. Done.
+- **AMD - which kernel driver?** `cat /sys/class/drm/card*/device/uevent`:
+  - `amdgpu` -> RADV hardware Vulkan works -> build a Vulkan llama-server.
+  - `radeon` (legacy, older GPUs like Mullins/Kabini) -> **RADV does NOT
+    support it**; `vulkaninfo --summary` shows only `llvmpipe`
+    (`PHYSICAL_DEVICE_TYPE_CPU` = software). No real GPU offload. Guide:
+    switch the card to amdgpu via kernel params + reboot -
+    `radeon.cik_support=0 radeon.si_support=0 amdgpu.cik_support=1
+    amdgpu.si_support=1` (experimental for SI/CIK; may be flaky), OR accept
+    CPU-only.
+  - dedicated AMD (amdgpu/ROCm) -> prefer `amd-smi` for metrics (see above).
+- **Vulkan sanity check**: `vulkaninfo --summary` - if the only device is
+  `llvmpipe`, warn "no hardware GPU available to Vulkan; inference would run on
+  the CPU software rasterizer, slower than the native CPU backend".
+- **Tooling the user may need**, surfaced with the exact apt line: `radeontop`
+  + `mesa-utils` (AMD metrics), `libvulkan-dev` + `glslc` + `vulkan-tools`
+  (to build/verify a Vulkan llama-server).
+- **CPU build gotcha** (already noted): on old CPUs lacking AVX2/FMA/BMI2,
+  prebuilt llama.cpp SIGILLs - guide to a `-DGGML_AVX2=OFF ...` source build.
+
+This is the "test run / check layer" the maintainer asked for: per machine,
+say what's present, what's missing, and the steps to a working GPU (or CPU)
+inference path.
+
 ---
 
 ## Roadmap (CLAUDE.md phases 2/3)
