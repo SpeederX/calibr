@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import Spinner from "ink-spinner";
 import { spawnSync } from "node:child_process";
-import { runEngine } from "./engine.js";
+import { runEngine, openReport } from "./engine.js";
 
 // Kill the whole process tree rooted at pid. On Windows, Node's
 // child.kill() doesn't propagate to grandchildren — we spawn powershell
@@ -76,6 +76,12 @@ const FAIL_RE = /^\s*\[FAIL\]/;
 // End-of-bench summary line: "   N ok . M fail . K skipped (out of T)"
 // Colored based on whether M (fail count) is non-zero.
 const SUMMARY_RE = /^\s*(\d+)\s+ok\s+\.\s+(\d+)\s+fail\s+\.\s+\d+\s+skipped\s+\(out of \d+\)\s*$/;
+// "Report: C:\...\report.html" emitted by Invoke-Report on completion.
+// Presence of this line is a guarantee that a FRESH report was just
+// written by this run (not a stale leftover); the CLI uses it to gate
+// the "open report?" prompt so the user isn't offered an old report
+// after a bench-only run that didn't touch report.html.
+const REPORT_RE = /^Report:\s+(.+\.html)\s*$/;
 
 interface Progress {
   current: number;
@@ -225,6 +231,10 @@ export function RunView({ args, label, onExit }: Props) {
   const [download, setDownload] = useState<DownloadState | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
   const [runCount, setRunCount] = useState<RunCount | null>(null);
+  // Path to the report.html the engine just wrote (matched against
+  // REPORT_RE). Null until the engine reaches Invoke-Report; presence
+  // gates the "open report? [y/n]" prompt shown after a successful run.
+  const [reportPath, setReportPath] = useState<string | null>(null);
   // Per-config completion times in ms. Pushed on each PROGRESS_RE transition
   // (config N → N+1). Running mean drives the bench-side of the ETA. Kept
   // bounded to avoid drift from a degenerate first config.
@@ -334,6 +344,7 @@ export function RunView({ args, label, onExit }: Props) {
       let lastDlDone = false;
       let lastPhase: Phase | null = null;
       let lastRun: RunCount | null = null;
+      let lastReport: string | null = null;
       for (const line of complete) {
         if (ROTATE_DELETE_RE.test(line))     { dDelta++; lastRot = line.trim(); continue; }
         if (ROTATE_KEEP_RE.test(line))       { kDelta++; lastRot = line.trim(); continue; }
@@ -343,6 +354,7 @@ export function RunView({ args, label, onExit }: Props) {
         if (DLDONE_RE.test(line))             { lastDlDone = true; continue; }
         const phm = PHASE_RE.exec(line);   if (phm) { lastPhase = phm[1] as Phase; continue; }
         const rm = RUN_RE.exec(line);      if (rm) { lastRun = { current: Number(rm[1]), total: Number(rm[2]) }; continue; }
+        const rpm = REPORT_RE.exec(line);  if (rpm) { lastReport = rpm[1]; continue; }
       }
       if (dDelta || kDelta || fDelta) {
         setRotation(prev => ({
@@ -384,6 +396,7 @@ export function RunView({ args, label, onExit }: Props) {
         if (lastPhase === 'loading_model') setDownload(null);
       }
       if (lastRun) setRunCount(lastRun);
+      if (lastReport) setReportPath(lastReport);
     };
 
     run.proc.stdout?.on("data", append);
@@ -437,6 +450,21 @@ export function RunView({ args, label, onExit }: Props) {
         onExit();
       }
       return;
+    }
+    // After a successful run that produced a fresh report, 'y' / 'o'
+    // opens it in the default browser before returning to the menu.
+    // Any other key keeps the existing 'enter to exit' behavior.
+    if (exitCode === 0 && reportPath) {
+      if (input === "y" || input === "Y" || input === "o" || input === "O") {
+        openReport();
+        onExit();
+        return;
+      }
+      if (input === "n" || input === "N" || key.return) {
+        onExit();
+        return;
+      }
+      return;  // ignore other keys while the prompt is up
     }
     if (exitCode !== null && key.return) {
       onExit();
@@ -599,6 +627,14 @@ export function RunView({ args, label, onExit }: Props) {
           })
         )}
       </Box>
+      {exitCode === 0 && reportPath && (
+        <Box marginTop={1} flexDirection="column">
+          <Text color="cyan" bold>
+            open report in browser? <Text color="green">[y]</Text> yes <Text dimColor>·</Text> <Text>[n / enter]</Text> back to menu
+          </Text>
+          <Text dimColor>{reportPath}</Text>
+        </Box>
+      )}
       <Box marginTop={1} flexDirection="column">
         {!isTailing && (
           <Text color="yellow">
@@ -606,7 +642,11 @@ export function RunView({ args, label, onExit }: Props) {
           </Text>
         )}
         <Text dimColor>
-          ↑/↓ scroll · PgUp/PgDn page · g top · h bottom · {exitCode === null ? "q/esc cancel run" : "enter/q/esc back"}
+          ↑/↓ scroll · PgUp/PgDn page · g top · h bottom · {
+            exitCode === null
+              ? "q/esc cancel run"
+              : (exitCode === 0 && reportPath ? "y open report · n/enter back" : "enter/q/esc back")
+          }
         </Text>
       </Box>
     </Box>
