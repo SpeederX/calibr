@@ -68,7 +68,9 @@ function readBuckets(): Bucket[] {
   const reportsArchiveDir = join(CALIBR_DATA_DIR, "reports");
   const results = countFiles(resultsDir, ".json");
   const logs    = countFiles(logsDir, ".log");
-  const bats    = countFiles(batsDir, ".bat");
+  // Winner launchers are .bat on Windows, .sh on POSIX (see engine report cmd).
+  const launcherExt = process.platform === "win32" ? ".bat" : ".sh";
+  const bats    = countFiles(batsDir, launcherExt);
   const archived = countFiles(reportsArchiveDir, ".html");
 
   const reportCountParts: string[] = [];
@@ -82,7 +84,7 @@ function readBuckets(): Bucket[] {
     { flag: "-Plan",             label: "plan",              hint: "data/plan.json — expanded bench configs",    exists: fileExists(planFile), countLabel: fileExists(planFile) ? "present" : "absent" },
     { flag: "-Report",           label: "report (+archive)", hint: "data/report.html + data/reports/*.html — current + auto-archived past reports", exists: fileExists(reportFile) || archived > 0, countLabel: reportLabel },
     { flag: "-Logs",             label: "logs",              hint: "data/logs/*.log — llama-server stderr",      exists: logs > 0, countLabel: `${logs} file${logs === 1 ? "" : "s"}` },
-    { flag: "-Bats",             label: "bats",              hint: "data/bats/*.bat — winner launchers",         exists: bats > 0, countLabel: `${bats} file${bats === 1 ? "" : "s"}` },
+    { flag: "-Bats",             label: "bats",              hint: `data/bats/*${launcherExt} — winner launchers`, exists: bats > 0, countLabel: `${bats} file${bats === 1 ? "" : "s"}` },
     { flag: "-Downloads",        label: "downloads manifest",hint: "data/downloads.json — rotation tracking",    exists: fileExists(downloadsFile), countLabel: fileExists(downloadsFile) ? "present" : "absent" },
     { flag: "-DownloadedModels", label: "downloaded models", hint: "the .gguf+mmproj files calibr fetched (user-owned files NEVER touched)", exists: dlCount > 0, countLabel: dlCount > 0 ? `${dlCount} files, ~${dlGB.toFixed(1)} GB` : "none tracked" },
     { flag: "-LocalConfig",      label: "local config",      hint: "config.json (your overrides; default stays)",exists: existsSync(CALIBR_LOCAL_CFG), countLabel: existsSync(CALIBR_LOCAL_CFG) ? "present" : "absent" },

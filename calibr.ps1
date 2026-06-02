@@ -119,6 +119,77 @@ param(
 $ErrorActionPreference = "Stop"
 
 # ============================================================================
+# PLATFORM
+# ============================================================================
+# $IsWindows / $IsLinux / $IsMacOS are automatic variables ONLY in PowerShell
+# Core (6+). Windows PowerShell 5.1 — what Windows users get via calibr.cmd —
+# leaves them undefined, so we read them defensively (Get-Variable tolerates
+# their absence) and treat "neither Linux nor macOS" as Windows.
+$script:IsLin = [bool](Get-Variable -Name IsLinux -ValueOnly -ErrorAction SilentlyContinue)
+$script:IsMac = [bool](Get-Variable -Name IsMacOS -ValueOnly -ErrorAction SilentlyContinue)
+$script:IsWin = -not ($script:IsLin -or $script:IsMac)
+# Executable / shared-library suffixes by platform.
+$script:ExeExt = if ($script:IsWin) { '.exe' } else { '' }
+$script:LibExt = if ($script:IsWin) { 'dll' } elseif ($script:IsMac) { 'dylib' } else { 'so' }
+
+# ============================================================================
+# LINUX HELPERS (sysfs / /proc fallbacks for what nvidia-smi + WMI give on Windows)
+# ============================================================================
+function Get-LinuxCpuCounts {
+    # Physical cores and logical threads from /proc/cpuinfo. Physical = unique
+    # (physical id, core id) pairs; logical = count of 'processor' entries.
+    # Falls back to logical==physical when topology fields are missing (some
+    # VMs / ARM kernels omit them).
+    $logical = 0; $pairs = @{}; $phys = ''
+    foreach ($line in (Get-Content /proc/cpuinfo -ErrorAction SilentlyContinue)) {
+        if     ($line -match '^processor\s*:')          { $logical++ }
+        elseif ($line -match '^physical id\s*:\s*(\d+)') { $phys = $Matches[1] }
+        elseif ($line -match '^core id\s*:\s*(\d+)')     { $pairs["$phys/$($Matches[1])"] = $true }
+    }
+    $physical = $pairs.Count
+    if ($physical -le 0) { $physical = $logical }
+    if ($logical  -le 0) { $logical  = $physical }
+    return @{ physical = $physical; logical = $logical }
+}
+
+function Get-LinuxGpuName {
+    # Best-effort GPU name from lspci. No VRAM: the radeon driver and older
+    # cards don't expose mem_info_vram, and VRAM-budget planning is opt-in on
+    # Linux (the user sets hardware.vram_total_mib if they want it).
+    try {
+        $line = (lspci 2>$null | Select-String -Pattern 'VGA|3D controller|Display' | Select-Object -First 1)
+        if ($line) {
+            $name = (($line.ToString() -split ':\s*', 3)[-1]).Trim()
+            return ($name -replace '\s*\(rev [0-9a-f]+\)\s*$', '')   # drop the trailing "(rev 05)"
+        }
+    } catch { }
+    return $null
+}
+
+$script:_linuxHwmonTemp = $null   # cached path to the GPU temp sysfs node
+function Get-LinuxGpuTempC {
+    # GPU temperature (deg C) from the amdgpu/radeon hwmon node. Caches the
+    # resolved path; returns 0 when no GPU temp sensor is exposed.
+    try {
+        if (-not $script:_linuxHwmonTemp) {
+            $f = Get-ChildItem /sys/class/drm/card*/device/hwmon/hwmon*/temp1_input -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($f) { $script:_linuxHwmonTemp = $f.FullName }
+        }
+        if ($script:_linuxHwmonTemp -and (Test-Path $script:_linuxHwmonTemp)) {
+            $milli = [int]((Get-Content $script:_linuxHwmonTemp -ErrorAction SilentlyContinue | Select-Object -First 1))
+            return [int]($milli / 1000)
+        }
+    } catch { }
+    return 0
+}
+
+function Get-GpuSnapshotLinux {
+    # No nvidia-smi: VRAM / power / utilization aren't readable on the radeon
+    # driver, so report 0 for those and best-effort temperature from sysfs.
+    return @{ mem_mib = 0; power_w = 0.0; temp_c = (Get-LinuxGpuTempC); util_pct = 0 }
+}
+
+# ============================================================================
 # PATHS
 # ============================================================================
 $script:CALIBR_ROOT = $PSScriptRoot
@@ -232,6 +303,9 @@ function Get-DetectedHardware {
         cpu_cores_physical   = $null
         cpu_threads_logical  = $null
     }
+    # GPU: nvidia-smi works on both Windows and Linux when an NVIDIA driver is
+    # present. On non-NVIDIA Linux (e.g. an AMD APU) it's absent; degrade to a
+    # best-effort name from lspci and leave vram_total_mib null.
     try {
         $gpu = (nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader,nounits 2>$null | Select-Object -First 1)
         if ($gpu) {
@@ -241,19 +315,30 @@ function Get-DetectedHardware {
             $hw.gpu_compute_cap = $parts[2].Trim()
         }
     } catch { }
-    try {
-        $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($cpu) {
-            $hw.cpu_cores_physical  = [int]$cpu.NumberOfCores
-            $hw.cpu_threads_logical = [int]$cpu.NumberOfLogicalProcessors
-        }
-    } catch { }
+    if (-not $hw.gpu_name -and $script:IsLin) { $hw.gpu_name = Get-LinuxGpuName }
+    # CPU: WMI on Windows, /proc/cpuinfo on Linux/macOS.
+    if ($script:IsWin) {
+        try {
+            $cpu = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($cpu) {
+                $hw.cpu_cores_physical  = [int]$cpu.NumberOfCores
+                $hw.cpu_threads_logical = [int]$cpu.NumberOfLogicalProcessors
+            }
+        } catch { }
+    } else {
+        try {
+            $cores = Get-LinuxCpuCounts
+            $hw.cpu_cores_physical  = $cores.physical
+            $hw.cpu_threads_logical = $cores.logical
+        } catch { }
+    }
     return $hw
 }
 
 function Find-LlamaServerExe {
     $candidates = [System.Collections.Generic.List[string]]::new()
-    $onPath = Get-Command llama-server.exe -ErrorAction SilentlyContinue
+    $binName = "llama-server$script:ExeExt"   # 'llama-server.exe' on Windows, 'llama-server' elsewhere
+    $onPath = Get-Command $binName -ErrorAction SilentlyContinue
     if ($onPath) { $candidates.Add($onPath.Path) }
 
     # Look in parent folders of ROOT up to 3 levels
@@ -261,7 +346,7 @@ function Find-LlamaServerExe {
     for ($i=0; $i -lt 3; $i++) {
         $p = Split-Path $p -Parent
         if (-not $p) { break }
-        $found = @(Get-ChildItem $p -Filter "llama-server.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue)
+        $found = @(Get-ChildItem $p -Filter $binName -Recurse -Depth 2 -ErrorAction SilentlyContinue)
         foreach ($f in $found) { $candidates.Add($f.FullName) }
     }
     return @($candidates | Select-Object -Unique | Where-Object { Test-Path $_ })
@@ -277,7 +362,9 @@ function Get-LlamaBackends {
     $backends = @{ cuda=$false; vulkan=$false; metal=$false; hip=$false; sycl=$false; cpu=$false }
     if (-not $exe -or -not (Test-Path $exe)) { return $backends }
     $dir = Split-Path $exe -Parent
-    $dlls = @(Get-ChildItem $dir -Filter "ggml-*.dll" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+    # Match ggml-cuda.dll (Windows) and libggml-cuda.so / ggml-cuda.so (Linux);
+    # the leading '*' tolerates the 'lib' prefix Linux shared objects carry.
+    $dlls = @(Get-ChildItem $dir -Filter "*ggml-*.$script:LibExt" -File -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
     foreach ($d in $dlls) {
         if ($d -match 'ggml-cuda')   { $backends.cuda   = $true }
         if ($d -match 'ggml-vulkan') { $backends.vulkan = $true }
@@ -380,7 +467,7 @@ function Invoke-Init {
         Write-Host "`nUsing -LlamaServer override: $LlamaServer" -ForegroundColor Cyan
         $override.llama_server_exe = $LlamaServer
     } else {
-        Write-Host "`nSearching for llama-server.exe..."
+        Write-Host "`nSearching for llama-server$script:ExeExt..."
         $exes = Find-LlamaServerExe
         if ($exes.Count -eq 0) {
             Write-Warning "  Not found. Edit config.json and set llama_server_exe manually."
@@ -765,6 +852,11 @@ function Invoke-Plan {
 # WDDM SHARED-GPU MEMORY POLLER (Windows only)
 # ============================================================================
 function Get-SharedGPUMemoryMib {
+    # WDDM shared-GPU-memory paging is a Windows-only concept (Direct3D memory
+    # manager). On Linux/macOS there is no equivalent counter, so report
+    # "unavailable" — every caller treats -1 as "skip", which disables WDDM
+    # detection on those platforms.
+    if (-not $script:IsWin) { return -1 }
     try {
         $c = Get-Counter "\GPU Adapter Memory(*)\Shared Usage" -ErrorAction SilentlyContinue -MaxSamples 1
         if ($c) {
@@ -898,6 +990,8 @@ function Get-GpuSnapshot {
     try {
         $line = (nvidia-smi --query-gpu=memory.used,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader,nounits) -replace '\s',''
     } catch { }
+    # No nvidia-smi (e.g. AMD/Linux): fall back to sysfs (temperature only).
+    if (-not $line -and -not $script:IsWin) { return Get-GpuSnapshotLinux }
     $parts = if ($line) { $line -split ',' } else { @('0','0','0','0') }
     return @{
         mem_mib  = if ($parts[0] -match '^\d') { [int]$parts[0] }      else { 0 }
@@ -914,6 +1008,13 @@ function Get-AvailableMemoryMib {
     # MBytes'), and Get-Counter rejects the English name on a localized
     # system. Win32_OperatingSystem.FreePhysicalMemory is in kilobytes and
     # language-independent.
+    if (-not $script:IsWin) {
+        try {
+            $m = Select-String -Path /proc/meminfo -Pattern '^MemAvailable:\s+(\d+)\s*kB' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($m) { return [int]([int64]$m.Matches[0].Groups[1].Value / 1024) }   # KB -> MiB
+        } catch { }
+        return -1
+    }
     try {
         $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
         return [int]($os.FreePhysicalMemory / 1024)   # KB -> MiB
@@ -931,6 +1032,34 @@ function Get-DiskReadBytesPerSec {
     # translated on Italian Windows. We use the CIM PerfFormattedData class
     # first (DiskReadBytesPersec is an English property name regardless of
     # OS locale); if that fails we compute a rate from two raw-byte samples.
+    if (-not $script:IsWin) {
+        # /sys/block lists whole devices only (no partitions, so no
+        # double-counting). stat field index 2 (0-based) is sectors read;
+        # one sector = 512 bytes. Rate computed from two samples like Windows.
+        try {
+            $totalSectors = [int64]0
+            foreach ($blk in (Get-ChildItem /sys/block -ErrorAction SilentlyContinue)) {
+                if ($blk.Name -match '^(loop|ram|zram|dm-|sr|fd)') { continue }
+                $statPath = Join-Path $blk.FullName 'stat'
+                if (-not (Test-Path $statPath)) { continue }
+                $stat = @(((Get-Content $statPath -ErrorAction SilentlyContinue) -split '\s+') | Where-Object { $_ -ne '' })
+                if ($stat.Count -ge 3) { $totalSectors += [int64]$stat[2] }
+            }
+            $nowBytes = $totalSectors * 512
+            $nowAt    = Get-Date
+            $rate = 0
+            if ($script:_lastDiskReadAt -ne [datetime]::MinValue) {
+                $dt = ($nowAt - $script:_lastDiskReadAt).TotalSeconds
+                if ($dt -gt 0) {
+                    $rate = [int64](($nowBytes - $script:_lastDiskReadBytes) / $dt)
+                    if ($rate -lt 0) { $rate = 0 }
+                }
+            }
+            $script:_lastDiskReadBytes = $nowBytes
+            $script:_lastDiskReadAt    = $nowAt
+            return $rate
+        } catch { return 0 }
+    }
     try {
         $perf = Get-CimInstance -ClassName Win32_PerfFormattedData_PerfDisk_PhysicalDisk -Filter "Name='_Total'" -ErrorAction Stop
         if ($perf -and $null -ne $perf.DiskReadBytesPersec) {
@@ -1015,7 +1144,9 @@ function Invoke-OneBenchRun {
         if ($MinimalPolling) {
             # Cheap path: just VRAM + readiness check, no power/temp/util/RAM/disk.
             # Skips the [poll] emit entirely; the CLI's live strip stays blank.
-            $vNow = [int]((nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits) -replace '\s','')
+            # Get-GpuSnapshot wraps nvidia-smi in try/catch and falls back to
+            # sysfs on Linux, so this never throws when nvidia-smi is absent.
+            $vNow = (Get-GpuSnapshot).mem_mib
             if ($vNow -gt $peakVram) { $peakVram = $vNow }
             if ($cfg.wddm_detection.enable_shared_mem_counter) {
                 $s = Get-SharedGPUMemoryMib
@@ -1811,30 +1942,53 @@ function Invoke-Report {
 
     Write-Host ("Grouping by '{0}'; produced {1} winner(s)" -f $GroupBy, $winners.Count)
 
-    # Generate .bat per winner
+    # Generate a launcher per winner: .bat (cmd) on Windows, executable .sh on
+    # Linux/macOS. Both live under data/bats/.
     foreach ($key in $winners.Keys) {
         $w = $winners[$key]
-        $batName = ($key -replace '[^\w\.\-]', '_') + ".bat"
-        $batPath = Join-Path $CALIBR_BATS_DIR $batName
-        # Split extra_args into pairs "--flag value" or bare switches "--flag"
+        $base = ($key -replace '[^\w\.\-]', '_')
+        # Split extra_args into pairs "--flag value" or bare switches "--flag".
         # Regex grabs a `--name` and optionally its following non-flag value.
         $pairs = [regex]::Matches($w.extra_args, '(--\S+)(?:\s+("[^"]*"|[^-\s]\S*))?') |
                  ForEach-Object { $_.Value.Trim() }
-        $lines = @(
-            "@echo off"
-            "REM Auto-generated by calibr on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
-            "REM Model: $key"
-            "REM Bench: prompt=$($w.prompt_tps) t/s, eval=$($w.eval_tps) t/s, VRAM peak=$($w.vram_peak_mib) MiB"
-            "REM Test ID: $($w.id)"
-            ""
-            "`"$($cfg.llama_server_exe)`" ^"
-            "    -m `"$($w.model_path)`" ^"
-        )
-        if ($w.mmproj_path) { $lines += "    --mmproj `"$($w.mmproj_path)`" ^" }
-        foreach ($pair in $pairs) { $lines += "    $pair ^" }
-        $lines += "    --metrics"
-        $lines -join "`r`n" | Out-File -Encoding ascii $batPath
-        Write-Host "  wrote $batName"
+        if ($script:IsWin) {
+            $launchName = "$base.bat"
+            $launchPath = Join-Path $CALIBR_BATS_DIR $launchName
+            $lines = @(
+                "@echo off"
+                "REM Auto-generated by calibr on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+                "REM Model: $key"
+                "REM Bench: prompt=$($w.prompt_tps) t/s, eval=$($w.eval_tps) t/s, VRAM peak=$($w.vram_peak_mib) MiB"
+                "REM Test ID: $($w.id)"
+                ""
+                "`"$($cfg.llama_server_exe)`" ^"
+                "    -m `"$($w.model_path)`" ^"
+            )
+            if ($w.mmproj_path) { $lines += "    --mmproj `"$($w.mmproj_path)`" ^" }
+            foreach ($pair in $pairs) { $lines += "    $pair ^" }
+            $lines += "    --metrics"
+            $lines -join "`r`n" | Out-File -Encoding ascii $launchPath
+        } else {
+            $launchName = "$base.sh"
+            $launchPath = Join-Path $CALIBR_BATS_DIR $launchName
+            $lines = @(
+                "#!/usr/bin/env bash"
+                "# Auto-generated by calibr on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+                "# Model: $key"
+                "# Bench: prompt=$($w.prompt_tps) t/s, eval=$($w.eval_tps) t/s, VRAM peak=$($w.vram_peak_mib) MiB"
+                "# Test ID: $($w.id)"
+                ""
+                "exec `"$($cfg.llama_server_exe)`" \"
+                "    -m `"$($w.model_path)`" \"
+            )
+            if ($w.mmproj_path) { $lines += "    --mmproj `"$($w.mmproj_path)`" \" }
+            foreach ($pair in $pairs) { $lines += "    $pair \" }
+            $lines += "    --metrics"
+            # LF endings, no BOM (the shebang must be the first bytes), then +x.
+            [System.IO.File]::WriteAllText($launchPath, (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+            try { & chmod +x $launchPath 2>$null } catch { }
+        }
+        Write-Host "  wrote $launchName"
     }
 
     # Build HTML (compact, self-contained)
@@ -1860,7 +2014,7 @@ function Invoke-Report {
         }
     }) | ConvertTo-Json -Depth 5 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {
-        [ordered]@{ model=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + ".bat") }
+        [ordered]@{ model=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + $(if ($script:IsWin) { '.bat' } else { '.sh' })) }
     }) | ConvertTo-Json -Depth 5 -Compress
 
     $now = (Get-Date).ToString("yyyy-MM-dd HH:mm")
@@ -2260,7 +2414,7 @@ function Get-ResetTargets {
         $out += @{ kind = 'logs'; path = $Paths.LogsDir; description = "$count llama-server log file(s)" }
     }
     if ($t.Bats -and (Test-Path $Paths.BatsDir)) {
-        $count = (Get-ChildItem $Paths.BatsDir -Filter '*.bat' -ErrorAction SilentlyContinue).Count
+        $count = (Get-ChildItem $Paths.BatsDir -Filter $(if ($script:IsWin) { '*.bat' } else { '*.sh' }) -ErrorAction SilentlyContinue).Count
         $out += @{ kind = 'bats'; path = $Paths.BatsDir; description = "$count winner launch script(s)" }
     }
     if ($t.Downloads -and (Test-Path $Paths.DownloadsFile)) {
@@ -2343,7 +2497,7 @@ function Invoke-Reset {
                     $glob = switch ($t.kind) {
                         'results'          { '*.json' }
                         'logs'             { '*.log' }
-                        'bats'             { '*.bat' }
+                        'bats'             { if ($script:IsWin) { '*.bat' } else { '*.sh' } }
                         'reports_archive'  { '*.html' }
                     }
                     Get-ChildItem $t.path -Filter $glob -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction Stop
@@ -2379,13 +2533,17 @@ function Invoke-Status {
     Write-Host "  report:  $(if (Test-Path $CALIBR_REPORT) { 'yes' } else { 'no' })"
     Write-Host "Install:"
     $installed = (Test-LlmLabInstalled)
-    Write-Host "  global PATH: $(if ($installed) { 'yes (User scope)' } else { 'no  (run: calibr install)' })"
+    $installScope = if ($script:IsWin) { 'yes (User scope)' } else { "yes ($script:CALIBR_NIX_LAUNCHER)" }
+    Write-Host "  global PATH: $(if ($installed) { $installScope } else { 'no  (run: calibr install)' })"
 }
 
 # ============================================================================
 # SUBCOMMAND: install / uninstall (manage User PATH so `calibr` works globally)
 # ============================================================================
+$script:CALIBR_NIX_LAUNCHER = Join-Path $HOME '.local/bin/calibr'
+
 function Test-LlmLabInstalled {
+    if (-not $script:IsWin) { return (Test-Path $script:CALIBR_NIX_LAUNCHER) }
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     if (-not $userPath) { return $false }
     $entries = $userPath -split ';' | Where-Object { $_ }
@@ -2394,6 +2552,29 @@ function Test-LlmLabInstalled {
 
 function Invoke-Install {
     Write-Host "=== install ===" -ForegroundColor Cyan
+    if (-not $script:IsWin) {
+        # No registry PATH on POSIX: drop a small wrapper into ~/.local/bin
+        # that runs the engine through pwsh. ~/.local/bin is the conventional
+        # user-level bin dir and is on PATH in most modern distros.
+        $binDir   = Split-Path $script:CALIBR_NIX_LAUNCHER -Parent
+        if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
+        $ps1      = Join-Path $CALIBR_ROOT 'calibr.ps1'
+        $wrapper  = @(
+            '#!/usr/bin/env bash'
+            "exec pwsh -NoProfile -File `"$ps1`" `"`$@`""
+        ) -join "`n"
+        [System.IO.File]::WriteAllText($script:CALIBR_NIX_LAUNCHER, $wrapper + "`n", (New-Object System.Text.UTF8Encoding($false)))
+        try { & chmod +x $script:CALIBR_NIX_LAUNCHER 2>$null } catch { }
+        Write-Host "Wrote launcher: $script:CALIBR_NIX_LAUNCHER" -ForegroundColor Green
+        if (($env:PATH -split ':') -notcontains $binDir) {
+            Write-Host "NOTE: '$binDir' is not on your PATH. Add this to your shell profile:" -ForegroundColor Yellow
+            Write-Host "  export PATH=`"`$HOME/.local/bin:`$PATH`""
+        }
+        Write-Host ""
+        Write-Host "You can now run 'calibr <command>' from any directory." -ForegroundColor Cyan
+        Write-Host "Try:  calibr status"
+        return
+    }
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     $entries = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
 
@@ -2418,6 +2599,15 @@ function Invoke-Install {
 
 function Invoke-Uninstall {
     Write-Host "=== uninstall ===" -ForegroundColor Cyan
+    if (-not $script:IsWin) {
+        if (Test-Path $script:CALIBR_NIX_LAUNCHER) {
+            Remove-Item -LiteralPath $script:CALIBR_NIX_LAUNCHER -Force
+            Write-Host "Removed launcher: $script:CALIBR_NIX_LAUNCHER" -ForegroundColor Green
+        } else {
+            Write-Host "Not installed: '$script:CALIBR_NIX_LAUNCHER' does not exist." -ForegroundColor DarkGray
+        }
+        return
+    }
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     $entries = if ($userPath) { @($userPath -split ';' | Where-Object { $_ }) } else { @() }
 
@@ -2601,7 +2791,7 @@ function Invoke-ConfigDetect {
 
     switch ($keyName) {
         "llama_server_exe" {
-            Write-Host "Searching for llama-server.exe..." -ForegroundColor Cyan
+            Write-Host "Searching for llama-server$script:ExeExt..." -ForegroundColor Cyan
             $exes = @(Find-LlamaServerExe)
             if ($exes.Count -eq 0) {
                 Write-Host "  No candidates found. Set manually with: calibr config set llama_server_exe `"<path>`"" -ForegroundColor Yellow
@@ -3051,7 +3241,7 @@ switch ($Command) {
             }
             $cfgUp = Get-Config
             if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
-                throw "llama-server.exe could not be auto-detected. Install llama.cpp (https://github.com/ggml-org/llama.cpp/releases), then run 'calibr init -LlamaServer <path>' once. Future versions will fetch llama.cpp automatically — see open-points.md."
+                throw "llama-server$script:ExeExt could not be auto-detected. Install llama.cpp (https://github.com/ggml-org/llama.cpp/releases), then run 'calibr init -LlamaServer <path>' once. Future versions will fetch llama.cpp automatically — see open-points.md."
             }
             Write-Host ("[all] init done. llama_server_exe = {0}" -f $cfgUp.llama_server_exe) -ForegroundColor Green
         }

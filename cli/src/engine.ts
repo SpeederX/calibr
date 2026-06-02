@@ -44,11 +44,19 @@ const { root: ENGINE_ROOT, bundled: IS_BUNDLED } = findEngineLocation();
 function defaultDataDir(): string {
   if (process.env.CALIBR_DATA_DIR) return process.env.CALIBR_DATA_DIR;
   if (IS_BUNDLED) {
-    const base = process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE;
-    if (!base) {
-      throw new Error("Cannot determine data directory: LOCALAPPDATA, APPDATA, and USERPROFILE are all unset.");
+    if (process.platform === "win32") {
+      const base = process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE;
+      if (!base) {
+        throw new Error("Cannot determine data directory: LOCALAPPDATA, APPDATA, and USERPROFILE are all unset.");
+      }
+      return join(base, "calibr");
     }
-    return join(base, "calibr");
+    // POSIX: XDG Base Directory spec, defaulting to ~/.local/share.
+    const xdg = process.env.XDG_DATA_HOME;
+    const home = process.env.HOME;
+    if (xdg) return join(xdg, "calibr");
+    if (home) return join(home, ".local", "share", "calibr");
+    throw new Error("Cannot determine data directory: XDG_DATA_HOME and HOME are both unset.");
   }
   return join(ENGINE_ROOT, "data");
 }
@@ -319,15 +327,22 @@ function injectNonInteractive(args: string[]): string[] {
  * stdout/stderr are streamed to the caller via the child process.
  */
 export function runEngine(args: string[]): EngineRun {
+  const isWin = process.platform === "win32";
+  // Windows PowerShell needs -ExecutionPolicy Bypass to run an unsigned .ps1;
+  // pwsh on Linux has no execution policy, so we omit it there.
+  const shell = isWin ? "powershell" : "pwsh";
   const psArgs = [
     "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
+    ...(isWin ? ["-ExecutionPolicy", "Bypass"] : []),
     "-File", CALIBR_PS1,
     ...injectNonInteractive(injectConfigArg(args)),
   ];
-  const proc = spawn("powershell", psArgs, {
+  const proc = spawn(shell, psArgs, {
     cwd: ENGINE_ROOT,
     windowsHide: true,
+    // On POSIX, give the engine its own process group so killTree can reap
+    // the whole tree (pwsh + the llama-server it spawns) with kill(-pgid).
+    detached: !isWin,
     env: buildEngineEnv(),
   });
   const done = new Promise<number>((res) => {
@@ -344,7 +359,13 @@ export function runEngine(args: string[]): EngineRun {
  */
 export function openReport(): boolean {
   if (!existsSync(CALIBR_REPORT)) return false;
-  const child = spawn("cmd", ["/c", "start", "", CALIBR_REPORT], {
+  // Platform default-browser opener: cmd start (Windows), open (macOS),
+  // xdg-open (Linux).
+  const [cmd, cmdArgs] =
+    process.platform === "win32" ? ["cmd", ["/c", "start", "", CALIBR_REPORT]]
+    : process.platform === "darwin" ? ["open", [CALIBR_REPORT]]
+    : ["xdg-open", [CALIBR_REPORT]];
+  const child = spawn(cmd as string, cmdArgs as string[], {
     cwd: ENGINE_ROOT,
     windowsHide: true,
     detached: true,
@@ -485,8 +506,8 @@ export function freeBytesOn(path: string): number {
     probe = parent;
   }
   if (!probe || !existsSync(probe)) {
-    // Fall back to the drive root so we at least report something.
-    probe = parsePath(path).root || "C:\\";
+    // Fall back to the filesystem root so we at least report something.
+    probe = parsePath(path).root || (process.platform === "win32" ? "C:\\" : "/");
     if (!existsSync(probe)) return -1;
   }
   try {

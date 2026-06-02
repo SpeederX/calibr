@@ -4,20 +4,27 @@ import Spinner from "ink-spinner";
 import { spawnSync } from "node:child_process";
 import { runEngine } from "./engine.js";
 
-// Kill the whole process tree rooted at pid. On Windows, Node's
-// child.kill() doesn't propagate to grandchildren — we spawn powershell
-// which then spawns llama-server.exe via System.Diagnostics.Process, and
-// llama-server keeps running after powershell dies. taskkill /T /F walks
-// the tree and force-terminates everything.
+// Kill the whole process tree rooted at pid. Node's child.kill() doesn't
+// propagate to grandchildren — the shell (powershell/pwsh) spawns
+// llama-server via System.Diagnostics.Process, and it keeps running after the
+// shell dies. On Windows, taskkill /T /F walks the tree. On POSIX, runEngine
+// spawns the child with detached:true so it leads its own process group;
+// kill(-pid) signals the whole group (shell + llama-server).
 function killTree(pid: number | undefined): void {
   if (!pid || pid <= 0) return;
-  try {
-    spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
-      windowsHide: true,
-      stdio: "ignore",
-      shell: false,
-    });
-  } catch {}
+  if (process.platform === "win32") {
+    try {
+      spawnSync("taskkill", ["/T", "/F", "/PID", String(pid)], {
+        windowsHide: true,
+        stdio: "ignore",
+        shell: false,
+      });
+    } catch {}
+    return;
+  }
+  // POSIX: negative pid targets the process group led by pid.
+  try { process.kill(-pid, "SIGKILL"); }
+  catch { try { process.kill(pid, "SIGKILL"); } catch {} }
 }
 
 interface Props {
