@@ -2224,7 +2224,7 @@ function Invoke-HFDownload {
     Write-Host "  [download] $url" -ForegroundColor Cyan
     Write-Host "             -> $DestPath"
     try {
-        # Use BITS if available (resumable, foreground), else fall back to Invoke-WebRequest
+        # Invoke-WebRequest is cross-platform (Windows PowerShell 5.1 + pwsh).
         $progressPref = $ProgressPreference
         $ProgressPreference = 'SilentlyContinue'  # WebRequest progress is painfully slow in PS 5.1
         Invoke-WebRequest -Uri $url -OutFile $DestPath -ErrorAction Stop -UseBasicParsing

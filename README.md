@@ -6,19 +6,24 @@
 > avoids it.
 
 `calibr` is a benchmark crawler/tester for local GGUF models served by
-[llama.cpp](https://github.com/ggml-org/llama.cpp) on NVIDIA CUDA. **It has no
-opinions about which models you should have.** You decide what sits on disk;
-it catalogs them, sweeps a planned set of configurations, runs each one,
-detects silent WDDM paging on Windows, and emits an HTML dashboard plus
-per-model optimized `.bat` launchers.
+[llama.cpp](https://github.com/ggml-org/llama.cpp). Its sweet spot is NVIDIA
+CUDA on Windows — where it also detects the silent WDDM VRAM-to-RAM paging
+cliff — but it **runs on Linux too**. **It has no opinions about which models
+you should have.** You decide what sits on disk; it catalogs them, sweeps a
+planned set of configurations, runs each one, and emits an HTML dashboard plus
+per-model optimized launchers (`.bat` on Windows, `.sh` on Linux).
 
 ![dashboard screenshot](docs/screenshot.png)
 
-> **Windows-only today.** Detection of silent VRAM-to-RAM paging relies on a
-> Windows-specific perf counter (`\GPU Adapter Memory(*)\Shared Usage`).
-> Linux drivers raise OOM cleanly, so the silent-failure mode this tool
-> primarily targets doesn't exist there. Cross-platform support is a
-> Phase 2/3 question — see [`CLAUDE.md`](CLAUDE.md).
+> **Windows + Linux.** On Windows, calibr detects silent VRAM-to-RAM paging via
+> a Windows-specific perf counter (`\GPU Adapter Memory(*)\Shared Usage`) — the
+> signal it was originally built around. On Linux there is no equivalent
+> counter and the driver OOMs cleanly, so that detection is **skipped**: the
+> engine benches throughput and picks winners on speed + fit. The Linux engine
+> runs under [PowerShell Core (`pwsh`)](https://github.com/PowerShell/PowerShell);
+> GPU VRAM/power metrics come from `nvidia-smi` when present (NVIDIA), otherwise
+> degrade to best-effort temperature from sysfs (e.g. AMD), with RAM/disk read
+> from `/proc`. See [`CLAUDE.md`](CLAUDE.md) for the phased direction.
 
 > **For an LLM (or contributor) reading this**: start with
 > [`CLAUDE.md`](CLAUDE.md) — it documents the current methodology,
@@ -68,9 +73,10 @@ defaults to downloading the curated reference set and rotating files
 off disk per model, so peak disk stays bounded to the largest single
 model (~20 GB).
 
-**Raw PowerShell** (no Node required — useful for headless / CI):
+**Raw engine** (no Node required — useful for headless / CI):
 
 ```powershell
+# Windows (Windows PowerShell 5.1)
 git clone https://github.com/SpeederX/calibr.git    # or your fork
 cd calibr
 .\calibr.ps1 init                # detect HW + write config.json
@@ -78,8 +84,18 @@ cd calibr
 start data\report.html           # open the dashboard
 ```
 
-Winning configurations land in `data/bats/{model}.bat` — double-click
-one and you have llama-server running with the optimized flags.
+```bash
+# Linux (PowerShell Core — install pwsh first: https://github.com/PowerShell/PowerShell)
+git clone https://github.com/SpeederX/calibr.git
+cd calibr
+pwsh ./calibr.ps1 init           # detect HW + write config.json
+pwsh ./calibr.ps1 all            # discover -> plan -> bench -> report
+xdg-open data/report.html        # open the dashboard
+```
+
+Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
+to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
+— either way, llama-server runs with the optimized flags.
 
 Don't have any `.gguf` files yet? Add `-FetchCatalog` and calibr
 walks the curated set one model at a time (download → bench → delete):
@@ -123,24 +139,43 @@ shared repo to crowdsource a "what runs well on what GPU" dataset.
 
 ## Requirements
 
+**Windows (full feature set, incl. WDDM paging detection):**
+
 - **Windows 10/11** with PowerShell 5.1+
 - **NVIDIA GPU + recent driver** (tested on RTX 2070 8 GB, compute 7.5)
 - `nvidia-smi` on PATH (bundled with the NVIDIA driver)
-- A **llama.cpp CUDA build** — get a release from the
+
+**Linux (throughput benchmarking; WDDM detection skipped):**
+
+- **PowerShell Core (`pwsh`)** — [install guide](https://github.com/PowerShell/PowerShell).
+  The engine is the same `calibr.ps1`, run under `pwsh`.
+- A GPU is optional. On **NVIDIA** with `nvidia-smi` on PATH you get VRAM /
+  power / temp / util metrics; on other GPUs (e.g. AMD) those degrade to
+  best-effort GPU temperature from sysfs, and VRAM-budget planning is opt-in
+  (set `hardware.vram_total_mib` yourself). CPU-only works too.
+
+**Both platforms:**
+
+- A **llama.cpp build** — get a release from the
   [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases)
-  and unzip anywhere. (A Vulkan-only build also works on NVIDIA, but is
-  ~10-15% slower; `bench` will print a yellow warning if it spots this
-  mismatch. Older builds may also lack support for newer model architectures
-  — `bench` detects "unknown model architecture" failures and skips the
-  remaining tests of the affected model instead of running them all to fail.)
+  (CUDA recommended on NVIDIA), or build from source. A Vulkan-only build also
+  works on NVIDIA, but is ~10-15% slower; `bench` prints a yellow warning if it
+  spots this mismatch. Older builds may lack newer model architectures —
+  `bench` detects "unknown model architecture" failures and skips the
+  remaining tests of the affected model instead of running them all to fail.
+  *(Note: on older CPUs lacking AVX2/FMA/BMI2, prebuilt binaries may crash with
+  SIGILL — build llama.cpp with `-DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_BMI2=OFF`.)*
 
 ## Setup details
 
 `init` is interactive (or pass `-NonInteractive`) and produces `config.json`
 with absolute paths from your machine. It:
-- queries `nvidia-smi` for `vram_total_mib`, `gpu_name`, compute capability
-- queries WMI for `cpu_cores_physical` / `cpu_threads_logical`
-- searches sibling folders for `llama-server.exe` and `.gguf` directories
+- detects the GPU + VRAM: `nvidia-smi` on Windows/NVIDIA; on Linux without
+  `nvidia-smi` it reads the GPU name from `lspci` and leaves `vram_total_mib`
+  for you to set (no reliable VRAM readout on, e.g., the AMD `radeon` driver)
+- detects CPU cores/threads: WMI on Windows, `/proc/cpuinfo` on Linux
+- searches PATH + sibling folders for the llama-server binary
+  (`llama-server.exe` on Windows, `llama-server` on Linux) and `.gguf` directories
 - writes only the override fields; everything else inherits from `config.default.json`
 
 `config.json` is in `.gitignore`, so personal paths stay off your fork.
@@ -153,14 +188,22 @@ below.
 
 ### Run `calibr` from anywhere
 
-The repo ships with `calibr.cmd`, a thin wrapper around the PowerShell
-script. Run `install` once to put this directory on your user PATH:
+On Windows the repo ships with `calibr.cmd`, a thin wrapper around the
+PowerShell script. Run `install` once to put this directory on your user PATH:
 
 ```powershell
 .\calibr.ps1 install
 ```
 
-That's it. Now from any directory, in either cmd.exe or PowerShell:
+On Linux, `install` instead writes a small executable wrapper to
+`~/.local/bin/calibr` (which runs the engine through `pwsh`); make sure
+`~/.local/bin` is on your PATH:
+
+```bash
+pwsh ./calibr.ps1 install
+```
+
+That's it. Now from any directory:
 
 ```powershell
 calibr help
@@ -454,6 +497,10 @@ Output:
 
 ## WDDM paging detection
 
+> **Windows only.** This entire mechanism is skipped on Linux (no equivalent
+> counter; the driver OOMs cleanly). On Linux, winners are picked on throughput
+> + fit, and the WDDM fields below are simply recorded as zero/false.
+
 On Windows, when VRAM is saturated the NVIDIA driver **does not raise OOM** —
 it pages to "Shared GPU memory" (a slice of system RAM mapped via PCIe). The
 model continues to run, but each token incurs PCIe round-trips, collapsing
@@ -494,11 +541,16 @@ calibr/
 
 ## Known limitations
 
-- **Windows only.** The WDDM shared-memory polling that detects silent
-  paging uses `Get-Counter \GPU Adapter Memory(*)\Shared Usage`, which is
-  a Windows-specific perf counter. The CLI explicitly refuses to start on
-  non-Windows. Cross-platform support is a Phase 2/3 question (see
-  [`CLAUDE.md`](CLAUDE.md)).
+- **WDDM paging detection is Windows-only.** The shared-memory polling that
+  detects silent paging uses `Get-Counter \GPU Adapter Memory(*)\Shared Usage`,
+  a Windows-specific perf counter with no Linux equivalent. calibr now runs on
+  Linux (under `pwsh`), but there it skips WDDM detection and picks winners on
+  throughput + fit. macOS is untested.
+- **GPU metrics are limited on non-NVIDIA Linux.** Without `nvidia-smi`, VRAM /
+  power / utilization aren't read (the AMD `radeon` driver exposes no
+  `mem_info_vram`); only GPU temperature (sysfs `hwmon`) and system RAM/disk
+  (`/proc`) are captured. VRAM-budget tier planning needs a manual
+  `hardware.vram_total_mib`.
 - **MoE detection is a regex on the filename.** `model =~ /A\d+B/` correctly
   matches `Qwen3.6-35B-A3B` and `Mixtral-8x7B`-style names but a model
   innocently named `something-A100B-special.gguf` would be false-flagged as
@@ -552,9 +604,10 @@ CLI → backend → web UI). Concrete near-term ideas being explored:
   invokes today. Enables clients other than the CLI and a shared online
   leaderboard.
 - **Phase 3 — Angular UI** on top of the backend.
-- **Linux / macOS / Android** as additional clients of the Phase 2 API
-  (the engine itself stays Windows until a concrete cross-platform user
-  surfaces; see CLAUDE.md for the rationale).
+- **Linux support has landed** (engine + CLI run under `pwsh`; WDDM detection
+  skipped). Next on the cross-platform front: a native Linux GPU-metrics path
+  (`rocm-smi` / amdgpu sysfs for AMD VRAM), macOS support, and Android as a
+  Phase 2 API client.
 
 ## Contributing
 
@@ -562,9 +615,10 @@ The fastest first contribution is a new entry in `models_catalog.json` for a
 model not yet covered (verify the HuggingFace URL resolves and add the
 correct `max_context`).
 
-The engine is one PowerShell file (`calibr.ps1`, ~2 600 lines) plus a
-test harness in `tests/`. The CLI is a small Node + Ink + TypeScript
-app in `cli/` (~1 200 lines of TS). The HTML report template
+The engine is one cross-platform PowerShell file (`calibr.ps1`, ~3 400 lines;
+runs under Windows PowerShell 5.1 and `pwsh` on Linux) plus a test harness in
+`tests/`. The CLI is a small Node + Ink + TypeScript app in `cli/` (~2 100
+lines of TS). The HTML report template
 (`report.template.html`) is self-contained — vanilla CSS plus ~150 lines
 of inline JS, no build step.
 

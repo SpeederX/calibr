@@ -27,16 +27,20 @@ README.
 
 ## Requirements
 
-- **Windows 10 / 11.** The engine uses Windows-only perf counters
-  (`Get-Counter \GPU Adapter Memory(*)\Shared Usage`) to detect silent
-  WDDM paging. The CLI refuses to start on other platforms.
-- **PowerShell 5.1** (ships with Windows — no install needed).
+- **Windows 10 / 11** or **Linux.** On Windows the engine uses Windows-only
+  perf counters (`Get-Counter \GPU Adapter Memory(*)\Shared Usage`) to detect
+  silent WDDM paging; on Linux that detection is skipped (winners are picked on
+  throughput + fit). macOS is untested.
+- **PowerShell:** Windows PowerShell 5.1 (ships with Windows) on Windows, or
+  [**PowerShell Core (`pwsh`)**](https://github.com/PowerShell/PowerShell) on
+  Linux — the CLI spawns `pwsh` there.
 - **Node.js 18 or newer.**
-- A working **llama.cpp** build with `llama-server.exe`. The first run
-  (`init`) detects it if it is on `PATH`; otherwise you set the path in
-  `config.json`.
+- A working **llama.cpp** build with `llama-server` (`.exe` on Windows). The
+  first run (`init`) detects it if it is on `PATH`; otherwise you set the path
+  in `config.json`.
 - An **NVIDIA GPU** for the headline use case. CPU-only and other backends
-  bench, but the WDDM-paging heuristic is NVIDIA + Windows shaped.
+  bench fine, but the WDDM-paging heuristic is NVIDIA + Windows shaped; on
+  non-NVIDIA Linux, GPU metrics degrade to temperature-only.
 
 ## Quickstart
 
@@ -77,17 +81,18 @@ For sub-tasks (re-bench one model, change run count):
 ## Where things are stored
 
 After `npm install -g calibr`, the engine + defaults sit inside the
-installed package. Your own data goes to:
+installed package. Your own data goes to `%LOCALAPPDATA%\calibr\` on Windows,
+or `$XDG_DATA_HOME/calibr` (default `~/.local/share/calibr`) on Linux:
 
 ```
-%LOCALAPPDATA%\calibr\
+calibr-data/
 ├── config.json          your overrides
 ├── catalog.json         models discovered on disk
 ├── plan.json            test plan expanded from catalog
 ├── downloads.json       which .gguf files calibr downloaded (rotation manifest)
-├── results\*.json       one file per bench config
-├── logs\*.log           full llama-server stderr per config
-├── bats\*.bat           per-config launch scripts
+├── results/*.json       one file per bench config
+├── logs/*.log           full llama-server stderr per config
+├── bats/*.bat           per-config launch scripts (*.sh on Linux)
 └── report.html          aggregated dashboard
 ```
 
@@ -128,8 +133,10 @@ The menu exposes the engine verbs verbatim. Brief summary:
 
 ## Known limitations
 
-- **Windows only.** See Requirements. Cross-platform support is on the
-  roadmap when the PowerShell engine is rewritten in TypeScript.
+- **WDDM paging detection is Windows-only.** calibr runs on Linux too (the
+  CLI spawns `pwsh`), but there the silent-paging detection is skipped and
+  winners are chosen on throughput + fit. On non-NVIDIA Linux, GPU VRAM/power
+  metrics aren't available (temperature-only). macOS is untested.
 - **`discover` pairs mmproj by directory.** If two model variants live
   in the same folder and physically share one `mmproj-*.gguf` file but
   the projector is only valid for one of them (different vision
