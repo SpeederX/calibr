@@ -125,24 +125,18 @@ Describe "Invoke-Report end-to-end on canned data" {
         }
     } | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $tmpCfg
 
-    # Run via subprocess. We need the script to use $tmpData as its data dir,
-    # which is anchored to $LAB_ROOT. Since $LAB_ROOT == script dir, we have
-    # to point the data dir override another way — but calibr doesn't expose
-    # one. Workaround: run from the temp dir as cwd; LAB_ROOT is still the
-    # script dir, so data/ lands there. Instead, we copy fixture into the
-    # real data/ temporarily under a unique id and clean up after.
-    $realData    = Join-Path $labRoot "data"
-    $realResults = Join-Path $realData "results"
-    $resName     = "T_canned_$([Guid]::NewGuid().ToString('N')).json"
-    $resPath     = Join-Path $realResults $resName
-    $cannedResult.id = "T_" + ([guid]::NewGuid().ToString("N").Substring(0,12))
-    $cannedResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $resPath
-
+    # Isolate the engine's writes from the user's real data/ by setting
+    # CALIBR_DATA_DIR in the child env. Without this, a test failure (or
+    # the simple fact that the engine writes report.html in this dir)
+    # leaks the canned fixture into the user's report. The $env:* assign
+    # only affects child processes spawned after this point — the parent
+    # PowerShell's data dir is untouched.
+    $env:CALIBR_DATA_DIR = $tmpData
     try {
         $labScript = Join-Path $labRoot "calibr.ps1"
         $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $labScript -Config $tmpCfg report 2>&1 | Out-String
 
-        $reportPath = Join-Path $realData "report.html"
+        $reportPath = Join-Path $tmpData "report.html"
         $html = Get-Content $reportPath -Raw
 
         It "writes report.html" {
@@ -183,9 +177,9 @@ Describe "Invoke-Report end-to-end on canned data" {
             Assert-True ($html -match 'function computeWinners')    "computeWinners function stripped"
         }
     } finally {
-        # Clean up the canned result so it doesn't pollute the user's actual
-        # data set. Don't touch any of the user's real result files.
-        if (Test-Path $resPath) { Remove-Item $resPath -Force -ErrorAction SilentlyContinue }
+        # Drop the env override and wipe the whole temp tree. With the
+        # CALIBR_DATA_DIR isolation no real-data cleanup is needed.
+        Remove-Item Env:\CALIBR_DATA_DIR -ErrorAction SilentlyContinue
         if (Test-Path $tmpRoot) { Remove-Item $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
