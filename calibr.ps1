@@ -1365,7 +1365,19 @@ function Invoke-OneBenchRun {
                 $run.prompt_n   = $resp.timings.prompt_n
                 $run.prompt_tps = [math]::Round($resp.timings.prompt_per_second, 2)
                 $run.eval_n     = $resp.timings.predicted_n
-                $run.eval_tps   = [math]::Round($resp.timings.predicted_per_second, 2)
+                # eval_tps guard: when the model emits ~1 token (e.g. it hits
+                # EOS immediately on a bare prompt), predicted_ms rounds to 0
+                # and llama.cpp returns predicted_per_second = 1000000 — a
+                # sentinel, not a real speed. Recording it blows out the report
+                # (bar-chart scale, winner pick). Treat <2 tokens or zero time
+                # as unmeasured (null) instead.
+                $predN  = [int]$resp.timings.predicted_n
+                $predMs = if ($null -ne $resp.timings.predicted_ms) { [double]$resp.timings.predicted_ms } else { 0 }
+                if ($predN -ge 2 -and $predMs -gt 0) {
+                    $run.eval_tps = [math]::Round($resp.timings.predicted_per_second, 2)
+                } else {
+                    $run.eval_tps = $null   # unmeasured: too few tokens to time
+                }
                 # Time-to-first-token: llama.cpp reports prompt_ms (total
                 # time spent processing the input prompt). The first
                 # generated token comes out immediately after, so prompt_ms
