@@ -187,6 +187,75 @@ cap. Today they fall through to the global `max_context_cap`.
 
 ---
 
+## Cross-platform (post-Linux)
+
+The Linux port (engine + CLI under `pwsh`, WDDM detection skipped) has
+landed on `feat/linux-port`. Follow-ups, lowest-commitment first:
+
+### Platform detection as a fallback chain
+*Estimate: 0.5d (refactor, no new behavior on Win/Linux).*
+
+The current platform branches are `if ($IsWin) {...} else { <linux> }`,
+so the non-Windows path hardcodes Linux specifics (`/proc`, `/sys`,
+`lspci`). Refactor each probe into an ordered chain of providers, trying
+each until one answers, so adding an OS = adding one link instead of a
+new `if`:
+
+```
+cpu_cores  : WMI (Win) -> /proc/cpuinfo (Linux) -> sysctl hw.physicalcpu (mac) -> nproc -> null
+ram_avail  : Win32_OS  -> /proc/meminfo        -> vm_stat (mac)               -> null
+gpu_name   : nvidia-smi -> lspci (Linux)        -> system_profiler (mac)       -> null
+gpu_temp   : nvidia-smi -> sysfs hwmon (Linux)  -> (mac: none)                 -> 0
+vram_total : nvidia-smi -> (manual)             -> (mac: unified memory)       -> manual
+```
+
+This is the clean substrate the items below build on.
+
+### Experimental macOS support
+*Estimate: 0.5-1d. Cannot be verified in-house (no macOS machine owned).*
+
+Extend compatibility with **experimental** support for macOS. The CLI
+already allows `darwin` and spawns `pwsh`; the engine runs but the
+non-Windows probes are Linux-shaped, so on macOS CPU/RAM/disk/GPU
+detection are silent no-ops (bench still works, threads fall back to
+the llama.cpp default). Concretely:
+
+- Add the macOS links to the detection chain above (`sysctl`,
+  `system_profiler`, `vm_stat`).
+- Metal: on Apple Silicon `--gpu-layers` actually offloads (unlike a
+  CPU-only build where it is ignored); memory is **unified**, so there
+  is no separate VRAM pool and no WDDM-style paging. No per-device VRAM
+  readout — `hardware.vram_total_mib` must be set manually for tier
+  planning, and memory metrics report 0.
+- Backend detection already matches `*ggml-*.dylib` -> flags `metal`.
+- **Must be tested by a real user on a macOS machine (which I do not
+  own).** This is exactly what the user-diagnostics layer below is for.
+
+### Automated cross-platform testing without owning the hardware
+*Estimate: 0.5d.*
+
+- **GitHub Actions `macos-latest`** runs on real Apple hardware and is
+  free for public repos — add a job that smoke-tests the macOS detection
+  path + a tiny CPU bench. Headless Metal/GPU access is uncertain, but it
+  at least guards against regressions in the platform code. (Today CI
+  only runs `windows-latest`.)
+- **Cloud Macs** (AWS EC2 Mac, MacStadium) if dedicated hardware is ever
+  needed. Emulation is not viable: Metal needs a real Apple GPU (no VM on
+  non-Apple hardware provides it), and running macOS off Apple hardware is
+  against its license — so the only meaningful macOS test is on real
+  Apple silicon (CI or a real user's machine).
+
+### User-diagnostics + structured feedback layer
+*Estimate: 1-2d. Design sketch — see the design notes below / chat.*
+
+A `doctor`/preflight "check layer" plus a redacted diagnostic bundle and
+GitHub issue intake, so failures on machines we don't own come back as
+structured, parseable data instead of vague bug reports. Graduates to an
+opt-in phone-home once the Phase-2 backend exists. (Captured separately
+once the design is settled.)
+
+---
+
 ## Roadmap (CLAUDE.md phases 2/3)
 
 - **Phase 2 — NestJS backend** that exposes the engine operations the
