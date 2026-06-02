@@ -140,6 +140,26 @@ wants to know "how long did Qwen3.5-9B take vs Gemma 4 E4B".
 
 ## Bigger / design-needed (the user explicitly deferred these earlier)
 
+### CPU + RAM load as first-class bench metrics (capacity = VRAM + RAM)
+*Estimate: ~0.5d. Flagged important by the maintainer.*
+
+Today the bench tracks GPU (vram / util / temp / power) and system RAM *used*
+(`ram_baseline_mib`, `ram_used_peak_mib`) but **not CPU utilization**, and the
+report frames memory as **VRAM vs safety-budget only**. For CPU inference, and
+especially **MoE / Tier B** (`--n-cpu-moe` offloads experts to CPU+RAM), the
+CPU+RAM side *is* the benchmark — it's how MoE models partially offload off the
+GPU. Add:
+
+- **CPU utilization %** during the run, aggregated like `gpu_util_avg_pct`
+  (Linux: `/proc/stat` jiffies delta; Windows: WMI / perf counter; macOS:
+  `host_processor_info` / `top`).
+- **Capacity = VRAM + spill (WDDM/GTT) + RAM**, not just VRAM. A model "fits"
+  across GPU VRAM, GPU spill, and CPU RAM together; the report's memory view
+  should show that whole picture so MoE partial CPU offload is visible (how
+  much landed in RAM/CPU vs GPU), not just "VRAM vs budget".
+- Makes the bench meaningful on CPU-only / APU machines and explains MoE
+  offload behavior. Builds on the radeontop/GTT + /proc work already landed.
+
 ### KV-fill stub
 *Estimate: 0.5-1d.*
 
