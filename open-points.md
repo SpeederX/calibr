@@ -1,8 +1,8 @@
 # calibr — open points
 
-Operational TODO captured at the end of the v0.1.x feature-push session.
-Nothing here is blocking; the CLI on `feat/v1.1-quick-wins` is shippable
-as-is. This file is the queue for what we picked up next.
+Operational TODO. Nothing here is blocking. The v0.1.x feature work and the
+cross-platform Linux port are done and live on `dev` / `feat/linux-port`
+(see the Cross-platform section); this file is the queue for what's next.
 
 Items are grouped by *kind of work*, not strict priority. Within each
 group the rough order is "smaller / more isolated first".
@@ -266,7 +266,10 @@ the llama.cpp default). Concretely:
   Apple silicon (CI or a real user's machine).
 
 ### User-diagnostics + structured feedback layer
-*Estimate: 1-2d. Design sketch — see the design notes below / chat.*
+*Estimate: 1-2d. Design discussed in chat: `doctor`/preflight -> redacted,
+versioned diagnostic bundle -> GitHub issue-form intake -> opt-in phone-home
+(Phase 2). The `doctor` "does llama-server --version run?" check would
+auto-diagnose the kind of silent SIGILL this dev box hit (AVX2/BMI2).*
 
 A `doctor`/preflight "check layer" plus a redacted diagnostic bundle and
 GitHub issue intake, so failures on machines we don't own come back as
@@ -282,8 +285,10 @@ once the design is settled.)
   CLI invokes today. Enables clients other than the CLI and a shared
   online leaderboard.
 - **Phase 3 — Angular UI** on top of the backend.
-- **Cross-platform** clients (Linux / macOS / Android via Termux+TS,
-  or thin agents that speak the Phase-2 API).
+- **Cross-platform**: Linux is **done** — engine + CLI run natively under
+  `pwsh` (see the Cross-platform section above), not as a Phase-2 client.
+  Remaining: macOS (experimental, untested) and Android (Termux+TS or a
+  thin Phase-2 API client).
 - **Trusted-publisher npm OIDC** so `NPM_TOKEN` is no longer needed in
   GitHub Actions.
 
@@ -291,10 +296,11 @@ once the design is settled.)
 
 ## Pointers for whoever picks this up
 
-- Current shippable state: `master` is tagged at v0.1.2 on npm.
-  `feat/v1.1-quick-wins` is +N commits with everything above (renames,
-  presets, custom view, +18 models, minimal-polling, label cleanup,
-  report archival, init-in-all auto-fix).
+- Current state: `master` is tagged v0.1.2 on npm; `dev` is the integration
+  branch (the v0.1.x feature work — renames, presets, custom view, +18 models,
+  minimal-polling, report archival, init-in-all — is already merged there).
+  `feat/linux-port` (off `dev`, 6 commits) adds the cross-platform port and is
+  ready to fast-forward back into `dev`.
 - All engine helpers extracted as testable pure functions live in
   `calibr.ps1` (look for `Get-`, `Test-`, `Select-`, `New-`, `Find-`
   prefixes). 139 PowerShell tests in `tests/Helpers.Tests.ps1`.
