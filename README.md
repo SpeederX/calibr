@@ -15,16 +15,16 @@ per-model optimized launchers (`.bat` on Windows, `.sh` on Linux).
 
 ![dashboard screenshot](docs/screenshot.png)
 
-> **Windows + Linux.** On Windows, calibr detects silent VRAM-to-RAM paging via
-> a Windows-specific perf counter (`\GPU Adapter Memory(*)\Shared Usage`) — the
-> signal it was originally built around. On Linux there is no equivalent
-> counter and the driver OOMs cleanly, so that detection is **skipped**: the
-> engine benches throughput and picks winners on speed + fit. The Linux engine
-> runs under [PowerShell Core (`pwsh`)](https://github.com/PowerShell/PowerShell);
-> GPU metrics come from `nvidia-smi` when present (NVIDIA); on AMD they come from
-> `radeontop` (live VRAM-used + GPU util) and `glxinfo`/mesa-utils (VRAM total)
-> if installed, otherwise just temperature from sysfs. RAM/disk come from
-> `/proc`. See [`CLAUDE.md`](CLAUDE.md) for the phased direction.
+> **Windows + Linux.** The silent VRAM→system-RAM spill calibr targets is read
+> from a Windows-specific perf counter (`\GPU Adapter Memory(*)\Shared Usage`)
+> on Windows, and from **GTT** (via `radeontop`) on AMD/Linux — the same
+> downstream spill-detection either way. NVIDIA-on-Linux OOMs cleanly, so there
+> is no silent spill to detect there. The Linux engine runs under
+> [PowerShell Core (`pwsh`)](https://github.com/PowerShell/PowerShell). GPU
+> metrics: `nvidia-smi` (NVIDIA); on AMD, `radeontop` (live VRAM-used + util +
+> GTT) and `glxinfo`/mesa-utils (VRAM total) when installed, else sysfs
+> temperature only. RAM/disk come from `/proc`. See [`CLAUDE.md`](CLAUDE.md) for
+> the phased direction.
 
 > **For an LLM (or contributor) reading this**: start with
 > [`CLAUDE.md`](CLAUDE.md) — it documents the current methodology,
@@ -501,9 +501,11 @@ Output:
 
 ## WDDM paging detection
 
-> **Windows only.** This entire mechanism is skipped on Linux (no equivalent
-> counter; the driver OOMs cleanly). On Linux, winners are picked on throughput
-> + fit, and the WDDM fields below are simply recorded as zero/false.
+> **Cross-platform note.** The perf counter below is Windows-only, but the
+> underlying signal — VRAM spilling into system RAM — is also detected on
+> **AMD/Linux** via GTT (`radeontop`), feeding the same `shared_peak_mib` and
+> winner logic. NVIDIA-on-Linux OOMs cleanly (no silent spill); without
+> `radeontop` the fields read zero and winners go by throughput + fit.
 
 On Windows, when VRAM is saturated the NVIDIA driver **does not raise OOM** —
 it pages to "Shared GPU memory" (a slice of system RAM mapped via PCIe). The
@@ -545,11 +547,12 @@ calibr/
 
 ## Known limitations
 
-- **WDDM paging detection is Windows-only.** The shared-memory polling that
-  detects silent paging uses `Get-Counter \GPU Adapter Memory(*)\Shared Usage`,
-  a Windows-specific perf counter with no Linux equivalent. calibr now runs on
-  Linux (under `pwsh`), but there it skips WDDM detection and picks winners on
-  throughput + fit. macOS is untested.
+- **The WDDM perf counter is Windows-only; AMD/Linux uses GTT instead.** The
+  `Get-Counter \GPU Adapter Memory(*)\Shared Usage` counter exists only on
+  Windows, but calibr detects the same VRAM→system-RAM spill on AMD/Linux via
+  GTT (`radeontop`), feeding the same `shared_peak_mib`. NVIDIA-on-Linux OOMs
+  cleanly (no silent spill). Without `radeontop`, spill detection is off and
+  winners go by throughput + fit. macOS is untested.
 - **GPU power is unavailable on AMD Linux, and metrics need extra tools.**
   The `radeon`/`amdgpu` drivers don't expose `mem_info_vram` to calibr, so VRAM
   comes from `radeontop` (live used + util) and `glxinfo`/mesa-utils (total)

@@ -189,8 +189,11 @@ cap. Today they fall through to the global `max_context_cap`.
 
 ## Cross-platform (post-Linux)
 
-The Linux port (engine + CLI under `pwsh`, WDDM detection skipped) has
-landed on `feat/linux-port`. Follow-ups, lowest-commitment first:
+The Linux port has landed on `feat/linux-port`: engine + CLI under `pwsh`;
+AMD GPU metrics via radeontop (live VRAM/util) + glxinfo (VRAM total) +
+amdgpu-hwmon power; and GTT-as-`shared_peak_mib` so the VRAM→system-RAM
+spill detection (the Windows WDDM equivalent) works on AMD/Linux too.
+Follow-ups, lowest-commitment first:
 
 ### Platform detection as a fallback chain
 *Estimate: 0.5d (refactor, no new behavior on Win/Linux).*
@@ -202,14 +205,31 @@ each until one answers, so adding an OS = adding one link instead of a
 new `if`:
 
 ```
-cpu_cores  : WMI (Win) -> /proc/cpuinfo (Linux) -> sysctl hw.physicalcpu (mac) -> nproc -> null
-ram_avail  : Win32_OS  -> /proc/meminfo        -> vm_stat (mac)               -> null
-gpu_name   : nvidia-smi -> lspci (Linux)        -> system_profiler (mac)       -> null
-gpu_temp   : nvidia-smi -> sysfs hwmon (Linux)  -> (mac: none)                 -> 0
-vram_total : nvidia-smi -> (manual)             -> (mac: unified memory)       -> manual
+cpu_cores  : WMI (Win) -> /proc/cpuinfo [done] -> sysctl (mac) -> nproc -> null
+ram_avail  : Win32_OS  -> /proc/meminfo [done] -> vm_stat (mac) -> null
+gpu_name   : nvidia-smi -> lspci [done] -> amd-smi -> system_profiler (mac) -> null
+vram_total : nvidia-smi -> glxinfo/radeontop [done] -> amd-smi -> (mac: unified) -> manual
+vram_used  : nvidia-smi -> radeontop [done] -> amd-smi -> 0
+gpu_util   : nvidia-smi -> radeontop [done] -> amd-smi -> 0
+gpu_temp   : nvidia-smi -> sysfs hwmon [done] -> amd-smi -> 0
+gpu_power  : nvidia-smi -> amdgpu hwmon power1_average [done] -> amd-smi -> 0 (radeon/APU: none)
+spill      : WDDM counter (Win) -> GTT via radeontop [done] -> (NVIDIA/Linux: clean OOM) -> 0
 ```
 
-This is the clean substrate the items below build on.
+Linux/AMD links are already in place (the `[done]` rows); the refactor is
+to turn the current `if ($IsWin) {...} else {...}` blocks into an explicit
+ordered chain so the remaining links (amd-smi, macOS) drop in cleanly.
+
+### AMD dedicated GPUs via amd-smi
+*Cannot be verified in-house (no ROCm-class AMD card owned).*
+
+`amd-smi` (successor to `rocm-smi`) is the AMD analog of `nvidia-smi` for
+dedicated amdgpu/ROCm cards — VRAM / power / util / temp in one tool. It does
+NOT support old APUs (this dev box falls back to radeontop). Add it as the
+preferred AMD link in the metrics chain above (before radeontop), parsing
+`amd-smi metric --json`. Must be verified by a user with a dedicated AMD GPU.
+(`btop` also shows AMD GPU stats but is a mixed system monitor, not a
+machine-readable per-GPU source — not suitable as a probe.)
 
 ### Experimental macOS support
 *Estimate: 0.5-1d. Cannot be verified in-house (no macOS machine owned).*

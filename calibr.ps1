@@ -195,6 +195,27 @@ function Get-LinuxGpuTempC {
     return 0
 }
 
+$script:_linuxHwmonPower = $null   # cached path to GPU power sensor ('' = none)
+function Get-LinuxGpuPowerW {
+    # GPU power draw (W) from the card's own hwmon. amdgpu (discrete / newer
+    # cards) exposes power1_average in microwatts; the old radeon driver on
+    # APUs exposes no GPU-isolated power, so this returns 0 there. (APU package
+    # power — CPU+iGPU combined — lives under the separate fam15h_power hwmon and
+    # is intentionally NOT used here, since it isn't GPU-isolated.)
+    try {
+        if ($null -eq $script:_linuxHwmonPower) {
+            $f = Get-ChildItem /sys/class/drm/card*/device/hwmon/hwmon*/power1_average -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $f) { $f = Get-ChildItem /sys/class/drm/card*/device/hwmon/hwmon*/power1_input -ErrorAction SilentlyContinue | Select-Object -First 1 }
+            $script:_linuxHwmonPower = if ($f) { $f.FullName } else { '' }
+        }
+        if ($script:_linuxHwmonPower) {
+            $uw = [double]((Get-Content $script:_linuxHwmonPower -ErrorAction SilentlyContinue | Select-Object -First 1))
+            return [math]::Round($uw / 1000000, 1)   # microwatts -> W
+        }
+    } catch { }
+    return 0.0
+}
+
 function Get-LinuxGpuVramTotalMib {
     # VRAM total (MiB) on Linux without nvidia-smi. Detected once (init), so the
     # ~1s radeontop cost is paid at most once. Order:
@@ -229,7 +250,7 @@ function Start-LinuxGpuMonitor {
         $script:_rtFile = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-rt-" + ([guid]::NewGuid().ToString('N')) + ".txt")
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName  = 'radeontop'
-        $psi.Arguments = "-d `"$($script:_rtFile)`" -i 1"
+        $psi.Arguments = "-d `"$($script:_rtFile)`" -i 0.5"   # sample every 0.5s, matching the poll loop
         $psi.RedirectStandardOutput = $true   # swallow the "Dumping to ..." banner
         $psi.RedirectStandardError  = $true
         $psi.UseShellExecute = $false
@@ -238,6 +259,14 @@ function Start-LinuxGpuMonitor {
         # Drain pipes async so they never fill and block radeontop.
         $script:_rtProc.StandardOutput.ReadToEndAsync() | Out-Null
         $script:_rtProc.StandardError.ReadToEndAsync()  | Out-Null
+        # Wait briefly for the first sample so baseline reads (VRAM/GTT) are
+        # real, not 0. radeontop's first line lands ~1s after start.
+        $deadline = (Get-Date).AddSeconds(2.5)
+        while ((Get-Date) -lt $deadline) {
+            if ((Test-Path $script:_rtFile) -and
+                ((Get-Content -LiteralPath $script:_rtFile -Tail 1 -ErrorAction SilentlyContinue) -match '\bvram\b')) { break }
+            Start-Sleep -Milliseconds 100
+        }
     } catch { $script:_rtFile = $null; $script:_rtProc = $null }
 }
 
@@ -254,8 +283,9 @@ function Stop-LinuxGpuMonitor {
 
 function Get-GpuSnapshotLinux {
     # No nvidia-smi: read live VRAM-used + GPU utilization from the radeontop
-    # stream (Start-LinuxGpuMonitor), temperature from sysfs. Power isn't exposed
-    # on the radeon driver. Everything degrades to 0 when radeontop is absent.
+    # stream (Start-LinuxGpuMonitor), temperature + power from sysfs hwmon.
+    # Everything degrades to 0 when the source is absent (e.g. no radeontop, or
+    # the radeon driver exposes no GPU power sensor).
     $mem = 0; $util = 0
     if ($script:_rtFile -and (Test-Path $script:_rtFile)) {
         try {
@@ -268,7 +298,7 @@ function Get-GpuSnapshotLinux {
             }
         } catch { }
     }
-    return @{ mem_mib = $mem; power_w = 0.0; temp_c = (Get-LinuxGpuTempC); util_pct = $util }
+    return @{ mem_mib = $mem; power_w = (Get-LinuxGpuPowerW); temp_c = (Get-LinuxGpuTempC); util_pct = $util }
 }
 
 # ============================================================================
@@ -940,18 +970,33 @@ function Invoke-Plan {
 # WDDM SHARED-GPU MEMORY POLLER (Windows only)
 # ============================================================================
 function Get-SharedGPUMemoryMib {
-    # WDDM shared-GPU-memory paging is a Windows-only concept (Direct3D memory
-    # manager). On Linux/macOS there is no equivalent counter, so report
-    # "unavailable" — every caller treats -1 as "skip", which disables WDDM
-    # detection on those platforms.
-    if (-not $script:IsWin) { return -1 }
-    try {
-        $c = Get-Counter "\GPU Adapter Memory(*)\Shared Usage" -ErrorAction SilentlyContinue -MaxSamples 1
-        if ($c) {
-            $total = ($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
-            return [int]($total / 1MB)
-        }
-    } catch { }
+    # The amount of GPU memory that has spilled into system RAM when the
+    # dedicated VRAM pool saturates — the exact failure calibr exists to catch.
+    # Windows exposes it as the WDDM "Shared Usage" perf counter; on Linux/AMD
+    # the equivalent is GTT (memory the GPU maps from system RAM), read from the
+    # radeontop stream. Either way the downstream machinery is identical:
+    # baseline-subtracted peak delta vs shared_delta_confirm_mib. Returns MiB,
+    # or -1 when no source is available (caller treats -1 as "skip").
+    if ($script:IsWin) {
+        try {
+            $c = Get-Counter "\GPU Adapter Memory(*)\Shared Usage" -ErrorAction SilentlyContinue -MaxSamples 1
+            if ($c) {
+                $total = ($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
+                return [int]($total / 1MB)
+            }
+        } catch { }
+        return -1
+    }
+    # Linux/AMD: GTT used (MiB) from the radeontop stream (Start-LinuxGpuMonitor).
+    if ($script:_rtFile -and (Test-Path $script:_rtFile)) {
+        try {
+            $line = Get-Content -LiteralPath $script:_rtFile -Tail 4 -ErrorAction SilentlyContinue |
+                    Select-String -Pattern '\bgtt\b' | Select-Object -Last 1
+            if ($line -and $line.Line -match 'gtt\s+[\d.]+%\s+([\d.]+)mb') {
+                return [int][double]$Matches[1]
+            }
+        } catch { }
+    }
     return -1  # unavailable
 }
 
