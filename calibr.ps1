@@ -999,6 +999,10 @@ function Invoke-OneBenchRun {
     $outTask = $p.StandardOutput.ReadToEndAsync()
     $errTask = $p.StandardError.ReadToEndAsync()
 
+    # Phase marker: CLI uses these to drive the per-run flow widget. Grep-
+    # stable single-word state name. See RunView's PHASE_RE / RUN_PHASES.
+    Write-Host "[phase] loading_model"
+
     $deadline = (Get-Date).AddSeconds([int]$cfg.bench.wait_sec_ready)
     $ready = $false
     $peakVram = $vramBefore
@@ -1062,6 +1066,8 @@ function Invoke-OneBenchRun {
     $wc.Dispose()
     $loadSec = [math]::Round(((Get-Date) - $loadStart).TotalSeconds, 2)
 
+    if ($ready) { Write-Host "[phase] server_ready" }
+
     $run = [ordered]@{
         run_index       = $runIndex
         timestamp       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
@@ -1092,6 +1098,7 @@ function Invoke-OneBenchRun {
         }
 
         $body = @{ prompt=$prompt; n_predict=$nPred; temperature=0.0; cache_prompt=$false; stream=$false } | ConvertTo-Json -Compress
+        Write-Host "[phase] sending_prompt"
         try {
             $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/completion" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
             $run.ok = $true
@@ -1173,6 +1180,7 @@ function Invoke-OneBenchRun {
     $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
     $run.wddm_flag_shared_pos = ($run.shared_peak_mib -gt $confirmThresh)
 
+    Write-Host "[phase] run_complete"
     return $run
 }
 
@@ -2075,7 +2083,11 @@ function Get-DownloadDestination {
 }
 
 function Invoke-HFDownload {
-    # Downloads a single file from HuggingFace via Invoke-WebRequest.
+    # Downloads a single file from HuggingFace using HttpWebRequest with a
+    # manual byte-counting loop, so we can emit `[dlprog]` progress markers
+    # the CLI parses for the live download bar. Invoke-WebRequest is fully
+    # synchronous in PS 5.1 with no usable per-byte progress signal (the
+    # built-in progress UI is unusably slow), hence the lower-level path.
     # Returns $true on success/skip, $false on failure.
     param(
         [string]$Repo,
@@ -2102,23 +2114,85 @@ function Invoke-HFDownload {
 
     Write-Host "  [download] $url" -ForegroundColor Cyan
     Write-Host "             -> $DestPath"
-    try {
-        # Use BITS if available (resumable, foreground), else fall back to Invoke-WebRequest
-        $progressPref = $ProgressPreference
-        $ProgressPreference = 'SilentlyContinue'  # WebRequest progress is painfully slow in PS 5.1
-        Invoke-WebRequest -Uri $url -OutFile $DestPath -ErrorAction Stop -UseBasicParsing
-        $ProgressPreference = $progressPref
+    # Phase marker so the CLI switches the per-config flow widget to the
+    # download bar. Match in RunView.tsx PHASE_RE.
+    Write-Host "[phase] downloading"
 
-        $got = (Get-Item $DestPath).Length
-        Write-Host ("  [done]  {0}" -f (Format-HumanSize $got)) -ForegroundColor Green
+    $req = $null
+    $resp = $null
+    $rspStream = $null
+    $fileStream = $null
+    try {
+        # HF requires TLS 1.2+. PS 5.1's default SecurityProtocol is Ssl3+Tls.
+        # Without this the HttpWebRequest throws on the TLS handshake.
+        [System.Net.ServicePointManager]::SecurityProtocol = `
+            [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+
+        $req = [System.Net.HttpWebRequest]::Create($url)
+        $req.UserAgent = "calibr/0.1 (+https://github.com/SpeederX/calibr)"
+        $req.AllowAutoRedirect = $true   # HF redirects to the CDN
+        $req.Timeout = 30000             # 30 s for connection / TLS handshake
+        $req.ReadWriteTimeout = 60000    # 60 s for any single read
+
+        $resp = $req.GetResponse()
+        $total = [long]$resp.ContentLength
+        if ($total -le 0 -and $ExpectedBytes -gt 0) { $total = $ExpectedBytes }
+
+        $rspStream = $resp.GetResponseStream()
+        $fileStream = [System.IO.File]::Create($DestPath)
+
+        $bufferSize = 65536
+        $buffer = New-Object byte[] $bufferSize
+        $totalBytes = 0L
+        $start = [System.Diagnostics.Stopwatch]::StartNew()
+        $lastEmitMs = 0L
+        $lastEmitBytes = 0L
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+
+        while (($read = $rspStream.Read($buffer, 0, $bufferSize)) -gt 0) {
+            $fileStream.Write($buffer, 0, $read)
+            $totalBytes += $read
+
+            $nowMs = $start.ElapsedMilliseconds
+            if (($nowMs - $lastEmitMs) -ge 200) {
+                $deltaMs = $nowMs - $lastEmitMs
+                $deltaBytes = $totalBytes - $lastEmitBytes
+                # Instant MiB/s. InvariantCulture so '.' is the decimal point
+                # even on Italian Windows (Number("23,4") in JS is NaN).
+                $speed = if ($deltaMs -gt 0) { ($deltaBytes / 1048576.0) * 1000.0 / $deltaMs } else { 0.0 }
+                $speedStr = $speed.ToString("F2", $inv)
+                Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $total, $speedStr, $nowMs)
+                $lastEmitMs = $nowMs
+                $lastEmitBytes = $totalBytes
+            }
+        }
+        $fileStream.Close(); $fileStream = $null
+        $rspStream.Close(); $rspStream = $null
+        $resp.Close(); $resp = $null
+
+        # Final emit so the CLI lands on exactly 100% rather than the last
+        # interior tick. elapsed_ms is meaningful for the "avg speed" line.
+        $avgSpeed = if ($start.ElapsedMilliseconds -gt 0) {
+            ($totalBytes / 1048576.0) * 1000.0 / $start.ElapsedMilliseconds
+        } else { 0.0 }
+        $avgStr = $avgSpeed.ToString("F2", $inv)
+        Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $totalBytes, $avgStr, $start.ElapsedMilliseconds)
+        Write-Host ("[dldone] bytes={0} elapsed_ms={1} avg_mibps={2}" -f $totalBytes, $start.ElapsedMilliseconds, $avgStr)
+
+        Write-Host ("  [done]  {0} in {1}s ({2} MiB/s avg)" -f (Format-HumanSize $totalBytes), [math]::Round($start.ElapsedMilliseconds / 1000.0, 1), $avgStr) -ForegroundColor Green
         return $true
     } catch {
         Write-Host ("  [FAIL]  {0}" -f $_.Exception.Message) -ForegroundColor Red
-        # Clean up partial file if completely empty
+        # Best-effort cleanup of a partial file that the caller can't recover.
+        if ($fileStream) { try { $fileStream.Close() } catch {} }
         if ((Test-Path $DestPath) -and (Get-Item $DestPath).Length -eq 0) {
             Remove-Item $DestPath -Force -ErrorAction SilentlyContinue
         }
         return $false
+    } finally {
+        if ($fileStream) { try { $fileStream.Dispose() } catch {} }
+        if ($rspStream)  { try { $rspStream.Dispose() }  catch {} }
+        if ($resp)       { try { $resp.Close() }         catch {} }
     }
 }
 
