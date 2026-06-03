@@ -154,6 +154,36 @@ at the end of each iteration would let RunView show per-sample timing
 in the live strip — useful when the loop is multi-hour and the user
 wants to know "how long did Qwen3.5-9B take vs Gemma 4 E4B".
 
+### Bench summary line rewrite (cosmetic)
+*Estimate: 15 min.*
+
+Today the final summary the engine emits at the end of Invoke-Bench is:
+
+```
+===============================================================
+ calibr bench - done in 1m57s
+   2 ok . 0 fail . 0 skipped (out of 2 configs (3 runs each))
+   rotated: 1 deleted . 0 kept
+===============================================================
+```
+
+The user wants:
+
+```
+===============================================================
+ calibr - bench for {model name} - completed in 1m57s
+   configs: 2 ok (100%) - 0 fail - 0 skipped / 3 runs per config
+   files: 1 downloaded and deleted . 0 kept
+===============================================================
+```
+
+Three small wording changes (`calibr - bench for {model}`, add the
+`(100%)` ok-rate, "files: N downloaded and deleted" instead of
+"rotated"). RunView's SUMMARY_RE will need updating to match the
+new shape. The `{model name}` slot only applies for single-model
+runs — for the multi-model `all` case fall back to the current
+phrasing or list the models separately.
+
 ---
 
 ## Bigger / design-needed (the user explicitly deferred these earlier)

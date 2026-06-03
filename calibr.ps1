@@ -1090,17 +1090,40 @@ function Invoke-OneBenchRun {
     }
 
     if ($ready) {
+        # We talk to /v1/chat/completions instead of /completion so llama-server
+        # applies the chat template baked into the GGUF (Jinja). /completion
+        # tokenizes the prompt raw — fine for Llama/Qwen which are forgiving,
+        # but Granite ships a structured system prompt and Gemma 4 uses
+        # asymmetric turn markers (<|turn> / <turn|>); both never generate
+        # anything sensible without the template, and the bench then records
+        # "unsupported architecture" / "server didn't become ready" instead
+        # of a real measurement. Same `timings` field (prompt_n,
+        # prompt_per_second, predicted_n, predicted_per_second, prompt_ms) is
+        # returned by llama-server on this endpoint too, so the metric
+        # pipeline below is untouched.
         if ($cfg.bench.warmup) {
             try {
-                $wBody = @{ prompt=$prompt; n_predict=8; temperature=0.0; cache_prompt=$true; stream=$false } | ConvertTo-Json -Compress
-                Invoke-RestMethod -Uri "http://127.0.0.1:$port/completion" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
+                $wBody = @{
+                    messages    = @(@{ role = 'user'; content = $prompt })
+                    max_tokens  = 8
+                    temperature = 0.0
+                    stream      = $false
+                    cache_prompt = $true
+                } | ConvertTo-Json -Compress -Depth 5
+                Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
             } catch { }
         }
 
-        $body = @{ prompt=$prompt; n_predict=$nPred; temperature=0.0; cache_prompt=$false; stream=$false } | ConvertTo-Json -Compress
+        $body = @{
+            messages    = @(@{ role = 'user'; content = $prompt })
+            max_tokens  = $nPred
+            temperature = 0.0
+            stream      = $false
+            cache_prompt = $false
+        } | ConvertTo-Json -Compress -Depth 5
         Write-Host "[phase] sending_prompt"
         try {
-            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/completion" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
             $run.ok = $true
             if ($resp.timings) {
                 $run.prompt_n   = $resp.timings.prompt_n
