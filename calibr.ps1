@@ -267,6 +267,44 @@ function Find-LlamaServerExe {
     return @($candidates | Select-Object -Unique | Where-Object { Test-Path $_ })
 }
 
+function Get-LlamaServerVersion {
+    # Probe `llama-server --version` for the build tag (e.g. "b9360").
+    # Falls back to extracting `bNNNN` from the binary path before returning
+    # "unknown". Cheap one-off invocation (no model load); used by
+    # Initialize-BenchSession to stamp the version on every result so the
+    # report can group by llama.cpp build and the cache can re-run failures
+    # that were recorded against a different version.
+    param([string]$Exe)
+    if (-not $Exe -or -not (Test-Path $Exe)) { return $null }
+    try {
+        $out = & $Exe --version 2>&1 | Out-String
+        $m = [regex]::Match($out, '\((b\d+)\)')
+        if ($m.Success) { return $m.Groups[1].Value }
+        $m2 = [regex]::Match($out, 'version:\s*\d+\s*\((\S+)\)')
+        if ($m2.Success) { return $m2.Groups[1].Value }
+    } catch { }
+    # Path-based fallback: the official zip names embed the build tag.
+    $pm = [regex]::Match($Exe, '(b\d+)')
+    if ($pm.Success) { return $pm.Groups[1].Value }
+    return 'unknown'
+}
+
+function Initialize-BenchSession {
+    # Set $script:BENCH_* and $script:LLAMA_SERVER_VERSION once per outer
+    # command invocation. `all` calls Invoke-Bench in a loop (one per
+    # sample); each inner call should share the same session, so this
+    # helper is idempotent: a second call within the same process is a
+    # no-op. The fields end up stamped on every result JSON so the report
+    # can answer "show me only the results from THIS session" and "did
+    # this model start working when I upgraded llama?".
+    param([string]$LlamaServerExe)
+    if ($script:BENCH_SESSION_ID) { return }
+    $script:BENCH_SESSION_ID = [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $script:BENCH_SESSION_STARTED_AT = (Get-Date).ToUniversalTime().ToString('o')
+    $script:LLAMA_SERVER_VERSION = Get-LlamaServerVersion -Exe $LlamaServerExe
+    if (-not $script:LLAMA_SERVER_VERSION) { $script:LLAMA_SERVER_VERSION = 'unknown' }
+}
+
 # ============================================================================
 # BACKEND DETECTION (CUDA / Vulkan / Metal / HIP / SYCL / CPU)
 # ============================================================================
@@ -882,6 +920,17 @@ function New-AggregatedBenchResult {
         ok    = $true
         error = $null
 
+        # Session + llama-server identity (added v0.1.6). Stamped on every
+        # result so the report can filter by "latest session" / "latest per
+        # llama version" and the cache can re-run failures recorded against
+        # an older llama-server build. Defaults to "unknown" if a caller
+        # invoked the aggregator without Initialize-BenchSession (test
+        # fixtures, etc.).
+        bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+        bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+        llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+        llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
+
         # Raw per-run records for audit (full schema-of-record for variance work)
         runs  = @($runs)
     }
@@ -1234,19 +1283,30 @@ function Invoke-OneBench {
     if ((Test-Path $jsonFile) -and (-not $Force)) {
         $cached = Get-Content $jsonFile -Raw | ConvertFrom-Json
         if (-not $cached.ok) {
-            Write-Host ("[{0}] cached failure (use -Force to retry)" -f $item.id) -ForegroundColor DarkGray
-            return $cached
+            # Cached failure: re-run automatically when the recorded
+            # llama_server_version differs from the current build. Otherwise
+            # the user gets stuck seeing yesterday's "unsupported_arch" forever
+            # even after upgrading llama.cpp. Same-version failures stay
+            # cached (definitive negative on the current binary).
+            $cachedVer = if ($cached.PSObject.Properties.Name -contains 'llama_server_version') { [string]$cached.llama_server_version } else { 'unknown' }
+            if ($cachedVer -and $cachedVer -ne 'unknown' -and $cachedVer -ne $script:LLAMA_SERVER_VERSION) {
+                Write-Host ("[{0}] cached failure from llama-server {1}, current is {2} - re-running" -f $item.id, $cachedVer, $script:LLAMA_SERVER_VERSION) -ForegroundColor DarkYellow
+            } else {
+                Write-Host ("[{0}] cached failure (use -Force to retry)" -f $item.id) -ForegroundColor DarkGray
+                return $cached
+            }
+        } else {
+            if ($null -ne $cached.runs -and $cached.runs.Count -eq $N) {
+                Write-Host ("[{0}] cached N={1} (use -Force to rerun)" -f $item.id, $N) -ForegroundColor DarkGray
+                return $cached
+            }
+            if ($null -eq $cached.runs -and $N -eq 1) {
+                Write-Host ("[{0}] cached legacy N=1 (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
+                return $cached
+            }
+            $haveN = if ($null -ne $cached.runs) { $cached.runs.Count } else { 0 }
+            Write-Host ("[{0}] cache miss (have N={1}, want N={2}) - re-running" -f $item.id, $haveN, $N) -ForegroundColor DarkGray
         }
-        if ($null -ne $cached.runs -and $cached.runs.Count -eq $N) {
-            Write-Host ("[{0}] cached N={1} (use -Force to rerun)" -f $item.id, $N) -ForegroundColor DarkGray
-            return $cached
-        }
-        if ($null -eq $cached.runs -and $N -eq 1) {
-            Write-Host ("[{0}] cached legacy N=1 (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
-            return $cached
-        }
-        $haveN = if ($null -ne $cached.runs) { $cached.runs.Count } else { 0 }
-        Write-Host ("[{0}] cache miss (have N={1}, want N={2}) - re-running" -f $item.id, $haveN, $N) -ForegroundColor DarkGray
     }
 
     # Fresh log for this bench session
@@ -1301,6 +1361,13 @@ function Invoke-OneBench {
                 ram_baseline_mib     = $r.ram_baseline_mib
                 ram_used_peak_mib    = $r.ram_used_peak_mib
                 disk_read_peak_mb_s  = $r.disk_read_peak_mb_s
+                # Session + llama-server identity (matches the success record
+                # in New-AggregatedBenchResult). Drives the report's
+                # latest-session filter and the cache's version-aware retry.
+                bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+                bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+                llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+                llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
             }
             $failResult.failure_reason = Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
@@ -1520,6 +1587,12 @@ function Invoke-Bench {
     if (-not $cfg.llama_server_exe -or -not (Test-Path $cfg.llama_server_exe)) {
         throw "llama_server_exe missing or invalid. Run 'calibr init' to detect and write it to config.json."
     }
+
+    # Stamp session metadata on every result this bench writes. Idempotent
+    # so 'all' (which calls Invoke-Bench in a per-sample loop) keeps one
+    # session across all its inner invocations.
+    Initialize-BenchSession -LlamaServerExe $cfg.llama_server_exe
+    Write-Host ("bench session {0} . llama-server {1} . started {2}" -f $script:BENCH_SESSION_ID, $script:LLAMA_SERVER_VERSION, $script:BENCH_SESSION_STARTED_AT) -ForegroundColor DarkGray
 
     # Backend cross-check: detect available llama.cpp backends and warn if the
     # build doesn't match the GPU (e.g. NVIDIA card with a Vulkan-only build).
@@ -1916,6 +1989,13 @@ function Invoke-Report {
             failure_reason=$failReason
             unsupported_architecture=$unsupportedArch
             ready=$readyFlag
+            # Session + llama-server identity. Drives the report's
+            # latest-session / by-llama-version filter widget. Missing on
+            # pre-v0.1.6 result JSONs; the JS side falls back to "unknown".
+            bench_session_id         = if ($null -ne $r.bench_session_id)         { [string]$r.bench_session_id }         else { 'unknown' }
+            bench_session_started_at = if ($null -ne $r.bench_session_started_at) { [string]$r.bench_session_started_at } else { '' }
+            llama_server_version     = if ($null -ne $r.llama_server_version)     { [string]$r.llama_server_version }     else { 'unknown' }
+            llama_server_exe         = if ($null -ne $r.llama_server_exe)         { [string]$r.llama_server_exe }         else { '' }
             # Derived for the new charts and the headroom annotation:
             time_total_sec=$derived.time_total_sec
             headroom_mib=$derived.headroom_mib

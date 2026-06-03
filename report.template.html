@@ -108,7 +108,13 @@
   <div class="hw" id="hw"></div>
   <div class="meta" id="overall-pct"></div>
 
-  <div class="filter-bar">
+  <div class="filter-bar" id="scope-bar">
+    <span class="label">Data scope:</span>
+    <button class="filter-btn" data-scope="latest">Latest session</button>
+    <button class="filter-btn" data-scope="all">All sessions</button>
+    <span class="filter-desc" id="scope-desc"></span>
+  </div>
+  <div class="filter-bar" id="winner-bar">
     <span class="label">Winner criterion:</span>
     <button class="filter-btn" data-filter="speed">Speed</button>
     <button class="filter-btn" data-filter="efficiency">Efficiency</button>
@@ -170,15 +176,17 @@ document.getElementById('hw').innerHTML =
   ' | VRAM safety budget: <code>' + (hw.vram_safety_budget_mib || '?') + ' MiB</code>' +
   ' | llama-server: <code>' + (CFG.llama_server_exe || 'n/a') + '</code>';
 
-const modelsSet = new Set(DATA.map(d => d.model));
-const modelsWithSuccess = new Set(DATA.filter(d => d.ok).map(d => d.model));
-const totalModels = modelsSet.size;
-const okModels = modelsWithSuccess.size;
-const pct = totalModels > 0 ? Math.round((okModels / totalModels) * 100) : 0;
-document.getElementById('overall-pct').innerHTML =
-  '<b>' + okModels + '/' + totalModels + ' models</b> have at least one successful config ' +
-  '(<b>' + pct + '%</b>). ' +
-  DATA.length + ' total bench configs, ' + DATA.filter(d => d.ok).length + ' ok.';
+function renderOverallStats() {
+  const modelsSet = new Set(VIEW.map(d => d.model));
+  const modelsWithSuccess = new Set(VIEW.filter(d => d.ok).map(d => d.model));
+  const totalModels = modelsSet.size;
+  const okModels = modelsWithSuccess.size;
+  const pct = totalModels > 0 ? Math.round((okModels / totalModels) * 100) : 0;
+  document.getElementById('overall-pct').innerHTML =
+    '<b>' + okModels + '/' + totalModels + ' models</b> have at least one successful config ' +
+    '(<b>' + pct + '%</b>). ' +
+    VIEW.length + ' bench configs in view, ' + VIEW.filter(d => d.ok).length + ' ok.';
+}
 
 // ===========================================================================
 // SCORERS — winner-picking strategies.
@@ -193,16 +201,48 @@ const CONFIRM_MIB = (CFG.wddm_detection && CFG.wddm_detection.shared_delta_confi
 
 const isSafe = d => (+d.shared_peak_mib || 0) <= CONFIRM_MIB;
 
-// Anchors computed once over all OK configs. Used by the normalized scorers
-// so weights are unit-less and the score is comparable across runs.
-const ANCHORS = (() => {
-  const ok = DATA.filter(d => d.ok);
+// Anchors are recomputed from the filtered slice at each rerender so
+// the 'overall' scorer normalizes against the currently-visible data,
+// not against stale rows from older sessions the user has scoped out.
+function computeAnchors(slice) {
+  const ok = slice.filter(d => d.ok);
   const evalMax = Math.max(1, ...ok.map(d => +d.eval_tps || 0));
   const effs = ok.filter(d => +d.gpu_power_peak_w > 0)
                  .map(d => (+d.eval_tps) / (+d.gpu_power_peak_w));
   const effMax = effs.length > 0 ? Math.max(1, ...effs) : 1;
   return { evalMax, effMax };
-})();
+}
+let ANCHORS = computeAnchors(DATA);
+
+// Data-scope filter (added v0.1.6). Each result is now stamped with
+// bench_session_started_at + llama_server_version; the report defaults
+// to showing only the most recent session so stale failures from older
+// llama builds don't pollute the picture. Toggle to 'all' to see
+// everything in data/results/.
+function filterByScope(data, scope) {
+  if (scope === 'all') return data;
+  // 'latest': pick max session timestamp, return all entries that share it.
+  let latest = '';
+  for (const d of data) {
+    const ts = d.bench_session_started_at || '';
+    if (ts > latest) latest = ts;
+  }
+  if (!latest) return data;  // no session metadata → can't filter, show all
+  return data.filter(d => (d.bench_session_started_at || '') === latest);
+}
+
+function describeScope(data, scope) {
+  const sessions = new Set(data.map(d => d.bench_session_started_at).filter(Boolean));
+  if (scope === 'all') {
+    return `${data.length} configs across ${sessions.size || '?'} session${sessions.size === 1 ? '' : 's'}.`;
+  }
+  // 'latest': find the session ts of the visible slice + its llama version
+  const slice = filterByScope(data, 'latest');
+  const ts = slice[0]?.bench_session_started_at || '';
+  const ver = slice[0]?.llama_server_version || 'unknown';
+  const tsHuman = ts ? new Date(ts).toLocaleString() : '(unknown time)';
+  return `${slice.length} configs from session started ${tsHuman} on llama-server ${ver}. Toggle "all sessions" to include older runs.`;
+}
 
 const SCORERS = {
   speed: {
@@ -243,7 +283,7 @@ function computeWinners(filter) {
   const speed  = SCORERS.speed;
   const byModel = {};
   const fallbacks = {};
-  for (const d of DATA) {
+  for (const d of VIEW) {
     if (!d.ok) continue;
     const s = scorer.score(d);
     if (s > -Infinity) {
@@ -279,34 +319,45 @@ const WINNERS_BY_MODEL = (() => {
 // STATE + main re-render
 // ===========================================================================
 const STATE = {
+  scope:   'latest',
   filter:  'speed',
   bars:    'eval',
   tierTab: 'all',
 };
 
+// View of DATA after the data-scope filter. All renderers operate on this
+// (not DATA) so latest-session view shows a clean slice. Recomputed at the
+// top of rerender(); ANCHORS recomputes alongside it.
+let VIEW = DATA;
 let currentWinners = {};
 const isWinnerId = id => Object.values(currentWinners).some(w => w.id === id);
 
 function rerender() {
+  VIEW = filterByScope(DATA, STATE.scope);
+  ANCHORS = computeAnchors(VIEW);
   currentWinners = computeWinners(STATE.filter);
+  renderScopeBar();
+  renderOverallStats();
   renderFilterBar();
   renderScatter();
   renderModelsList();
   renderBars();
+  renderWddmWatchlist();
+  renderTierTabs();
   renderAllTable();
 }
 
 // ===========================================================================
 // Filter bar
 // ===========================================================================
-const filterBar = document.querySelector('.filter-bar');
+const winnerBar = document.getElementById('winner-bar');
 function renderFilterBar() {
-  filterBar.querySelectorAll('.filter-btn').forEach(btn => {
+  winnerBar.querySelectorAll('.filter-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.filter === STATE.filter);
   });
   document.getElementById('filter-desc').textContent = SCORERS[STATE.filter].desc;
 }
-filterBar.querySelectorAll('.filter-btn').forEach(btn => {
+winnerBar.querySelectorAll('.filter-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     STATE.filter = btn.dataset.filter;
     rerender();
@@ -385,6 +436,9 @@ function winnerSummary(w) {
   if (w._fallback) {
     parts.push('<span class="winner-stat meta" title="No config of this model qualifies for the selected filter; speed winner shown instead.">(speed fallback)</span>');
   }
+  if (w.llama_server_version && w.llama_server_version !== 'unknown') {
+    parts.push('<span class="winner-stat" style="color:var(--c-muted)" title="llama-server build that produced this measurement">llama ' + escapeHtml(w.llama_server_version) + '</span>');
+  }
   return parts.join(' · ');
 }
 
@@ -392,7 +446,7 @@ function renderModelsList() {
   const el = document.getElementById('models-list');
   // Group all configs by model.
   const byModel = {};
-  for (const d of DATA) {
+  for (const d of VIEW) {
     (byModel[d.model] = byModel[d.model] || []).push(d);
   }
   // Sort models by their winner's score descending (so the "best" models
@@ -480,7 +534,7 @@ function vramHeadroom(d) {
 function renderBars() {
   const el = document.getElementById('bars');
   el.innerHTML = '';
-  const okData = DATA.filter(d => d.ok);
+  const okData = VIEW.filter(d => d.ok);
   if (okData.length === 0) {
     el.innerHTML = '<p class="meta">No ok runs to display.</p>';
     return;
@@ -539,7 +593,7 @@ function renderScatter() {
   const W = 1000, H = 380, M = { l: 60, r: 16, t: 24, b: 36 };
   const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
   const cap = (CFG.hardware && CFG.hardware.vram_total_mib) ? CFG.hardware.vram_total_mib : 8192;
-  const pts = DATA.filter(d => d.ok && d.time_total_sec != null).map(d => ({
+  const pts = VIEW.filter(d => d.ok && d.time_total_sec != null).map(d => ({
     d: d,
     x: d.time_total_sec,
     y: d.vram_peak_mib + Math.max(0, d.shared_peak_mib || 0)
@@ -596,13 +650,15 @@ function renderScatter() {
 }
 
 // ===========================================================================
-// WDDM watchlist (unchanged)
+// WDDM watchlist (scope-aware: recomputed per rerender from VIEW)
 // ===========================================================================
-const flagged = DATA.filter(d => d.ok && (d.wddm_flag_shared_pos || d.wddm_flag_high_vram));
-const wddmEl = document.getElementById('wddm-list');
-if (flagged.length === 0) {
-  wddmEl.innerHTML = '<p class="meta">None. No WDDM paging detected across all runs.</p>';
-} else {
+function renderWddmWatchlist() {
+  const flagged = VIEW.filter(d => d.ok && (d.wddm_flag_shared_pos || d.wddm_flag_high_vram));
+  const wddmEl = document.getElementById('wddm-list');
+  if (flagged.length === 0) {
+    wddmEl.innerHTML = '<p class="meta">None. No WDDM paging detected in the visible scope.</p>';
+    return;
+  }
   let html = '<table><thead><tr><th>ID</th><th>Label</th><th class="num">VRAM</th><th class="num">Shared</th><th class="num">Sat.</th><th class="num">Eval t/s</th></tr></thead><tbody>';
   flagged.forEach(d => {
     html += '<tr><td><code>' + d.id + '</code></td><td>' + escapeHtml(d.label) + '</td>' +
@@ -699,18 +755,26 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-const tiers = ['all', ...new Set(DATA.map(d => d.tier))].filter((v, i, a) => a.indexOf(v) === i);
+// Tier tabs are recomputed per rerender so counts reflect the current
+// scope. Click handling is delegated on the parent container so we don't
+// have to re-attach per-tab listeners.
 const tabsEl = document.getElementById('tier-tabs');
-tiers.forEach((t, i) => {
-  tabsEl.insertAdjacentHTML('beforeend',
-    '<div class="tab' + (i === 0 ? ' active' : '') + '" data-tier="' + t + '">' + (t === 'all' ? 'All' : 'Tier ' + t) + ' (' + (t === 'all' ? DATA.length : DATA.filter(d => d.tier === t).length) + ')</div>'
-  );
-});
+function renderTierTabs() {
+  const tiers = ['all', ...new Set(VIEW.map(d => d.tier))].filter((v, i, a) => a.indexOf(v) === i);
+  tabsEl.innerHTML = '';
+  tiers.forEach(t => {
+    const count = (t === 'all' ? VIEW.length : VIEW.filter(d => d.tier === t).length);
+    const active = t === STATE.tierTab ? ' active' : '';
+    tabsEl.insertAdjacentHTML('beforeend',
+      '<div class="tab' + active + '" data-tier="' + t + '">' + (t === 'all' ? 'All' : 'Tier ' + t) + ' (' + count + ')</div>'
+    );
+  });
+}
 
 function renderAllTable() {
   const tb = document.querySelector('#all tbody');
   tb.innerHTML = '';
-  DATA.filter(d => STATE.tierTab === 'all' || d.tier === STATE.tierTab).forEach(d => {
+  VIEW.filter(d => STATE.tierTab === 'all' || d.tier === STATE.tierTab).forEach(d => {
     const wddm = d.wddm_flag_shared_pos ? '<span class="wddm">+' + d.shared_peak_mib + '</span>' :
                  (d.shared_peak_mib >= 0 ? d.shared_peak_mib : '-');
     const winCls = isWinnerId(d.id) ? ' class="is-winner"' : '';
@@ -736,14 +800,33 @@ function renderAllTable() {
   });
 }
 
-tabsEl.querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    tabsEl.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    STATE.tierTab = tab.dataset.tier;
-    renderAllTable();
+// Delegated click handler: tabs are re-rendered every rerender (counts
+// reflect the current scope), so attaching per-tab listeners would leak
+// or break. One handler on the parent works for both initial render
+// and every subsequent re-render.
+tabsEl.addEventListener('click', e => {
+  const tab = e.target.closest('.tab[data-tier]');
+  if (!tab) return;
+  STATE.tierTab = tab.dataset.tier;
+  renderTierTabs();
+  renderAllTable();
+});
+
+// Data-scope buttons (latest session / all sessions).
+const scopeBar = document.getElementById('scope-bar');
+scopeBar.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    STATE.scope = btn.dataset.scope;
+    rerender();
   });
 });
+
+function renderScopeBar() {
+  scopeBar.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.scope === STATE.scope);
+  });
+  document.getElementById('scope-desc').textContent = describeScope(DATA, STATE.scope);
+}
 
 // ===========================================================================
 // Boot
