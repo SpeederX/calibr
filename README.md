@@ -134,6 +134,29 @@ shared repo to crowdsource a "what runs well on what GPU" dataset.
   — `bench` detects "unknown model architecture" failures and skips the
   remaining tests of the affected model instead of running them all to fail.)
 
+  **Pick the CUDA variant that matches your NVIDIA driver.** Each release
+  ships several zips: `llama-bN-bin-win-cuda-12.4-x64.zip`,
+  `...-cuda-13.0-x64.zip`, `...-cuda-13.3-x64.zip`, `...-vulkan-x64.zip`,
+  `...-cpu-x64.zip`. The CUDA 13.x builds need a recent driver, and even
+  R596 isn't always enough: on RTX 2070 with R596.21 the b9482 CUDA 13.3
+  build fails immediately at model load with `CUDA error: the provided
+  PTX was compiled with an unsupported toolchain` (the PTX uses CUDA 13.3
+  Programmatic Dependent Launch kernels the driver doesn't recognize).
+  Working combinations observed:
+
+  | llama.cpp build | CUDA variant   | NVIDIA driver | Status                          |
+  |-----------------|----------------|---------------|---------------------------------|
+  | b9360           | cuda-13.1      | R596.21       | works on RTX 2070               |
+  | b9482           | cuda-13.3      | R596.21       | fails: PTX toolchain mismatch   |
+  | b9482           | cuda-12.4      | R596.21       | works (use this if R596)        |
+
+  Rule of thumb: when in doubt pick `cuda-12.4` — it's the broadest-
+  compatible build llama.cpp publishes. The CUDA 13.x zips need driver
+  R598+ for current builds. The `init` step picks up whatever
+  `llama-server.exe` is on PATH or in sibling folders; to switch builds
+  later, use the `llama` menu entry in the interactive CLI to repoint
+  `llama_server_exe` without rewriting the rest of `config.json`.
+
 ## Setup details
 
 `init` is interactive (or pass `-NonInteractive`) and produces `config.json`

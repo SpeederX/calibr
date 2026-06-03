@@ -1648,10 +1648,18 @@ function Invoke-Bench {
     $duration = (Get-Date) - $startTime
     $durStr = "{0}m{1:D2}s" -f ([int]$duration.TotalMinutes), ([int]($duration.TotalSeconds % 60))
     $bar = ("=" * 63)
+    # Resolve the runs-per-config so the summary line can clarify that the
+    # ok/fail counts are CONFIG-level — with runs_per_config > 1 each ok
+    # config is N actual llama-server invocations, which surprised at
+    # least one user (1 ok config × 3 runs looked like only 3 things happened).
+    $rppc = if ($Runs -gt 0) { $Runs }
+            elseif ($null -ne $cfg.bench.runs_per_config) { [int]$cfg.bench.runs_per_config }
+            else { 3 }
+    $runsHint = if ($rppc -gt 1) { " configs ({0} runs each)" -f $rppc } else { " configs" }
     Write-Host ""
     Write-Host $bar -ForegroundColor Cyan
     Write-Host (" calibr bench - done in $durStr") -ForegroundColor Cyan
-    Write-Host ("   {0} ok . {1} fail . {2} skipped (out of {3})" -f $okCount, $failCount, $skipCount, $total)
+    Write-Host ("   {0} ok . {1} fail . {2} skipped (out of {3}{4})" -f $okCount, $failCount, $skipCount, $total, $runsHint)
     if ($abandoned.Count -gt 0) {
         Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
         $reasons = @($abandoned.Values | Sort-Object -Unique)

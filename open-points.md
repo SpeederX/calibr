@@ -46,8 +46,8 @@ Steps:
 
 1. Detect hardware (already done in `Get-DetectedHardware`).
 2. Pick the right build flavor: CUDA if NVIDIA GPU present, Vulkan or
-   ROCm if AMD, CPU-only as fallback. (CUDA version needs to match the
-   driver — `nvidia-smi --query-gpu=driver_version` gates this.)
+   ROCm if AMD, CPU-only as fallback. **CUDA version must match the
+   driver** — see compat note below.
 3. Resolve the latest build tag from the GitHub releases API (or
    accept a config-pinned `bN`).
 4. Download into `~/AppData/Local/calibr/llama-bin/<bN>/`. Unzip there.
@@ -58,6 +58,26 @@ UX-wise, this means `init` no longer fails when llama isn't installed —
 it offers to fetch it. Add a confirmation prompt in interactive mode
 (`Download ~250 MB from GitHub? y/N`), bypassable with `-AutoFetchLlama`
 flag for headless setups.
+
+**CUDA build picker rules (load-bearing — silently picking the wrong
+CUDA variant bricks every bench with a PTX toolchain error):**
+
+| llama.cpp build | CUDA in zip name | Min Windows driver |
+|-----------------|------------------|--------------------|
+| any             | cuda-12.4        | ~R535+             |
+| any             | cuda-13.0        | R580+              |
+| any             | cuda-13.1        | R590+              |
+| any             | cuda-13.3        | R598+              |
+| any             | cpu              | (n/a)              |
+| any             | vulkan           | (n/a)              |
+
+The numbers above are empirical (R596.21 on RTX 2070 ran b9360 cuda-13.1
+cleanly but failed b9482 cuda-13.3 with `PTX was compiled with an
+unsupported toolchain` in `ggml_cuda_kernel_can_use_pdl`). Probe with
+`nvidia-smi --query-gpu=driver_version --format=csv,noheader` and pick
+the highest CUDA variant whose minimum is `<= driver`. Cuda-12.4 is the
+safe default for anything R535+. The README's Requirements section
+holds the same table for users who set up manually.
 
 ### reasoning_mode wiring
 *Estimate: 1-2h.*

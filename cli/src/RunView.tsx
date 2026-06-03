@@ -73,9 +73,12 @@ const RUN_RE = /^\s*run\s+(\d+)\/(\d+)\s*$/;
 // don't survive the spawn pipeline; CLI re-colors here).
 const OK_RE   = /^\s*\[OK\]/;
 const FAIL_RE = /^\s*\[FAIL\]/;
-// End-of-bench summary line: "   N ok . M fail . K skipped (out of T)"
-// Colored based on whether M (fail count) is non-zero.
-const SUMMARY_RE = /^\s*(\d+)\s+ok\s+\.\s+(\d+)\s+fail\s+\.\s+\d+\s+skipped\s+\(out of \d+\)\s*$/;
+// End-of-bench summary line, e.g.
+//   "   2 ok . 0 fail . 0 skipped (out of 2 configs (3 runs each))"
+//   "   2 ok . 0 fail . 0 skipped (out of 2)"  (legacy / runs_per_config=1)
+// Lenient on the "(out of T...)" tail so engine wording changes don't break
+// the color rule. Colored based on whether M (fail count) is non-zero.
+const SUMMARY_RE = /^\s*(\d+)\s+ok\s+\.\s+(\d+)\s+fail\s+\.\s+\d+\s+skipped\s+\(out of \d+.*\)\s*$/;
 // "Report: C:\...\report.html" emitted by Invoke-Report on completion.
 // Presence of this line is a guarantee that a FRESH report was just
 // written by this run (not a stale leftover); the CLI uses it to gate
@@ -451,16 +454,18 @@ export function RunView({ args, label, onExit }: Props) {
       }
       return;
     }
-    // After a successful run that produced a fresh report, 'y' / 'o'
-    // opens it in the default browser before returning to the menu.
-    // Any other key keeps the existing 'enter to exit' behavior.
+    // After a successful run that produced a fresh report, the prompt
+    // defaults to 'open' on enter (the user just sat through the bench;
+    // opening the report is the natural next step). Explicit 'n' / esc
+    // skips. Holding to 'y/enter = open, n/esc = skip' so the keys
+    // mirror the natural reading order of the prompt label.
     if (exitCode === 0 && reportPath) {
-      if (input === "y" || input === "Y" || input === "o" || input === "O") {
+      if (input === "y" || input === "Y" || input === "o" || input === "O" || key.return) {
         openReport();
         onExit();
         return;
       }
-      if (input === "n" || input === "N" || key.return) {
+      if (input === "n" || input === "N") {
         onExit();
         return;
       }
@@ -630,7 +635,7 @@ export function RunView({ args, label, onExit }: Props) {
       {exitCode === 0 && reportPath && (
         <Box marginTop={1} flexDirection="column">
           <Text color="cyan" bold>
-            open report in browser? <Text color="green">[y]</Text> yes <Text dimColor>·</Text> <Text>[n / enter]</Text> back to menu
+            open report in browser? <Text color="green">[y / enter]</Text> yes <Text dimColor>·</Text> <Text>[n / esc]</Text> back to menu
           </Text>
           <Text dimColor>{reportPath}</Text>
         </Box>
@@ -645,7 +650,7 @@ export function RunView({ args, label, onExit }: Props) {
           ↑/↓ scroll · PgUp/PgDn page · g top · h bottom · {
             exitCode === null
               ? "q/esc cancel run"
-              : (exitCode === 0 && reportPath ? "y open report · n/enter back" : "enter/q/esc back")
+              : (exitCode === 0 && reportPath ? "y/enter open report · n/esc back" : "enter/q/esc back")
           }
         </Text>
       </Box>
