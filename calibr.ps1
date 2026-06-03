@@ -301,6 +301,36 @@ function Get-GpuSnapshotLinux {
     return @{ mem_mib = $mem; power_w = (Get-LinuxGpuPowerW); temp_c = (Get-LinuxGpuTempC); util_pct = $util }
 }
 
+function Get-LinuxGpuVramFresh {
+    # One-shot radeontop read of VRAM-used (MiB) for the hottest-moment
+    # snapshot. The streamed dump file (Start-LinuxGpuMonitor) block-buffers its
+    # writes, so on a fast bench it can lag several seconds and the tail still
+    # shows the idle baseline when the model is already resident on the GPU.
+    # nvidia-smi on Windows is instant and accurate; this gives Linux the same
+    # fidelity at the one moment it matters. Costs ~2s (radeontop's first sample
+    # has a register-read warmup), called once per run at the post-bench peak.
+    # Returns -1 when unavailable so the caller keeps the streamed value.
+    if (-not $script:IsLin -or -not $script:HasRadeontop) { return -1 }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName  = 'radeontop'
+        $psi.Arguments = '-d - -l 2 -i 0.3'   # 2 dumps to stdout, then self-exit
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow  = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $out = $p.StandardOutput.ReadToEnd()
+        $p.StandardError.ReadToEnd() | Out-Null
+        if (-not $p.WaitForExit(4000)) { try { $p.Kill() } catch { } }
+        $last = $out -split "`n" | Select-String -Pattern '\bvram\b' | Select-Object -Last 1
+        if ($last -and $last.Line -match 'vram\s+[\d.]+%\s+([\d.]+)mb') {
+            return [int][double]$Matches[1]
+        }
+    } catch { }
+    return -1
+}
+
 # ============================================================================
 # PATHS
 # ============================================================================
@@ -1396,7 +1426,13 @@ function Invoke-OneBenchRun {
         # after). Background-thread polling during the POST would be more
         # accurate but adds significant complexity for marginal gain.
         $snap = Get-GpuSnapshot
-        if ($snap.mem_mib  -gt $run.vram_peak_mib)        { $run.vram_peak_mib       = $snap.mem_mib }
+        # On Linux the streamed radeontop dump can lag behind on a fast bench;
+        # take one accurate one-shot read at this peak moment (the server is
+        # still up, so the model is still resident on the GPU).
+        $vramSnap = $snap.mem_mib
+        $vramFresh = Get-LinuxGpuVramFresh
+        if ($vramFresh -ge 0) { $vramSnap = $vramFresh }
+        if ($vramSnap     -gt $run.vram_peak_mib)        { $run.vram_peak_mib       = $vramSnap }
         if ($snap.power_w  -gt $run.gpu_power_peak_w)     { $run.gpu_power_peak_w    = [math]::Round($snap.power_w, 1) }
         if ($snap.temp_c   -gt $run.gpu_temp_peak_c)      { $run.gpu_temp_peak_c     = $snap.temp_c }
         if ($cfg.wddm_detection.enable_shared_mem_counter) {
