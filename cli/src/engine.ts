@@ -1,5 +1,5 @@
-import { spawn, ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync } from "node:fs";
+import { spawn, spawnSync, ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,6 +127,77 @@ export function loadConfig(): Config {
   const def = readJsonSafe<Config>(CALIBR_DEFAULT_CFG, {});
   const loc = readJsonSafe<Config>(CALIBR_LOCAL_CFG, {});
   return deepMerge(def, loc);
+}
+
+/**
+ * Set a single top-level field on the LOCAL config.json without touching
+ * any other key. Used by the config-edit screens (e.g. LlamaPathView).
+ * Creates config.json with just this field if it doesn't exist yet —
+ * the engine's deepMerge with config.default.json fills the rest at
+ * read time, so the file stays minimal.
+ *
+ * Two-space indent matches PowerShell's ConvertTo-Json default so a hand
+ * edit of the file doesn't look out of place next to an engine-init write.
+ */
+export function updateLocalConfigField(key: string, value: unknown): void {
+  let parsed: Record<string, unknown> = {};
+  if (existsSync(CALIBR_LOCAL_CFG)) {
+    try {
+      let raw = readFileSync(CALIBR_LOCAL_CFG, "utf8");
+      if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+      const data = JSON.parse(raw);
+      if (data && typeof data === "object" && !Array.isArray(data)) {
+        parsed = data as Record<string, unknown>;
+      }
+    } catch {
+      parsed = {};
+    }
+  }
+  parsed[key] = value;
+  writeFileSync(CALIBR_LOCAL_CFG, JSON.stringify(parsed, null, 2), "utf8");
+}
+
+/**
+ * Open a native Windows file picker (System.Windows.Forms.OpenFileDialog)
+ * and return the selected absolute path, or null on cancel / error.
+ *
+ * Shells out to PowerShell because Node has no built-in file dialog and
+ * Ink runs in the terminal. PS -STA is required: OpenFileDialog needs
+ * a single-threaded apartment and PS defaults to MTA. The dialog pops
+ * over the terminal; the TUI is frozen while it's up because spawnSync
+ * blocks the event loop, which is the behavior we want (user picks,
+ * dialog closes, render resumes).
+ *
+ * filter syntax: "Label|*.ext|Other|*.foo" — same as the native one.
+ */
+export function pickFileSync(opts: {
+  title?: string;
+  filter?: string;
+  initialDir?: string;
+} = {}): string | null {
+  // Single-quote PS string escaping: ' → ''.
+  const esc = (s: string) => s.replace(/'/g, "''");
+  const lines = [
+    "Add-Type -AssemblyName System.Windows.Forms | Out-Null",
+    "$dlg = New-Object System.Windows.Forms.OpenFileDialog",
+    "$dlg.CheckFileExists = $true",
+    "$dlg.Multiselect = $false",
+  ];
+  if (opts.title)  lines.push(`$dlg.Title = '${esc(opts.title)}'`);
+  if (opts.filter) lines.push(`$dlg.Filter = '${esc(opts.filter)}'`);
+  if (opts.initialDir) {
+    lines.push(`if (Test-Path -LiteralPath '${esc(opts.initialDir)}') { $dlg.InitialDirectory = '${esc(opts.initialDir)}' }`);
+  }
+  lines.push("if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dlg.FileName }");
+
+  const res = spawnSync(
+    "powershell",
+    ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", lines.join("; ")],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (res.status !== 0) return null;
+  const out = (res.stdout || "").trim();
+  return out.length > 0 ? out : null;
 }
 
 export interface Status {

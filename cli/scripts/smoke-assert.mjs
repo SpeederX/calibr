@@ -37,6 +37,11 @@ check(
 );
 check("config.default.json exists", existsSync(mod.CALIBR_DEFAULT_CFG), mod.CALIBR_DEFAULT_CFG);
 
+// `calibr report` reads $CALIBR_ROOT/report.template.html. Missed bundling
+// was a latent bug pre-v0.1.3; lock it down with an explicit smoke assert.
+const tplPath = resolve(mod.CALIBR_ROOT, "report.template.html");
+check("report.template.html is bundled", existsSync(tplPath), tplPath);
+
 // models_catalog.json drives the pre-bench download-footprint gate;
 // bundling it is part of the engine contract.
 const catalog = mod.readModelCatalog();

@@ -20,6 +20,11 @@ const sources = [
   // default_bench_presets.json: shipped hardware-tier presets
   // (low/middle/high/all) that the CLI's AllOptionsView preset row reads.
   { src: join(repoRoot, "default_bench_presets.json"), required: true },
+  // report.template.html: required by `calibr report` (Invoke-Report reads
+  // it from $CALIBR_ROOT = the directory holding calibr.ps1). Without
+  // bundling it, `report` throws "Missing report.template.html" on a
+  // fresh npm install.
+  { src: join(repoRoot, "report.template.html"), required: true },
 ];
 
 for (const { src, required } of sources) {

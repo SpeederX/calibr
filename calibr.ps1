@@ -500,6 +500,48 @@ function Find-LlamaServerExe {
     return @($candidates | Select-Object -Unique | Where-Object { Test-Path $_ })
 }
 
+function Get-LlamaServerVersion {
+    # Probe `llama-server --version` for the build tag (e.g. "b9360").
+    # Falls back to extracting `bNNNN` from the binary path before returning
+    # "unknown". Cheap one-off invocation (no model load); used by
+    # Initialize-BenchSession to stamp the version on every result so the
+    # report can group by llama.cpp build and the cache can re-run failures
+    # that were recorded against a different version.
+    param([string]$Exe)
+    if (-not $Exe -or -not (Test-Path $Exe)) { return $null }
+    try {
+        $out = & $Exe --version 2>&1 | Out-String
+        # Current llama-server (b9482+) prints "version: 9482 (4fb16eccc)" —
+        # first number is the build, parenthesized is a commit hash we don't
+        # want. Older builds occasionally printed "(b9460)" directly; match
+        # both shapes, preferring the explicit bNNNN form.
+        $m = [regex]::Match($out, '\((b\d+)\)')
+        if ($m.Success) { return $m.Groups[1].Value }
+        $m2 = [regex]::Match($out, 'version:\s*(\d+)\b')
+        if ($m2.Success) { return 'b' + $m2.Groups[1].Value }
+    } catch { }
+    # Path-based fallback: the official zip names embed the build tag.
+    $pm = [regex]::Match($Exe, '(b\d+)')
+    if ($pm.Success) { return $pm.Groups[1].Value }
+    return 'unknown'
+}
+
+function Initialize-BenchSession {
+    # Set $script:BENCH_* and $script:LLAMA_SERVER_VERSION once per outer
+    # command invocation. `all` calls Invoke-Bench in a loop (one per
+    # sample); each inner call should share the same session, so this
+    # helper is idempotent: a second call within the same process is a
+    # no-op. The fields end up stamped on every result JSON so the report
+    # can answer "show me only the results from THIS session" and "did
+    # this model start working when I upgraded llama?".
+    param([string]$LlamaServerExe)
+    if ($script:BENCH_SESSION_ID) { return }
+    $script:BENCH_SESSION_ID = [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $script:BENCH_SESSION_STARTED_AT = (Get-Date).ToUniversalTime().ToString('o')
+    $script:LLAMA_SERVER_VERSION = Get-LlamaServerVersion -Exe $LlamaServerExe
+    if (-not $script:LLAMA_SERVER_VERSION) { $script:LLAMA_SERVER_VERSION = 'unknown' }
+}
+
 # ============================================================================
 # BACKEND DETECTION (CUDA / Vulkan / Metal / HIP / SYCL / CPU)
 # ============================================================================
@@ -1137,6 +1179,17 @@ function New-AggregatedBenchResult {
         ok    = $true
         error = $null
 
+        # Session + llama-server identity (added v0.1.6). Stamped on every
+        # result so the report can filter by "latest session" / "latest per
+        # llama version" and the cache can re-run failures recorded against
+        # an older llama-server build. Defaults to "unknown" if a caller
+        # invoked the aggregator without Initialize-BenchSession (test
+        # fixtures, etc.).
+        bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+        bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+        llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+        llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
+
         # Raw per-run records for audit (full schema-of-record for variance work)
         runs  = @($runs)
     }
@@ -1293,6 +1346,10 @@ function Invoke-OneBenchRun {
     $outTask = $p.StandardOutput.ReadToEndAsync()
     $errTask = $p.StandardError.ReadToEndAsync()
 
+    # Phase marker: CLI uses these to drive the per-run flow widget. Grep-
+    # stable single-word state name. See RunView's PHASE_RE / RUN_PHASES.
+    Write-Host "[phase] loading_model"
+
     $deadline = (Get-Date).AddSeconds([int]$cfg.bench.wait_sec_ready)
     $ready = $false
     $peakVram = $vramBefore
@@ -1358,6 +1415,8 @@ function Invoke-OneBenchRun {
     $wc.Dispose()
     $loadSec = [math]::Round(((Get-Date) - $loadStart).TotalSeconds, 2)
 
+    if ($ready) { Write-Host "[phase] server_ready" }
+
     $run = [ordered]@{
         run_index       = $runIndex
         timestamp       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
@@ -1380,16 +1439,40 @@ function Invoke-OneBenchRun {
     }
 
     if ($ready) {
+        # We talk to /v1/chat/completions instead of /completion so llama-server
+        # applies the chat template baked into the GGUF (Jinja). /completion
+        # tokenizes the prompt raw — fine for Llama/Qwen which are forgiving,
+        # but Granite ships a structured system prompt and Gemma 4 uses
+        # asymmetric turn markers (<|turn> / <turn|>); both never generate
+        # anything sensible without the template, and the bench then records
+        # "unsupported architecture" / "server didn't become ready" instead
+        # of a real measurement. Same `timings` field (prompt_n,
+        # prompt_per_second, predicted_n, predicted_per_second, prompt_ms) is
+        # returned by llama-server on this endpoint too, so the metric
+        # pipeline below is untouched.
         if ($cfg.bench.warmup) {
             try {
-                $wBody = @{ prompt=$prompt; n_predict=8; temperature=0.0; cache_prompt=$true; stream=$false } | ConvertTo-Json -Compress
-                Invoke-RestMethod -Uri "http://127.0.0.1:$port/completion" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
+                $wBody = @{
+                    messages    = @(@{ role = 'user'; content = $prompt })
+                    max_tokens  = 8
+                    temperature = 0.0
+                    stream      = $false
+                    cache_prompt = $true
+                } | ConvertTo-Json -Compress -Depth 5
+                Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
             } catch { }
         }
 
-        $body = @{ prompt=$prompt; n_predict=$nPred; temperature=0.0; cache_prompt=$false; stream=$false } | ConvertTo-Json -Compress
+        $body = @{
+            messages    = @(@{ role = 'user'; content = $prompt })
+            max_tokens  = $nPred
+            temperature = 0.0
+            stream      = $false
+            cache_prompt = $false
+        } | ConvertTo-Json -Compress -Depth 5
+        Write-Host "[phase] sending_prompt"
         try {
-            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/completion" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
+            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
             $run.ok = $true
             if ($resp.timings) {
                 $run.prompt_n   = $resp.timings.prompt_n
@@ -1488,6 +1571,7 @@ function Invoke-OneBenchRun {
     $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
     $run.wddm_flag_shared_pos = ($run.shared_peak_mib -gt $confirmThresh)
 
+    Write-Host "[phase] run_complete"
     return $run
 }
 
@@ -1518,19 +1602,32 @@ function Invoke-OneBench {
     if ((Test-Path $jsonFile) -and (-not $Force)) {
         $cached = Get-Content $jsonFile -Raw | ConvertFrom-Json
         if (-not $cached.ok) {
-            Write-Host ("[{0}] cached failure (use -Force to retry)" -f $item.id) -ForegroundColor DarkGray
-            return $cached
+            # Cached failure: re-run automatically when the recorded
+            # llama_server_version differs from the current build. Otherwise
+            # the user gets stuck seeing yesterday's "unsupported_arch" forever
+            # even after upgrading llama.cpp. Same-version failures stay
+            # cached (definitive negative on the current binary).
+            # Pre-v0.1.6 result JSONs lack the field; treat them as 'unknown'
+            # so they always differ from a known current version and re-run.
+            $cachedVer = if ($cached.PSObject.Properties.Name -contains 'llama_server_version') { [string]$cached.llama_server_version } else { 'unknown' }
+            if ($cachedVer -ne $script:LLAMA_SERVER_VERSION) {
+                Write-Host ("[{0}] cached failure from llama-server {1}, current is {2} - re-running" -f $item.id, $cachedVer, $script:LLAMA_SERVER_VERSION) -ForegroundColor DarkYellow
+            } else {
+                Write-Host ("[{0}] cached failure (use -Force to retry)" -f $item.id) -ForegroundColor DarkGray
+                return $cached
+            }
+        } else {
+            if ($null -ne $cached.runs -and $cached.runs.Count -eq $N) {
+                Write-Host ("[{0}] cached N={1} (use -Force to rerun)" -f $item.id, $N) -ForegroundColor DarkGray
+                return $cached
+            }
+            if ($null -eq $cached.runs -and $N -eq 1) {
+                Write-Host ("[{0}] cached legacy N=1 (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
+                return $cached
+            }
+            $haveN = if ($null -ne $cached.runs) { $cached.runs.Count } else { 0 }
+            Write-Host ("[{0}] cache miss (have N={1}, want N={2}) - re-running" -f $item.id, $haveN, $N) -ForegroundColor DarkGray
         }
-        if ($null -ne $cached.runs -and $cached.runs.Count -eq $N) {
-            Write-Host ("[{0}] cached N={1} (use -Force to rerun)" -f $item.id, $N) -ForegroundColor DarkGray
-            return $cached
-        }
-        if ($null -eq $cached.runs -and $N -eq 1) {
-            Write-Host ("[{0}] cached legacy N=1 (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
-            return $cached
-        }
-        $haveN = if ($null -ne $cached.runs) { $cached.runs.Count } else { 0 }
-        Write-Host ("[{0}] cache miss (have N={1}, want N={2}) - re-running" -f $item.id, $haveN, $N) -ForegroundColor DarkGray
     }
 
     # Fresh log for this bench session
@@ -1585,6 +1682,13 @@ function Invoke-OneBench {
                 ram_baseline_mib     = $r.ram_baseline_mib
                 ram_used_peak_mib    = $r.ram_used_peak_mib
                 disk_read_peak_mb_s  = $r.disk_read_peak_mb_s
+                # Session + llama-server identity (matches the success record
+                # in New-AggregatedBenchResult). Drives the report's
+                # latest-session filter and the cache's version-aware retry.
+                bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+                bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+                llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+                llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
             }
             $failResult.failure_reason = Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
@@ -1805,6 +1909,12 @@ function Invoke-Bench {
         throw "llama_server_exe missing or invalid. Run 'calibr init' to detect and write it to config.json."
     }
 
+    # Stamp session metadata on every result this bench writes. Idempotent
+    # so 'all' (which calls Invoke-Bench in a per-sample loop) keeps one
+    # session across all its inner invocations.
+    Initialize-BenchSession -LlamaServerExe $cfg.llama_server_exe
+    Write-Host ("bench session {0} . llama-server {1} . started {2}" -f $script:BENCH_SESSION_ID, $script:LLAMA_SERVER_VERSION, $script:BENCH_SESSION_STARTED_AT) -ForegroundColor DarkGray
+
     # Backend cross-check: detect available llama.cpp backends and warn if the
     # build doesn't match the GPU (e.g. NVIDIA card with a Vulkan-only build).
     $backends = Get-LlamaBackends -exe $cfg.llama_server_exe
@@ -1955,10 +2065,18 @@ function Invoke-Bench {
     $duration = (Get-Date) - $startTime
     $durStr = "{0}m{1:D2}s" -f ([int]$duration.TotalMinutes), ([int]($duration.TotalSeconds % 60))
     $bar = ("=" * 63)
+    # Resolve the runs-per-config so the summary line can clarify that the
+    # ok/fail counts are CONFIG-level — with runs_per_config > 1 each ok
+    # config is N actual llama-server invocations, which surprised at
+    # least one user (1 ok config × 3 runs looked like only 3 things happened).
+    $rppc = if ($Runs -gt 0) { $Runs }
+            elseif ($null -ne $cfg.bench.runs_per_config) { [int]$cfg.bench.runs_per_config }
+            else { 3 }
+    $runsHint = if ($rppc -gt 1) { " configs ({0} runs each)" -f $rppc } else { " configs" }
     Write-Host ""
     Write-Host $bar -ForegroundColor Cyan
     Write-Host (" calibr bench - done in $durStr") -ForegroundColor Cyan
-    Write-Host ("   {0} ok . {1} fail . {2} skipped (out of {3})" -f $okCount, $failCount, $skipCount, $total)
+    Write-Host ("   {0} ok . {1} fail . {2} skipped (out of {3}{4})" -f $okCount, $failCount, $skipCount, $total, $runsHint)
     if ($abandoned.Count -gt 0) {
         Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
         $reasons = @($abandoned.Values | Sort-Object -Unique)
@@ -2182,6 +2300,21 @@ function Invoke-Report {
         $r = $_
         $derived = Get-ResultDerivedFields -result $r -vramTotal $vramTotal
         $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
+        # Extended metrics may not exist on legacy result JSONs; fall back to
+        # $null so the JS side renders '-' for missing values without crashing
+        # the scorers (efficiency divides by gpu_power_peak_w; null is safe).
+        $ttft   = if ($null -ne $r.ttft_sec)           { [double]$r.ttft_sec } else { $null }
+        $gpuPw  = if ($null -ne $r.gpu_power_peak_w)   { [double]$r.gpu_power_peak_w } else { $null }
+        $gpuTc  = if ($null -ne $r.gpu_temp_peak_c)    { [int]$r.gpu_temp_peak_c } else { $null }
+        $gpuUt  = if ($null -ne $r.gpu_util_avg_pct)   { [int]$r.gpu_util_avg_pct } else { $null }
+        $ramPk  = if ($null -ne $r.ram_used_peak_mib)  { [int]$r.ram_used_peak_mib } else { $null }
+        $ramBl  = if ($null -ne $r.ram_baseline_mib)   { [int]$r.ram_baseline_mib } else { $null }
+        # Failure-classification fields. The report needs them to give a
+        # meaningful summary for failed configs (otherwise the row shows
+        # zeros + 'unknown' fit and the user thinks the config wasn't run).
+        $failReason   = if ($null -ne $r.failure_reason)           { [string]$r.failure_reason } else { $null }
+        $unsupportedArch = if ($null -ne $r.unsupported_architecture) { [string]$r.unsupported_architecture } else { $null }
+        $readyFlag    = if ($null -ne $r.ready) { [bool]$r.ready } else { $null }
         [ordered]@{
             id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; tier=$r.tier
             prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
@@ -2190,11 +2323,36 @@ function Invoke-Report {
             fit_status=$r.fit_status; wddm_vram_saturation=([double]$r.wddm_vram_saturation)
             wddm_flag_high_vram=$r.wddm_flag_high_vram; wddm_flag_shared_pos=$r.wddm_flag_shared_pos
             extra_args=$r.extra_args; ok=$r.ok
+            # Paths exposed for client-side .bat generation in the report.
+            # Filesystem-local, fine to surface in the HTML (the report itself
+            # is meant to be opened on the same machine that ran the bench).
+            model_path=$r.model_path
+            mmproj_path=$r.mmproj_path
+            # Failure-classification fields (matched against Get-FailureReason
+            # in the engine). Null on successful runs.
+            failure_reason=$failReason
+            unsupported_architecture=$unsupportedArch
+            ready=$readyFlag
+            # Session + llama-server identity. Drives the report's
+            # latest-session / by-llama-version filter widget. Missing on
+            # pre-v0.1.6 result JSONs; the JS side falls back to "unknown".
+            bench_session_id         = if ($null -ne $r.bench_session_id)         { [string]$r.bench_session_id }         else { 'unknown' }
+            bench_session_started_at = if ($null -ne $r.bench_session_started_at) { [string]$r.bench_session_started_at } else { '' }
+            llama_server_version     = if ($null -ne $r.llama_server_version)     { [string]$r.llama_server_version }     else { 'unknown' }
+            llama_server_exe         = if ($null -ne $r.llama_server_exe)         { [string]$r.llama_server_exe }         else { '' }
             # Derived for the new charts and the headroom annotation:
             time_total_sec=$derived.time_total_sec
             headroom_mib=$derived.headroom_mib
             ctx_size=$derived.ctx_size
             kv_cache_mib=$kvCache
+            # Extended metrics (added v1.2): used by the all-results table and
+            # by the 'efficiency' scoring profile in the new report UI.
+            ttft_sec=$ttft
+            gpu_power_peak_w=$gpuPw
+            gpu_temp_peak_c=$gpuTc
+            gpu_util_avg_pct=$gpuUt
+            ram_used_peak_mib=$ramPk
+            ram_baseline_mib=$ramBl
         }
     }) | ConvertTo-Json -Depth 5 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {
@@ -2380,7 +2538,11 @@ function Get-DownloadDestination {
 }
 
 function Invoke-HFDownload {
-    # Downloads a single file from HuggingFace via Invoke-WebRequest.
+    # Downloads a single file from HuggingFace using HttpWebRequest with a
+    # manual byte-counting loop, so we can emit `[dlprog]` progress markers
+    # the CLI parses for the live download bar. Invoke-WebRequest is fully
+    # synchronous in PS 5.1 with no usable per-byte progress signal (the
+    # built-in progress UI is unusably slow), hence the lower-level path.
     # Returns $true on success/skip, $false on failure.
     param(
         [string]$Repo,
@@ -2407,23 +2569,85 @@ function Invoke-HFDownload {
 
     Write-Host "  [download] $url" -ForegroundColor Cyan
     Write-Host "             -> $DestPath"
-    try {
-        # Invoke-WebRequest is cross-platform (Windows PowerShell 5.1 + pwsh).
-        $progressPref = $ProgressPreference
-        $ProgressPreference = 'SilentlyContinue'  # WebRequest progress is painfully slow in PS 5.1
-        Invoke-WebRequest -Uri $url -OutFile $DestPath -ErrorAction Stop -UseBasicParsing
-        $ProgressPreference = $progressPref
+    # Phase marker so the CLI switches the per-config flow widget to the
+    # download bar. Match in RunView.tsx PHASE_RE.
+    Write-Host "[phase] downloading"
 
-        $got = (Get-Item $DestPath).Length
-        Write-Host ("  [done]  {0}" -f (Format-HumanSize $got)) -ForegroundColor Green
+    $req = $null
+    $resp = $null
+    $rspStream = $null
+    $fileStream = $null
+    try {
+        # HF requires TLS 1.2+. PS 5.1's default SecurityProtocol is Ssl3+Tls.
+        # Without this the HttpWebRequest throws on the TLS handshake.
+        [System.Net.ServicePointManager]::SecurityProtocol = `
+            [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
+
+        $req = [System.Net.HttpWebRequest]::Create($url)
+        $req.UserAgent = "calibr/0.1 (+https://github.com/SpeederX/calibr)"
+        $req.AllowAutoRedirect = $true   # HF redirects to the CDN
+        $req.Timeout = 30000             # 30 s for connection / TLS handshake
+        $req.ReadWriteTimeout = 60000    # 60 s for any single read
+
+        $resp = $req.GetResponse()
+        $total = [long]$resp.ContentLength
+        if ($total -le 0 -and $ExpectedBytes -gt 0) { $total = $ExpectedBytes }
+
+        $rspStream = $resp.GetResponseStream()
+        $fileStream = [System.IO.File]::Create($DestPath)
+
+        $bufferSize = 65536
+        $buffer = New-Object byte[] $bufferSize
+        $totalBytes = 0L
+        $start = [System.Diagnostics.Stopwatch]::StartNew()
+        $lastEmitMs = 0L
+        $lastEmitBytes = 0L
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
+
+        while (($read = $rspStream.Read($buffer, 0, $bufferSize)) -gt 0) {
+            $fileStream.Write($buffer, 0, $read)
+            $totalBytes += $read
+
+            $nowMs = $start.ElapsedMilliseconds
+            if (($nowMs - $lastEmitMs) -ge 200) {
+                $deltaMs = $nowMs - $lastEmitMs
+                $deltaBytes = $totalBytes - $lastEmitBytes
+                # Instant MiB/s. InvariantCulture so '.' is the decimal point
+                # even on Italian Windows (Number("23,4") in JS is NaN).
+                $speed = if ($deltaMs -gt 0) { ($deltaBytes / 1048576.0) * 1000.0 / $deltaMs } else { 0.0 }
+                $speedStr = $speed.ToString("F2", $inv)
+                Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $total, $speedStr, $nowMs)
+                $lastEmitMs = $nowMs
+                $lastEmitBytes = $totalBytes
+            }
+        }
+        $fileStream.Close(); $fileStream = $null
+        $rspStream.Close(); $rspStream = $null
+        $resp.Close(); $resp = $null
+
+        # Final emit so the CLI lands on exactly 100% rather than the last
+        # interior tick. elapsed_ms is meaningful for the "avg speed" line.
+        $avgSpeed = if ($start.ElapsedMilliseconds -gt 0) {
+            ($totalBytes / 1048576.0) * 1000.0 / $start.ElapsedMilliseconds
+        } else { 0.0 }
+        $avgStr = $avgSpeed.ToString("F2", $inv)
+        Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $totalBytes, $avgStr, $start.ElapsedMilliseconds)
+        Write-Host ("[dldone] bytes={0} elapsed_ms={1} avg_mibps={2}" -f $totalBytes, $start.ElapsedMilliseconds, $avgStr)
+
+        Write-Host ("  [done]  {0} in {1}s ({2} MiB/s avg)" -f (Format-HumanSize $totalBytes), [math]::Round($start.ElapsedMilliseconds / 1000.0, 1), $avgStr) -ForegroundColor Green
         return $true
     } catch {
         Write-Host ("  [FAIL]  {0}" -f $_.Exception.Message) -ForegroundColor Red
-        # Clean up partial file if completely empty
+        # Best-effort cleanup of a partial file that the caller can't recover.
+        if ($fileStream) { try { $fileStream.Close() } catch {} }
         if ((Test-Path $DestPath) -and (Get-Item $DestPath).Length -eq 0) {
             Remove-Item $DestPath -Force -ErrorAction SilentlyContinue
         }
         return $false
+    } finally {
+        if ($fileStream) { try { $fileStream.Dispose() } catch {} }
+        if ($rspStream)  { try { $rspStream.Dispose() }  catch {} }
+        if ($resp)       { try { $resp.Close() }         catch {} }
     }
 }
 

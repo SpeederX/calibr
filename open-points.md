@@ -12,26 +12,24 @@ group the rough order is "smaller / more isolated first".
 ## Engine + CLI: deferred but designed
 
 ### Phase F — report UI redesign
-*Estimate: 2-3h.*
+**Shipped.** See `report.template.html` + the `Phase F` markers in
+`tests/Report.Tests.ps1`. Visual demo: `node tests/generate-demo-report.mjs`
+writes `report_ui/demo-report.html` from synthetic data. What landed:
 
-Mockup from the user lives in `report_ui/Screenshot 2026-06-01 125229.png`
-(gitignored). Notes from the conversation:
-
-- **Memory vs latency chart moves to the FIRST visible section**, above
-  the winners grid. It is the most diagnostic single view of a bench
-  run.
-- **Per-config rows collapse under expandable model rows**. The
-  collapsed header row shows the WINNING config for the currently
-  selected filter; expand to see all configs for that model.
-- **Eval tokens / VRAM peak become tabs of the same widget** instead
-  of two separate sections.
-- **Top-level filter selector** that changes the winner criterion
-  (speed / efficiency / safety-balanced / overall-weighted). This is
-  effectively the embryo of *scoring profiles* — when item 10 lands,
-  the filter selector grows to expose configurable weighted matrices.
-- The "deduped N stale result file(s)" engine line means the report
-  ALREADY collapses legacy T###-prefix duplicates; that work doesn't
-  need to be redone in the UI.
+- Memory-vs-latency scatter is the first visible chart.
+- Filter selector at the top picks the winner criterion: speed /
+  efficiency / safety-balanced / overall-weighted (the embryo of
+  scoring profiles — item 10 expands it to configurable weights).
+- Models list is a collapsible `<details>` per model: collapsed row =
+  winning config for the current filter; expand = all configs for the
+  model with the winner highlighted.
+- Eval-tokens-per-second and VRAM-peak bars are tabs of one widget.
+- Client-side `.bat` generation for any config (the engine still
+  pre-generates one per model in `data/bats/` for the safety-first
+  winner).
+- Engine serializes the extended metrics (`ttft_sec`,
+  `gpu_power_peak_w`, etc.) and `model_path` / `mmproj_path` into the
+  report JSON so the efficiency scorer and the bat generator work.
 
 ### llama.cpp auto-fetch
 *Estimate: 0.5-1d.*
@@ -48,8 +46,8 @@ Steps:
 
 1. Detect hardware (already done in `Get-DetectedHardware`).
 2. Pick the right build flavor: CUDA if NVIDIA GPU present, Vulkan or
-   ROCm if AMD, CPU-only as fallback. (CUDA version needs to match the
-   driver — `nvidia-smi --query-gpu=driver_version` gates this.)
+   ROCm if AMD, CPU-only as fallback. **CUDA version must match the
+   driver** — see compat note below.
 3. Resolve the latest build tag from the GitHub releases API (or
    accept a config-pinned `bN`).
 4. Download into `~/AppData/Local/calibr/llama-bin/<bN>/`. Unzip there.
@@ -60,6 +58,26 @@ UX-wise, this means `init` no longer fails when llama isn't installed —
 it offers to fetch it. Add a confirmation prompt in interactive mode
 (`Download ~250 MB from GitHub? y/N`), bypassable with `-AutoFetchLlama`
 flag for headless setups.
+
+**CUDA build picker rules (load-bearing — silently picking the wrong
+CUDA variant bricks every bench with a PTX toolchain error):**
+
+| llama.cpp build | CUDA in zip name | Min Windows driver |
+|-----------------|------------------|--------------------|
+| any             | cuda-12.4        | ~R535+             |
+| any             | cuda-13.0        | R580+              |
+| any             | cuda-13.1        | R590+              |
+| any             | cuda-13.3        | R598+              |
+| any             | cpu              | (n/a)              |
+| any             | vulkan           | (n/a)              |
+
+The numbers above are empirical (R596.21 on RTX 2070 ran b9360 cuda-13.1
+cleanly but failed b9482 cuda-13.3 with `PTX was compiled with an
+unsupported toolchain` in `ggml_cuda_kernel_can_use_pdl`). Probe with
+`nvidia-smi --query-gpu=driver_version --format=csv,noheader` and pick
+the highest CUDA variant whose minimum is `<= driver`. Cuda-12.4 is the
+safe default for anything R535+. The README's Requirements section
+holds the same table for users who set up manually.
 
 ### reasoning_mode wiring
 *Estimate: 1-2h.*
@@ -136,6 +154,36 @@ at the end of each iteration would let RunView show per-sample timing
 in the live strip — useful when the loop is multi-hour and the user
 wants to know "how long did Qwen3.5-9B take vs Gemma 4 E4B".
 
+### Bench summary line rewrite (cosmetic)
+*Estimate: 15 min.*
+
+Today the final summary the engine emits at the end of Invoke-Bench is:
+
+```
+===============================================================
+ calibr bench - done in 1m57s
+   2 ok . 0 fail . 0 skipped (out of 2 configs (3 runs each))
+   rotated: 1 deleted . 0 kept
+===============================================================
+```
+
+The user wants:
+
+```
+===============================================================
+ calibr - bench for {model name} - completed in 1m57s
+   configs: 2 ok (100%) - 0 fail - 0 skipped / 3 runs per config
+   files: 1 downloaded and deleted . 0 kept
+===============================================================
+```
+
+Three small wording changes (`calibr - bench for {model}`, add the
+`(100%)` ok-rate, "files: N downloaded and deleted" instead of
+"rotated"). RunView's SUMMARY_RE will need updating to match the
+new shape. The `{model name}` slot only applies for single-model
+runs — for the multi-model `all` case fall back to the current
+phrasing or list the models separately.
+
 ---
 
 ## Bigger / design-needed (the user explicitly deferred these earlier)
@@ -189,13 +237,19 @@ Open questions:
 - Result schema (one row per model, or per (model, config)?).
 - How to combine with the speed bench in the final report.
 
-### Scoring profiles in report
-*Depends on: extended metrics (done), abstention bench (above).*
+### Scoring profiles in report (configurable weights UI)
+*Depends on: extended metrics (done), abstention bench (above).
+Filter selector with four hard-coded profiles already shipped in Phase F.*
 
-Weighted matrix in the report: each row is a config; columns are
-speed / efficiency (perf/watt) / honesty / hardware-stress; the user
-picks a profile to re-sort the leaderboard. The filter selector
-landing in Phase F is the embryo of this.
+Replace the four hard-coded profile buttons with a UI that lets the
+user dial weights themselves: speed / efficiency (perf/watt) / safety
+(no-paging) / honesty / hardware-stress columns, each with a
+0-100 slider; "save as user profile" persists to
+`data/user_score_profiles.json` so the profile shows up alongside the
+defaults.
+
+Tied into the abstention bench for the honesty axis; without it, the
+profile can dim that slider as N/A.
 
 ### GGUF metadata parser
 *Estimate: 0.5d.*
