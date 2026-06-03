@@ -215,18 +215,14 @@ Maintainer flow:
    tag (`vX.Y.Z`). `npm version <patch|minor|major>` does both when the working
    tree is clean; if the release commit already contains the bump, create the
    tag manually.
-2. `git push --follow-tags origin <branch>` — push the branch and
-   the tag.
-3. GitHub Actions runs `.github/workflows/release.yml` on the tag.
-   It re-runs the smoke test and then publishes to npm with
-   `--provenance` (signed attestation linking the tarball to the
-   commit).
+2. `git push --follow-tags origin <branch>` - push the branch and the tag.
+3. GitHub Actions runs `.github/workflows/release.yml` on the tag. It re-runs
+   the smoke test and then publishes to npm through trusted publishing (OIDC).
+   npm generates provenance automatically for the public package.
 
-Requires a repo secret `NPM_TOKEN` with publish rights to the
-`calibr` package on npmjs.org. Set it under **Settings → Secrets and
-variables → Actions → New repository secret**. Use a *Granular
-Access Token* scoped to the `calibr` package, with **read and write**
-permissions, expiring no later than you intend to re-issue it.
+Requires npm package settings to trust this GitHub repository and the exact
+workflow filename `release.yml` under **Package settings -> Trusted
+publishing**. No `NPM_TOKEN` repository secret is needed for publish.
 
 Plain commits to any branch run `.github/workflows/ci.yml` only
 (build + smoke test on Windows and Ubuntu). They do not publish.

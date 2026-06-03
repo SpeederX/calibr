@@ -9,8 +9,8 @@ on:
     tags:
       - "v*.*.*"
 
-# id-token is required so `npm publish --provenance` can mint an OIDC
-# token that links the published tarball to this exact workflow run.
+# id-token is required for npm trusted publishing (OIDC). The npm package must
+# trust this repository + workflow filename in npmjs package settings.
 # contents:read is the default; making it explicit for clarity.
 permissions:
   contents: read
@@ -57,7 +57,7 @@ jobs:
   publish:
     name: Publish CLI to npm
     needs: verify
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
@@ -66,9 +66,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Node + npmjs registry
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
           cache: npm
           cache-dependency-path: cli/package-lock.json
@@ -99,11 +99,7 @@ jobs:
       - name: Smoke install test
         run: npm test
 
-      # --provenance attaches a signed attestation linking this tarball
-      # to this exact commit + workflow. Visible on the npm package page.
-      # NPM_TOKEN must be a granular access token with publish rights to
-      # the `calibr` package. Set it under repo settings -> Secrets.
+      # Trusted publishing uses GitHub's OIDC token; no NPM_TOKEN secret is
+      # needed. npm generates provenance automatically for public packages.
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --provenance --access public
+        run: npm publish --access public
