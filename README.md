@@ -49,14 +49,9 @@ fit, speed, headroom, and spill behavior on your machine.
 - [What calibr recommends](#what-calibr-recommends)
 - [Privacy and model licenses](#privacy-and-model-licenses)
 - [Why not just …?](#why-not-just-)
-- [Want comparable numbers across machines?](#want-comparable-numbers-across-machines)
-- [Requirements](#requirements)
-- [Setup details](#setup-details)
-- [Usage](#usage)
-- [Reference dataset — `get-models`](#reference-dataset--get-models)
-- [How it works](#how-it-works)
-- [WDDM paging detection](#wddm-paging-detection)
-- [Output layout](#output-layout)
+- [Dependencies](#dependencies)
+- [Included model catalog](#included-model-catalog)
+- [Technical details](#technical-details)
 - [Known limitations](#known-limitations)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
@@ -127,26 +122,22 @@ one wins.
 | LocalMaxxing | Community leaderboard aggregator | Depends on third-party submissions; no measurement on the user's own hardware. |
 | Bench360 | Academic benchmark framework | Not consumer-facing. |
 
-## Want comparable numbers across machines?
-
-Run `.\calibr.ps1 get-models -DownloadAll` (~100 GB) to populate a
-[curated reference set](#reference-dataset--get-models) spanning 0.8B
-dense up to 31B MoE. Anyone running the same set on different hardware
-produces directly comparable `data/results/*.json` files — drop them into a
-shared repo to crowdsource a "what runs well on what GPU" dataset.
-
-## Requirements
+## Dependencies
 
 **Windows (full feature set, incl. WDDM paging detection):**
 
 - **Windows 10/11** with PowerShell 5.1+
 - **NVIDIA GPU + recent driver** (tested on RTX 2070 8 GB, compute 7.5)
 - `nvidia-smi` on PATH (bundled with the NVIDIA driver)
+- **Node.js 18 or newer** and npm for the global `calibr` command.
+- A **llama.cpp build** with `llama-server.exe`, preferably CUDA on NVIDIA.
 
-**Linux (throughput benchmarking; AMD/GTT spill detection when tooling is installed):**
+**Linux:**
 
+- **Node.js 18 or newer** and npm for the global `calibr` command.
 - **PowerShell Core (`pwsh`)** — [install guide](https://github.com/PowerShell/PowerShell).
-  The engine is the same `calibr.ps1`, run under `pwsh`.
+  The npm CLI starts the engine through `pwsh` on Linux.
+- A **llama.cpp build** with `llama-server`.
 - A GPU is optional. On **NVIDIA** with `nvidia-smi` on PATH you get VRAM /
   power / temp / util metrics. On **AMD**, install `radeontop` + `mesa-utils`
   (`apt install radeontop mesa-utils`) for VRAM total (`glxinfo`) and live
@@ -159,9 +150,9 @@ Linux dependency map:
 
 | Dependency | Required? | Used for | Typical package |
 |---|---:|---|---|
-| `pwsh` | yes | run the PowerShell engine from the npm CLI and raw engine path | `powershell` (install from Microsoft/PowerShell release docs) |
+| `pwsh` | yes | run the engine from the npm CLI | `powershell` (install from Microsoft/PowerShell release docs) |
 | `llama-server` | yes | actual llama.cpp inference backend | llama.cpp release/build |
-| `bash`, `chmod` | yes for `install` / launchers | write executable `.sh` launchers and `~/.local/bin/calibr` wrapper | usually preinstalled |
+| `bash`, `chmod` | yes for launchers | write executable `.sh` launchers | usually preinstalled |
 | `xdg-open` | optional | open `data/report.html` from the CLI | `xdg-utils` |
 | `lspci` | optional | Linux GPU-name fallback when `nvidia-smi` is absent | `pciutils` |
 | `nvidia-smi` | optional, NVIDIA | NVIDIA VRAM / power / temp / utilization metrics | NVIDIA driver |
@@ -171,416 +162,77 @@ Linux dependency map:
 For an AMD/Vulkan readiness check, `vulkaninfo` (`vulkan-tools`) is useful to
 verify that Vulkan sees a hardware GPU rather than only `llvmpipe`.
 
-**Both platforms:**
-
-- A **llama.cpp build** — get a release from the
-  [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases)
-  (CUDA recommended on NVIDIA), or build from source. A Vulkan-only build also
-  works on NVIDIA, but is ~10-15% slower; `bench` prints a yellow warning if it
-  spots this mismatch. Older builds may lack newer model architectures —
-  `bench` detects "unknown model architecture" failures and skips the
-  remaining tests of the affected model instead of running them all to fail.
-  *(Note: on older CPUs lacking AVX2/FMA/BMI2, prebuilt binaries may crash with
-  SIGILL — build llama.cpp with `-DGGML_AVX2=OFF -DGGML_FMA=OFF -DGGML_BMI2=OFF`.)*
-
-  **Pick the CUDA variant that matches your NVIDIA driver.** Each release
-  ships several zips: `llama-bN-bin-win-cuda-12.4-x64.zip`,
-  `...-cuda-13.0-x64.zip`, `...-cuda-13.3-x64.zip`, `...-vulkan-x64.zip`,
-  `...-cpu-x64.zip`. The CUDA 13.x builds need a recent driver, and even
-  R596 isn't always enough: on RTX 2070 with R596.21 the b9482 CUDA 13.3
-  build fails immediately at model load with `CUDA error: the provided
-  PTX was compiled with an unsupported toolchain` (the PTX uses CUDA 13.3
-  Programmatic Dependent Launch kernels the driver doesn't recognize).
-  Working combinations observed:
-
-  | llama.cpp build | CUDA variant   | NVIDIA driver | Status                          |
-  |-----------------|----------------|---------------|---------------------------------|
-  | b9360           | cuda-13.1      | R596.21       | works on RTX 2070               |
-  | b9482           | cuda-13.3      | R596.21       | fails: PTX toolchain mismatch   |
-  | b9482           | cuda-12.4      | R596.21       | works (use this if R596)        |
-
-  Rule of thumb: when in doubt pick `cuda-12.4` — it's the broadest-
-  compatible build llama.cpp publishes. The CUDA 13.x zips need driver
-  R598+ for current builds. The `init` step picks up whatever
-  `llama-server.exe` is on PATH or in sibling folders; to switch builds
-  later, use the `llama` menu entry in the interactive CLI to repoint
-  `llama_server_exe` without rewriting the rest of `config.json`.
-
-## Setup details
-
-`init` is interactive (or pass `-NonInteractive`) and produces `config.json`
-with absolute paths from your machine. It:
-- detects the GPU + VRAM: `nvidia-smi` on Windows/NVIDIA; on Linux without
-  `nvidia-smi` it reads the GPU name from `lspci` and leaves `vram_total_mib`
-  for you to set (no reliable VRAM readout on, e.g., the AMD `radeon` driver)
-- detects CPU cores/threads: WMI on Windows, `/proc/cpuinfo` on Linux
-- searches PATH + sibling folders for the llama-server binary
-  (`llama-server.exe` on Windows, `llama-server` on Linux) and `.gguf` directories
-- writes only the override fields; everything else inherits from `config.default.json`
-
-`config.json` is in `.gitignore`, so personal paths stay off your fork.
-Open [`config.default.json`](config.default.json) for the full schema with
-inline comments.
-
-You can edit `config.json` by hand, or use `config get/set/unset` from the
-command line — see [Editing config from the CLI](#editing-config-from-the-cli)
-below.
-
-### Run `calibr` from anywhere
-
-On Windows the repo ships with `calibr.cmd`, a thin wrapper around the
-PowerShell script. Run `install` once to put this directory on your user PATH:
-
-```powershell
-.\calibr.ps1 install
-```
-
-On Linux, `install` instead writes a small executable wrapper to
-`~/.local/bin/calibr` (which runs the engine through `pwsh`); make sure
-`~/.local/bin` is on your PATH:
-
-```bash
-pwsh ./calibr.ps1 install
-```
-
-That's it. Now from any directory:
-
-```powershell
-calibr help
-calibr status
-calibr bench -Model Qwen3.5-9B
-calibr config set hardware.vram_safety_budget_pct 0.92
-```
-
-`install` writes only the User-scope PATH (no admin rights), is
-idempotent, and patches the current shell session so you don't have to
-reopen the terminal. To revert, run `calibr uninstall`.
-
-The wrapper sets `-ExecutionPolicy Bypass -NoProfile`, so it works on
-locked-down machines and starts faster (no profile load). One caveat: if
-you set `scan_paths` to a relative path like `"."`, that resolves to your
-current working directory at invocation time — use absolute paths (e.g.
-`config set scan_paths "D:\models"`) to make the global command
-location-independent.
-
-## Usage
-
-After `calibr install` you can drop the `.\calibr.ps1` prefix; before
-that, every command works the same way with the prefix from the project
-directory.
-
-```powershell
-calibr init                # one-time setup -> config.json
-calibr discover            # scan scan_paths[] for .gguf -> data/catalog.json
-calibr plan                # generate test configs -> data/plan.json
-calibr bench               # run pending configs -> data/results/*.json
-calibr report              # HTML + .bat for winners -> data/report.html + data/bats/
-calibr all                 # discover + plan + bench + report
-calibr status              # state + config + global-install indicator
-calibr config <list|get|set|unset>  [<key>] [<value>]   # inspect/edit config
-calibr install / uninstall # add or remove this dir from user PATH
-calibr help [<command>]    # general help, or detail for one command
-calibr get-models   # curated reference shelf (see below)
-```
-
-Run `.\calibr.ps1 help <command>` for the usage block + flags + examples of
-any subcommand (e.g. `help bench`, `help config`).
-
-### Filters
-
-| Flag | Effect |
-|------|--------|
-| `-Model <regex>` | Only operate on models whose name matches |
-| `-Tier {A,B,C}`   | Only operate on the selected tier |
-| `-Id <pattern>`   | Only run configs whose test ID matches (wildcards ok) |
-| `-DryRun`         | Print what would be done; don't run llama-server |
-| `-Force`          | Re-run tests whose results already exist |
-
-### CLI overrides (skip config.json editing)
-
-| Flag | Used by | Effect |
-|------|---------|--------|
-| `-ScanPath <path[,path,...]>` | `discover`, `init`, `all` | Replaces `scan_paths` for this run |
-| `-LlamaServer <path>`         | `bench`, `report`, `init`, `all` | Replaces `llama_server_exe` for this run |
-| `-GroupBy {model,model+variant}` | `report`, `all` | How to group results when picking winners. Default `model`. With `model+variant` you get a separate winner (and `.bat`) per variant. |
-| `-FetchCatalog`            | `all` | Run `get-models` before the pipeline. Without a filter implies "download everything"; combine with `-CatalogId` or `-Model` to narrow. |
-
-```powershell
-# Compare Q4 vs Q8 of the same model by giving them separate winners
-.\calibr.ps1 all -GroupBy model+variant
-# -> data/bats/Qwen3.5-9B_Q4_K_M.bat
-# -> data/bats/Qwen3.5-9B_Q8_0.bat
-```
-
-### Common workflows
-
-```powershell
-# A. You already have .gguf files on disk
-.\calibr.ps1 init      # one-time setup, writes config.json
-.\calibr.ps1 all       # discover -> plan -> bench -> report
-
-# B. Start fresh with the curated reference set (one shot, download + bench)
-.\calibr.ps1 all -FetchCatalog                            # ~100 GB; prompts to confirm
-.\calibr.ps1 all -FetchCatalog -CatalogId qwen3.5-9b-q4km  # one model, ~5 GB
-.\calibr.ps1 all -FetchCatalog -Model "Qwen3.5"           # one model
-
-# C. Pure CLI, no config.json (CI / try-and-throw-away)
-.\calibr.ps1 get-models -CatalogId qwen3.5-0.8b-q4xl -Destination .\models
-.\calibr.ps1 all -ScanPath .\models -LlamaServer "C:\bin\llama-server.exe"
-```
-
-### Editing config from the CLI
-
-You don't have to open `config.json` to tweak settings. Four sub-actions cover
-the common workflow:
-
-```powershell
-.\calibr.ps1 config list                                         # all keys, type, [default] vs [local]
-.\calibr.ps1 config get hardware.vram_total_mib                  # one value
-.\calibr.ps1 config get hardware                                 # whole subtree
-.\calibr.ps1 config set hardware.vram_safety_budget_pct 0.92     # write to local override
-.\calibr.ps1 config set scan_paths "D:\models,E:\cache"          # CSV for arrays
-.\calibr.ps1 config set bench.warmup false                       # bools: true/false/1/0/yes/no
-.\calibr.ps1 config unset hardware.vram_safety_budget_pct        # remove override, default applies
-```
-
-- Types are inferred from `config.default.json` (so `... vram_total_mib 8192`
-  becomes int, not string). Keys with `null` defaults auto-detect from the
-  value shape (digits → int, decimal → float, true/false → bool).
-- `config set` writes only the leaf you specified into `config.json`;
-  everything else continues to inherit from `config.default.json`. This
-  matches the override-only philosophy — your fork stays clean.
-- Trying to `set` a key that doesn't exist in the schema is rejected (so a
-  typo doesn't silently bury a flag). Add new keys by editing
-  `config.default.json` directly.
-
-When `-FetchCatalog` runs without a configured scan path (no `config.json`,
-no `-ScanPath`), calibr puts the files in `./downloaded-models/` under the
-project root and points `discover` there automatically.
-
-## Reference dataset — `get-models`
-
-To make benchmark numbers **comparable across machines**, the repo ships a
-curated list of reference GGUF models in [`models_catalog.json`](models_catalog.json)
-spanning 0.8B up to 31B, dense and MoE. Anyone running `get-models`
-gets the same dataset, so reported tokens/s on different hardware can be
-compared directly.
-
-```powershell
-.\calibr.ps1 get-models                                    # list (OK = on disk)
-.\calibr.ps1 get-models -CatalogId qwen3.5-9b-q4km          # download one
-.\calibr.ps1 get-models -Model "Gemma-4"                   # by model
-.\calibr.ps1 get-models -DownloadAll                       # all (~100 GB, prompts to confirm)
-.\calibr.ps1 get-models -DownloadAll -DryRun               # preview
-.\calibr.ps1 get-models -CatalogId qwen3.5-9b-q4km -Destination "D:\models"
-```
-
-Files land at `{scan_paths[0]}/{target_dir}/{hf_file}` so a subsequent
-`discover` picks them up automatically.
-
-| Tier hint | Model | Approx size | Why it's in the reference set |
-|-----------|--------|-------------|-------------------------------|
-| A | Qwen3.5 0.8B Q8_0 + Q4_K_XL    | 0.5 - 0.8 GB | Bandwidth/sanity baseline |
-| A | Qwen3.5 2B UD-Q4_K_XL + BF16   | 1.3 - 3.5 GB | Multimodal small + quality reference |
-| A | Qwen3.5 4B Q4_K_M              | 2.6 GB       | Mid-size dense |
-| A | Qwen3.5 9B Q4_K_M              | 5.2 GB       | 8-GB-VRAM sweet spot |
-| C | Qwen3.5 27B Q4_K_S             | 15 GB        | Partial-offload case |
-| B | Qwen3.6 35B-A3B UD-Q4_K_M      | 20 GB        | MoE routing (3B active) |
-| A | Gemma-4 E2B / E4B Q4_K_M       | 2.3 / 4.6 GB | Multimodal (vision + audio) |
-| B | Gemma-4 26B-A4B UD-Q4_K_M      | 15 GB        | MoE counterpart to Qwen3.6 |
-| C | Gemma-4 31B Q4_K_M             | 18 GB        | Large dense, partial offload |
-
-When a download fails: 401 = accept license on HuggingFace; 404 = open a PR
-fixing `models_catalog.json`; flaky network = fall back to `huggingface-cli download`.
-
-## How it works
-
-`calibr`'s pipeline is five sequential stages, each writing to a file the
-next one reads:
-
-```
-       you (or get-models)
-                │
-                ▼
-       ┌──────────────────┐
-       │  .gguf files on  │ ◄── config.json (scan_paths, llama_server_exe, hardware)
-       │  scan_paths[...] │
-       └────────┬─────────┘
-                │
-                ▼
-       ┌──────────────────┐
-   1.  │     discover     │ ──► data/catalog.json   (N models, metadata)
-       └────────┬─────────┘
-                │
-                ▼
-       ┌──────────────────┐
-   2.  │       plan       │ ──► data/plan.json      (K configs, K >> N)
-       └────────┬─────────┘
-                │
-                ▼
-       ┌──────────────────┐
-   3.  │      bench       │ ──► data/results/*.json (one JSON per config)
-       └────────┬─────────┘
-                │
-                ▼
-       ┌──────────────────┐
-   4.  │      report      │ ──► data/report.html   + data/bats/{group_key}.bat
-       └──────────────────┘
-```
-
-### Stage 1 — `discover` builds the catalog
-
-Recursive glob of `scan_paths`, filtered by `exclude_patterns` (defaults skip
-`mmproj-*.gguf`, `ggml-vocab-*.gguf`, `*draft*.gguf`). For each surviving file:
-
-- **Model** is the filename stem stripped of the variant suffix, e.g.
-  `Qwen3.5-9B-Q4_K_M.gguf` → model `Qwen3.5-9B`, variant `Q4_K_M`.
-- **Series** is parsed from the model (e.g. `Qwen3.5-9B` → series `Qwen3.5`).
-- **MoE detection** is regex on the model: matches `A\d+B` (e.g. `Qwen3.6-35B-A3B`)
-  or contains `MoE` / `Mixtral`. *(See [Known limitations](#known-limitations) for false-positive risk.)*
-- **mmproj pairing**: a sibling `mmproj-*.gguf` in the same directory is
-  auto-paired by precision preference (F16 → BF16 → F32). Concrete example:
-  if the folder contains
-  ```
-  Qwen3.5-2B-UD-Q4_K_XL.gguf
-  mmproj-F16.gguf
-  ```
-  the catalog entry for `Qwen3.5-2B-UD-Q4_K_XL.gguf` records
-  `mmproj = ".../mmproj-F16.gguf"`, and every benchmark for that model gets
-  `--mmproj "..."` injected automatically.
-
-### Stage 2 — `plan` expands each model into a config sweep
-
-Each cataloged model produces N test configurations based on its tier:
-
-| Tier | Entry rule | Sweep dimension | Default values | # configs |
-|------|-----------|-----------------|----------------|----------:|
-| **A** | `model_size + mmproj_size + overhead < vram_safety_budget` | (ctx, KV quant) pairs from `tier_a_candidates` | 16K/32K/64K/96K @ q8_0; 128K/160K @ q4_0 | 6 |
-| **B** | model is MoE | `--n-cpu-moe` from `moe_ncpumoe_sweep` | `[28, 30, 32, 34, 36]` | 5 |
-| **C** | `model_size + overhead >= vram_safety_budget` and not MoE | `--gpu-layers` from `c_ngl_sweep` | `[20, 24, 28, 32, 36]` | 5 |
-
-Two quants of the same model both get expanded — if you have
-`Qwen3.5-0.8B-Q8_0.gguf` and `Qwen3.5-0.8B-UD-Q4_K_XL.gguf`, plan generates
-12 configs (6 Tier A candidates × 2 variants). Both compete in the same model
-pool when `report` picks winners.
-
-#### `vram_safety_budget` defined explicitly
-
-```
-vram_safety_budget_mib = vram_total_mib × vram_safety_budget_pct
-```
-
-Default `vram_safety_budget_pct = 0.95`. On an RTX 2070 (8192 MiB) that's
-`7782 MiB`. The 0.95 came from empirical observation on Windows 11: above
-~95% VRAM use, the WDDM driver starts paging to system RAM (Shared GPU
-Memory), and inference throughput collapses 2-4× without any error message.
-Keeping the safety budget below this cliff avoids the issue.
-
-If you have a 24-GB card and want to push closer to the limit, raise the pct
-to 0.97 or 0.98 in `config.json`. If you keep heavy GPU compositors open
-(many Chrome tabs, video calls), lower it to 0.90.
-
-#### `overhead` defined explicitly
-
-The `overhead_mib` budget (default `1200`, in `tier_classification.overhead_mib`)
-covers everything that lives in VRAM **besides the model weights**:
-
-| Component | Typical size |
-|-----------|--------------|
-| Compute buffers (one-shot tensors per forward pass) | 400 - 600 MiB |
-| Recurrent / SSM state (for hybrid models like Qwen3.5) | 50 - 200 MiB |
-| Graph / scheduler metadata | ~100 MiB |
-| Driver headroom (avoids hitting the WDDM cliff during transients) | ~300 MiB |
-
-Tune `overhead_mib` if your bench runs are repeatedly OOM-ing or, conversely,
-leaving large VRAM unused.
-
-The Tier A entry rule effectively reads "*the weights plus their mmproj plus
-fixed overhead must fit in the safety budget*", and is used as a pre-flight
-check so a 27 GB Q8 model isn't even considered for full-GPU configs.
-
-### Stage 3 — `bench` runs each config
-
-For every config:
-
-1. Kill any leftover `llama-server.exe`. Snapshot baseline VRAM and Shared GPU memory.
-2. Spawn `llama-server` with the config's flags + `base_args` from config + thread flags from `hardware.cpu_*`.
-3. Wait up to `bench.wait_sec_ready` for `/v1/models` to respond 200.
-4. **Warmup** — one identical-prompt completion with `cache_prompt=true`, `n_predict=8`. This compiles CUDA graphs for the actual batch sizes. **Without this the first prompt reports ~10× slower `prompt_tps`**, which would silently pollute every comparison.
-5. **Bench** — the real `/completion` call, `cache_prompt=false`, `n_predict` from config. Pull `prompt_per_second` and `predicted_per_second` from the server's own timings.
-6. Kill the process; parse stderr for `CUDA0 model buffer size`, `CUDA0 KV buffer size`, `CUDA_Host compute buffer size`, `offloaded N/M layers`, etc.
-7. Compute WDDM flags (saturation %, shared-memory delta).
-8. Cache to `data/results/{TestID}.json`. Subsequent runs skip configs whose JSON already exists, unless you pass `-Force`. **A long bench run is safely interruptible** — kill it any time and re-run; only missing tests re-execute.
-
-### Stage 4 — `report` picks winners and emits artifacts
-
-Results are grouped by `-GroupBy` (default `model`):
-
-```text
-for each result where ok == true:
-    safe = (shared_peak_mib <= 0)         # no WDDM paging delta
-    winner[group_key] = this result if:
-      - no current winner for this group, OR
-      - this is safe and current is not (safety upgrade), OR
-      - both equally safe/unsafe AND this has higher eval_tps
-```
-
-Safety preference is intentional: a 30 t/s safe config is more useful than a
-50 t/s config that's one Chrome tab away from collapsing.
-
-Output:
-- `data/report.html` — sortable tables, per-model winner cards, charts, WDDM
-  watchlist (configs where `shared_peak_mib > shared_delta_confirm_mib` or
-  `vram_saturation > 0.92`).
-- `data/bats/{group_key}.bat` — one launcher per group with the winning
-  cmdline, annotated header reporting the measured numbers.
-
-## WDDM paging detection
-
-> **Cross-platform note.** The perf counter below is Windows-only, but the
-> underlying signal — VRAM spilling into system RAM — is also detected on
-> **AMD/Linux** via GTT (`radeontop`), feeding the same `shared_peak_mib` and
-> winner logic. NVIDIA-on-Linux OOMs cleanly (no silent spill); without
-> `radeontop` the fields read zero and winners go by throughput + fit.
-
-On Windows, when VRAM is saturated the NVIDIA driver **does not raise OOM** —
-it pages to "Shared GPU memory" (a slice of system RAM mapped via PCIe). The
-model continues to run, but each token incurs PCIe round-trips, collapsing
-eval throughput by 2-4×. Two heuristics are recorded in every result:
-
-1. **`shared_peak_mib`** — peak of `Get-Counter "\GPU Adapter Memory(*)\Shared Usage"` *minus* the baseline measured before launching `llama-server`. Subtracting the baseline is essential — Chrome and Discord on a desktop can hold hundreds of MiB of shared GPU memory at all times. Treating absolute shared usage as paging would false-flag every run.
-2. **`wddm_vram_saturation`** — `vram_peak_mib / vram_total_mib`. Above
-   `wddm_detection.vram_saturation_threshold` (default 0.92) the run is
-   marked as suspicious even if shared delta was zero (paging may happen
-   between the polling samples).
-
-A result is "**confirmed paging**" when the shared delta exceeds
-`wddm_detection.shared_delta_confirm_mib` (default 500 MiB). Smaller deltas
-are treated as background drift.
-
-## Output layout
-
-```
-calibr/
-├── config.default.json      # committed, no personal paths
-├── config.json              # gitignored, written by `init`
-├── calibr.ps1              # the tool
-├── models_catalog.json             # committed, the reference shelf
-├── report.template.html     # committed, HTML skeleton with %%placeholders%%
-├── README.md
-├── LICENSE
-├── .gitignore
-├── docs/
-│   ├── cli-all.png          # npm install + guided all flow
-│   └── report-complete.png  # report screenshot embedded above
-└── data/                    # gitignored, all runtime artifacts
-    ├── catalog.json         # discovered models
-    ├── plan.json            # planned test configs
-    ├── results/             # one JSON per test
-    ├── logs/                # llama-server stderr per test
-    ├── bats/                # winner launchers
-    └── report.html          # the dashboard
-```
+**llama.cpp build choice:**
+
+Get a release from the
+[llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases)
+(CUDA recommended on NVIDIA), or build from source. A Vulkan-only build also
+works on NVIDIA, but is usually slower than CUDA. On Windows/NVIDIA, the
+broadest-compatible llama.cpp release artifact is usually the CUDA 12.4 build.
+
+Older builds may lack newer model architectures. calibr detects "unknown model
+architecture" failures and skips the remaining tests for that model instead of
+running every config to fail.
+
+## Included model catalog
+
+The bundled catalog is deliberately conservative: official or near-official
+model families from Google/Gemma, Alibaba/Qwen, Meta/Llama, Mistral,
+Hugging Face/SmolLM, Microsoft/Phi, IBM/Granite, and a small number of widely
+used GGUF packagers. It avoids random distillations, fine-tunes, and one-off
+community remixes because the goal is to recommend a reliable local baseline.
+
+### Low - GTX 1650 / RTX 3050 / iGPU + 16 GB system
+
+| Model | Variant | Tier | Source | Approx size |
+|---|---|---:|---|---:|
+| SmolLM2-135M-Instruct | Q4_K_M | A | bartowski | 91 MB |
+| SmolLM2-360M-Instruct | Q4_K_M | A | bartowski | 219 MB |
+| Qwen2.5-0.5B-Instruct | Q4_K_M | A | Qwen | 381 MB |
+| Qwen3-0.6B | Q4_K_M | A | unsloth | 448 MB |
+| Qwen3.5-0.8B | UD-Q4_K_XL | A | unsloth | 533 MB |
+| TinyLlama-1.1B-Chat | Q4_K_M | A | TheBloke | 639 MB |
+| Llama-3.2-1B-Instruct | Q4_K_M | A | unsloth | 763 MB |
+| Gemma-3-1B-it | Q4_K_M | A | ggml-org | 763 MB |
+| Qwen3.5-0.8B | Q8_0 | A | unsloth | 774 MB |
+| Qwen2.5-1.5B-Instruct | Q4_K_M | A | Qwen | 954 MB |
+| StableLM-2-1.6B-Zephyr | Q4_K_M | A | second-state | 954 MB |
+| SmolLM2-1.7B-Instruct | Q4_K_M | A | HuggingFaceTB | 1.0 GB |
+| Qwen3.5-2B | UD-Q4_K_XL | A | unsloth | 1.2 GB |
+| Granite-3.0-2B-Instruct | Q4_K_M | A | bartowski | 1.4 GB |
+| Gemma-2-2B-it | Q4_K_M | A | bartowski | 1.6 GB |
+| Phi-2-2.7B | Q4_K_M | A | TheBloke | 1.6 GB |
+| Qwen2.5-3B-Instruct | Q4_K_M | A | Qwen | 1.8 GB |
+| Llama-3.2-3B-Instruct | Q4_K_M | A | unsloth | 1.9 GB |
+| Ministral-3-3B-Instruct | Q4_K_M | A | unsloth | 1.9 GB |
+| Gemma-4-E2B | Q4_K_M | A | unsloth | 2.3 GB |
+
+### Middle - RTX 2070 / 3060 8 GB + 32 GB system
+
+| Model | Variant | Tier | Source | Approx size |
+|---|---|---:|---|---:|
+| Phi-3.5-mini-Instruct | Q4_K_M | A | bartowski | 2.2 GB |
+| Gemma-3-4B-it | Q4_K_M | A | ggml-org | 2.4 GB |
+| Qwen3.5-4B | Q4_K_M | A | unsloth | 2.6 GB |
+| Qwen3.5-2B | BF16 | A | unsloth | 3.5 GB |
+| Gemma-4-E4B | Q4_K_M | A | unsloth | 4.6 GB |
+| Qwen3.5-9B | Q4_K_M | A | unsloth | 5.2 GB |
+| Gemma-4-26B-A4B | UD-Q4_K_M | B | unsloth | 14.9 GB |
+| Qwen3.6-35B-A3B | UD-Q4_K_M | B | unsloth | 20.6 GB |
+
+### High - RTX 4090 / A6000 / etc + 64 GB system
+
+| Model | Variant | Tier | Source | Approx size |
+|---|---|---:|---|---:|
+| Qwen3.5-27B | Q4_K_S | C | unsloth | 14.7 GB |
+| Gemma-4-31B | Q4_K_M | C | unsloth | 17.2 GB |
+
+## Technical details
+
+The README is intentionally product-facing. The lower-level process notes live
+in [HOW-IT-WORKS.md](HOW-IT-WORKS.md): setup details, the legacy raw engine
+path, discover/plan/bench/report stages, WDDM/GTT spill detection, and output
+layout.
 
 ## Known limitations
 
@@ -610,10 +262,10 @@ calibr/
   the tradeoff, look at the report's per-model table and pick by hand —
   every number is preserved. (A future opt-in quality bench is being
   explored — see Roadmap.)
-- **No HuggingFace authentication for `get-models`.** Models that
-  require accepting a license (notably some Gemma variants) will return 401.
-  Accept the license once on the website, or download those particular files
-  with `huggingface-cli` separately.
+- **No HuggingFace authentication for catalog downloads.** Models that require
+  accepting a license (notably some Gemma variants) may return 401. Accept the
+  license once on the website, or download those particular files with
+  `huggingface-cli` separately.
 - **Per-model `max_context` only honored for curated samples.** Entries in
   `models_catalog.json` carry `max_context` (scraped from the upstream model card),
   and `plan` skips Tier A candidates above it. User-owned `.gguf` files
@@ -649,23 +301,27 @@ CLI → backend → web UI). Concrete near-term ideas being explored:
   invokes today. Enables clients other than the CLI and a shared online
   leaderboard.
 - **Phase 3 — Angular UI** on top of the backend.
-- **Linux support has landed** (engine + CLI run under `pwsh`; WDDM detection
-  skipped). Next on the cross-platform front: a native Linux GPU-metrics path
-  (`rocm-smi` / amdgpu sysfs for AMD VRAM), macOS support, and Android as a
-  Phase 2 API client.
+- **Cross-platform support**: Windows/NVIDIA is the strongest path today;
+  Linux/NVIDIA works with clean OOM behavior; AMD/Linux uses `radeontop` GTT
+  for spill detection when installed. Next on the cross-platform front: Metal,
+  richer AMD metrics, and Android as a Phase 2 API client.
 
 ## Contributing
 
-The fastest first contribution is a new entry in `models_catalog.json` for a
-model not yet covered (verify the HuggingFace URL resolves and add the
-correct `max_context`).
+The fastest first contribution is a trustworthy catalog entry in
+`models_catalog.json`: verify the HuggingFace URL resolves, add the correct
+`max_context`, and place the id in the appropriate `low`, `middle`, or `high`
+preset in `default_bench_presets.json`.
 
-The engine is one cross-platform PowerShell file (`calibr.ps1`, ~3 400 lines;
-runs under Windows PowerShell 5.1 and `pwsh` on Linux) plus a test harness in
-`tests/`. The CLI is a small Node + Ink + TypeScript app in `cli/` (~2 100
-lines of TS). The HTML report template
-(`report.template.html`) is self-contained — vanilla CSS plus ~150 lines
-of inline JS, no build step.
+Catalog additions should come from reliable model families or accountable
+publishers: Google/Gemma, Alibaba/Qwen, Meta/Llama, Mistral, Hugging
+Face/SmolLM, Microsoft/Phi, IBM/Granite, or similarly well-known upstreams.
+Avoid random distillations, custom fine-tunes, renamed reuploads, or novelty
+variants unless there is a clear consumer reason and the provenance is obvious.
+
+Implementation details live in [HOW-IT-WORKS.md](HOW-IT-WORKS.md). The current
+product surface is the Node + Ink CLI in `cli/`, wrapping the existing engine
+through a single adapter boundary.
 
 ## License
 
