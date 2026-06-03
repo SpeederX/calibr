@@ -6,7 +6,7 @@
 //
 // Invoked by `npm test` and by CI. Exit 0 on pass, non-zero on fail.
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -74,6 +74,17 @@ try {
   if (!existsSync(installed)) throw new Error(`calibr not present in ${installed}`);
   const installedFiles = readdirSync(installed).sort();
   console.log(`[smoke] installed package contents: ${installedFiles.join(", ")}`);
+  const installedPkg = JSON.parse(readFileSync(join(installed, "package.json"), "utf8"));
+
+  const binPath = join(tempDir, "node_modules", ".bin", isWindows ? "calibr.cmd" : "calibr");
+  const versionOut = runCapture("bin --version", binPath, ["--version"], { cwd: tempDir }).trim();
+  if (versionOut !== installedPkg.version) {
+    throw new Error(`calibr --version returned ${versionOut}, expected ${installedPkg.version}`);
+  }
+  const helpOut = runCapture("bin --help", binPath, ["--help"], { cwd: tempDir });
+  if (!helpOut.includes("Find the fastest safe llama.cpp model/configuration")) {
+    throw new Error("calibr --help did not include the expected positioning copy");
+  }
 
   // 3. Run the assertion script.
   //    `shell: false` here so the path to node.exe (which lives under

@@ -1,0 +1,72 @@
+{
+  "$schema_version": 1,
+  "_notes": [
+    "Pre-defined model groupings for the 'all' command. Each preset is a list of catalog_id entries from models_catalog.json plus an optional max_ctx ceiling that further narrows the Tier A context sweep.",
+    "The 'custom' name is reserved at the CLI level: it triggers CustomBenchView for fine-grained model + context picking and is not defined here.",
+    "User-saved presets live in data/user_bench_presets.json and override defaults with the same name (deep-replace, not merge — pick a different name if you want to keep both).",
+    "Tier assignment rule: a model goes into a preset whose VRAM target roughly matches the model's GGUF footprint plus headroom for KV cache and compute buffers (typically ~30-40% on top of the file size). A model can appear in only one preset; if you want to bench a mid-size model on low hardware via CPU offload, use 'custom'.",
+    "low      = files up to ~2.5 GB    (2-4 GB VRAM target)",
+    "middle   = files ~2.5-6 GB        (8 GB VRAM target)",
+    "high     = files above ~15 GB     (16-24 GB VRAM target; MoE models with low active params can also go in middle)"
+  ],
+
+  "presets": {
+    "all": {
+      "label": "all — every entry in models_catalog.json",
+      "hardware_target": "(any)",
+      "models": "*",
+      "max_ctx": null
+    },
+    "low": {
+      "label": "desktop-consumer-low — 2-4 GB VRAM + 8-24 GB RAM",
+      "hardware_target": "GTX 1650 / RTX 3050 / iGPU + 16 GB system",
+      "models": [
+        "smollm2-135m-q4km",
+        "smollm2-360m-q4km",
+        "qwen2.5-0.5b-q4km",
+        "qwen3-0.6b-q4km",
+        "qwen3.5-0.8b-q4xl",
+        "tinyllama-1.1b-q4km",
+        "llama-3.2-1b-q4km",
+        "gemma-3-1b-q4km",
+        "qwen3.5-0.8b-q8",
+        "qwen2.5-1.5b-q4km",
+        "stablelm2-1.6b-q4km",
+        "smollm2-1.7b-q4km",
+        "qwen3.5-2b-q4xl",
+        "granite-3.0-2b-q4km",
+        "gemma-2-2b-q4km",
+        "phi-2-2.7b-q4km",
+        "qwen2.5-3b-q4km",
+        "llama-3.2-3b-q4km",
+        "ministral-3-3b-q4km",
+        "gemma-4-e2b"
+      ],
+      "max_ctx": 32768
+    },
+    "middle": {
+      "label": "desktop-consumer-middle — 8 GB VRAM + 24-32 GB RAM",
+      "hardware_target": "RTX 2070 / 3060 8 GB + 32 GB system",
+      "models": [
+        "phi-3.5-mini-q4km",
+        "gemma-3-4b-q4km",
+        "qwen3.5-4b-q4km",
+        "qwen3.5-2b-bf16",
+        "gemma-4-e4b",
+        "qwen3.5-9b-q4km",
+        "gemma-4-26b-a4b",
+        "qwen3.6-35b-a3b"
+      ],
+      "max_ctx": 131072
+    },
+    "high": {
+      "label": "desktop-consumer-high-end — 16-24 GB VRAM + 32-96 GB RAM",
+      "hardware_target": "RTX 4090 / A6000 / etc + 64 GB system",
+      "models": [
+        "qwen3.5-27b-q4ks",
+        "gemma-4-31b-q4km"
+      ],
+      "max_ctx": 262144
+    }
+  }
+}

@@ -8,12 +8,16 @@ import { ResultsView } from "./ResultsView.js";
 import { BenchOptionsView } from "./BenchOptionsView.js";
 import { AllOptionsView } from "./AllOptionsView.js";
 import { InitOptionsView } from "./InitOptionsView.js";
+import { ResetOptionsView } from "./ResetOptionsView.js";
+import { LlamaPathView } from "./LlamaPathView.js";
 
 type Screen =
   | { kind: "menu" }
   | { kind: "initOptions" }
   | { kind: "benchOptions" }
   | { kind: "allOptions" }
+  | { kind: "resetOptions" }
+  | { kind: "llamaPath" }
   | { kind: "run"; args: string[]; label: string }
   | { kind: "results" };
 
@@ -82,12 +86,32 @@ export function App() {
     );
   }
 
+  if (screen.kind === "resetOptions") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <ResetOptionsView
+          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+          onCancel={() => setScreen({ kind: "menu" })}
+        />
+      </Box>
+    );
+  }
+
+  if (screen.kind === "llamaPath") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <LlamaPathView onCancel={() => setScreen({ kind: "menu" })} />
+      </Box>
+    );
+  }
+
   const items: { label: string; value: string }[] = [
     { label: `${"results".padEnd(10)} — browse benchmark winners`, value: "__results" },
     ...ENGINE_COMMANDS.map((c) => ({
       label: `${c.label.padEnd(10)} — ${c.description}`,
       value: c.id,
     })),
+    { label: `${"llama".padEnd(10)} — change llama-server.exe path`, value: "__llamaPath" },
   ];
 
   return (
@@ -102,6 +126,10 @@ export function App() {
               setScreen({ kind: "results" });
               return;
             }
+            if (item.value === "__llamaPath") {
+              setScreen({ kind: "llamaPath" });
+              return;
+            }
             if (item.value === "init") {
               setScreen({ kind: "initOptions" });
               return;
@@ -112,6 +140,10 @@ export function App() {
             }
             if (item.value === "all") {
               setScreen({ kind: "allOptions" });
+              return;
+            }
+            if (item.value === "reset") {
+              setScreen({ kind: "resetOptions" });
               return;
             }
             const cmd = ENGINE_COMMANDS.find((c) => c.id === item.value);

@@ -46,3 +46,4 @@ tests/*.tmp.json
 *.tgz
 *.tar
 *.tar.gz
+report_ui/

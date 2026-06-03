@@ -5,10 +5,10 @@
 // Asserts that the bundled install path is fully wired:
 //   - findEngineLocation() picks the bundled engine, not a walk-up match
 //   - calibr.ps1 + config.default.json exist where the CLI expects them
-//   - the data dir resolves to %LOCALAPPDATA%\calibr
+//   - the data dir resolves to the platform user data directory
 //   - readStatus() loads the bundled default config (catalog/plan empty)
 import { existsSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 const failures = [];
 function check(name, condition, detail = "") {
@@ -37,16 +37,21 @@ check(
 );
 check("config.default.json exists", existsSync(mod.CALIBR_DEFAULT_CFG), mod.CALIBR_DEFAULT_CFG);
 
-// samples.json drives the pre-bench download-footprint gate; bundling it
-// is part of the engine contract.
-const samples = mod.readSamples();
+// `calibr report` reads $CALIBR_ROOT/report.template.html. Missed bundling
+// was a latent bug pre-v0.1.3; lock it down with an explicit smoke assert.
+const tplPath = resolve(mod.CALIBR_ROOT, "report.template.html");
+check("report.template.html is bundled", existsSync(tplPath), tplPath);
+
+// models_catalog.json drives the pre-bench download-footprint gate;
+// bundling it is part of the engine contract.
+const catalog = mod.readModelCatalog();
 check(
-  "samples.json is bundled and parseable",
-  Array.isArray(samples) && samples.length > 0,
-  `got ${Array.isArray(samples) ? samples.length + " entries" : typeof samples}`,
+  "models_catalog.json is bundled and parseable",
+  Array.isArray(catalog) && catalog.length > 0,
+  `got ${Array.isArray(catalog) ? catalog.length + " entries" : typeof catalog}`,
 );
-if (samples.length > 0) {
-  const fp = mod.downloadFootprintBytes(samples);
+if (catalog.length > 0) {
+  const fp = mod.downloadFootprintBytes(catalog);
   check(
     "downloadFootprintBytes returns sensible numbers",
     fp.totalBytes > 0 && fp.maxFileBytes > 0 && fp.maxFileBytes <= fp.totalBytes,
@@ -54,9 +59,11 @@ if (samples.length > 0) {
   );
 }
 
-const expectedDataRoot = (process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE || "");
+const expectedDataRoot = process.platform === "win32"
+  ? (process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE || "")
+  : (process.env.XDG_DATA_HOME || (process.env.HOME ? join(process.env.HOME, ".local", "share") : ""));
 check(
-  "data dir resolves under the user's local app data",
+  "data dir resolves under the platform user data directory",
   expectedDataRoot.length > 0 && mod.CALIBR_DATA_DIR.startsWith(expectedDataRoot),
   `dataDir=${mod.CALIBR_DATA_DIR} expected prefix=${expectedDataRoot}`,
 );
