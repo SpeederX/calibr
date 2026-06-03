@@ -278,10 +278,14 @@ function Get-LlamaServerVersion {
     if (-not $Exe -or -not (Test-Path $Exe)) { return $null }
     try {
         $out = & $Exe --version 2>&1 | Out-String
+        # Current llama-server (b9482+) prints "version: 9482 (4fb16eccc)" —
+        # first number is the build, parenthesized is a commit hash we don't
+        # want. Older builds occasionally printed "(b9460)" directly; match
+        # both shapes, preferring the explicit bNNNN form.
         $m = [regex]::Match($out, '\((b\d+)\)')
         if ($m.Success) { return $m.Groups[1].Value }
-        $m2 = [regex]::Match($out, 'version:\s*\d+\s*\((\S+)\)')
-        if ($m2.Success) { return $m2.Groups[1].Value }
+        $m2 = [regex]::Match($out, 'version:\s*(\d+)\b')
+        if ($m2.Success) { return 'b' + $m2.Groups[1].Value }
     } catch { }
     # Path-based fallback: the official zip names embed the build tag.
     $pm = [regex]::Match($Exe, '(b\d+)')
@@ -1288,8 +1292,10 @@ function Invoke-OneBench {
             # the user gets stuck seeing yesterday's "unsupported_arch" forever
             # even after upgrading llama.cpp. Same-version failures stay
             # cached (definitive negative on the current binary).
+            # Pre-v0.1.6 result JSONs lack the field; treat them as 'unknown'
+            # so they always differ from a known current version and re-run.
             $cachedVer = if ($cached.PSObject.Properties.Name -contains 'llama_server_version') { [string]$cached.llama_server_version } else { 'unknown' }
-            if ($cachedVer -and $cachedVer -ne 'unknown' -and $cachedVer -ne $script:LLAMA_SERVER_VERSION) {
+            if ($cachedVer -ne $script:LLAMA_SERVER_VERSION) {
                 Write-Host ("[{0}] cached failure from llama-server {1}, current is {2} - re-running" -f $item.id, $cachedVer, $script:LLAMA_SERVER_VERSION) -ForegroundColor DarkYellow
             } else {
                 Write-Host ("[{0}] cached failure (use -Force to retry)" -f $item.id) -ForegroundColor DarkGray
