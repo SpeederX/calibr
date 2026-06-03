@@ -14,21 +14,24 @@ interface Props {
 
 type Phase =
   | { kind: "form" }
+  | { kind: "manual"; value: string }
   | { kind: "confirm"; newPath: string }
   | { kind: "saved"; newPath: string };
 
 /**
  * Form to update config.json's `llama_server_exe` without rewriting the
- * rest of the config (which `init -Force` would do). Two options today:
- * browse for a new path via a native Windows file dialog, or cancel. The
- * picked path is shown on a confirm screen so the user can back out if
- * they grabbed the wrong file.
+ * rest of the config (which `init -Force` would do). Windows gets a native
+ * file dialog; POSIX terminals get a typed path prompt. The picked path is
+ * shown on a confirm screen so the user can back out if they grabbed the
+ * wrong file.
  *
  * For exotic cases (path to a file that doesn't exist yet, scripted
  * setups), editing `config.json` by hand still works — the field is
  * just `"llama_server_exe": "..."`.
  */
 export function LlamaPathView({ onCancel }: Props) {
+  const isWindows = process.platform === "win32";
+  const expectedBinaryName = isWindows ? "llama-server.exe" : "llama-server";
   const currentPath = useMemo<string | null>(() => {
     const cfg = loadConfig();
     return cfg.llama_server_exe || null;
@@ -38,16 +41,21 @@ export function LlamaPathView({ onCancel }: Props) {
   const [cursor, setCursor] = useState(0);
 
   const rows = [
-    { kind: "browse" as const, label: "> browse for llama-server.exe..." },
+    { kind: "path" as const, label: isWindows ? `browse for ${expectedBinaryName}...` : `type path to ${expectedBinaryName}...` },
     { kind: "cancel" as const, label: "  cancel" },
   ];
 
-  const launchPicker = () => {
+  const pickPath = () => {
+    if (!isWindows) {
+      setPhase({ kind: "manual", value: currentPath || "" });
+      return;
+    }
+
     // Initial dir = the folder of the currently configured exe, when set,
     // so the dialog opens near where the user last looked.
     const initialDir = currentPath ? dirname(currentPath) : undefined;
     const picked = pickFileSync({
-      title: "Select llama-server.exe",
+      title: `Select ${expectedBinaryName}`,
       filter: "llama-server (llama-server.exe)|llama-server.exe|Executables (*.exe)|*.exe|All files (*.*)|*.*",
       initialDir,
     });
@@ -63,6 +71,23 @@ export function LlamaPathView({ onCancel }: Props) {
   };
 
   useInput((input, key) => {
+    if (phase.kind === "manual") {
+      const typedKey = key as typeof key & { backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean };
+      if (key.escape) { setPhase({ kind: "form" }); return; }
+      if (key.return) {
+        const next = phase.value.trim();
+        if (next) setPhase({ kind: "confirm", newPath: next });
+        return;
+      }
+      if (typedKey.backspace || typedKey.delete || input === "\u007f") {
+        setPhase({ kind: "manual", value: phase.value.slice(0, -1) });
+        return;
+      }
+      if (input && !typedKey.ctrl && !typedKey.meta) {
+        setPhase({ kind: "manual", value: phase.value + input });
+      }
+      return;
+    }
     if (phase.kind === "confirm") {
       if (input === "y" || input === "Y" || key.return) { saveAndExit(phase.newPath); return; }
       if (input === "n" || input === "N" || input === "q" || key.escape) { setPhase({ kind: "form" }); return; }
@@ -80,7 +105,7 @@ export function LlamaPathView({ onCancel }: Props) {
     if (key.escape || input === "q") { onCancel(); return; }
     if (key.return || input === " ") {
       const row = rows[cursor];
-      if (row.kind === "browse") launchPicker();
+      if (row.kind === "path") pickPath();
       else onCancel();
     }
   });
@@ -98,9 +123,22 @@ export function LlamaPathView({ onCancel }: Props) {
     );
   }
 
+  if (phase.kind === "manual") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="cyan">enter llama-server path</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text>path: <Text color="cyan">{phase.value || " "}</Text></Text>
+          <Text dimColor>expected binary name: {expectedBinaryName}</Text>
+        </Box>
+        <Box marginTop={1}><Text dimColor>enter confirms · backspace edits · esc cancels</Text></Box>
+      </Box>
+    );
+  }
+
   if (phase.kind === "confirm") {
     const sameAsBefore = currentPath === phase.newPath;
-    const wrongName = basename(phase.newPath).toLowerCase() !== "llama-server.exe";
+    const wrongName = basename(phase.newPath).toLowerCase() !== expectedBinaryName;
     return (
       <Box flexDirection="column">
         <Text bold color="cyan">confirm llama-server path</Text>
@@ -115,7 +153,7 @@ export function LlamaPathView({ onCancel }: Props) {
         )}
         {wrongName && (
           <Box marginTop={1}>
-            <Text color="yellow">note: filename is "{basename(phase.newPath)}", not "llama-server.exe". bench will fail if this is not actually llama.cpp's server.</Text>
+            <Text color="yellow">note: filename is "{basename(phase.newPath)}", not "{expectedBinaryName}". bench will fail if this is not actually llama.cpp's server.</Text>
           </Box>
         )}
         <Box marginTop={1}>

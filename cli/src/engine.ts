@@ -492,12 +492,24 @@ export function readModelCatalog(): CatalogEntry[] {
   return Array.isArray(parsed.models) ? parsed.models : [];
 }
 
+function catalogIdGlobs(catalogId: string): RegExp[] {
+  return catalogId
+    .split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(glob => {
+      const pattern = "^" + glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+      return new RegExp(pattern, "i");
+    });
+}
+
 export function filterCatalog(entries: CatalogEntry[], opts: { catalogId?: string; model?: string }): CatalogEntry[] {
   return entries.filter(e => {
     if (opts.catalogId) {
-      // Mirror PowerShell -like (case-insensitive glob).
-      const pattern = "^" + opts.catalogId.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
-      if (!new RegExp(pattern, "i").test(e.id)) return false;
+      // Mirror PowerShell -like (case-insensitive glob), including the
+      // engine's comma-separated -CatalogId list.
+      const patterns = catalogIdGlobs(opts.catalogId);
+      if (patterns.length > 0 && !patterns.some(pattern => pattern.test(e.id))) return false;
     }
     if (opts.model) {
       // Mirror PowerShell -match (case-insensitive regex).

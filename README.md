@@ -1,19 +1,25 @@
-# calibr — measure, don't guess: benchmark llama.cpp on consumer GPUs
+# calibr — find the local LLM setup your GPU can actually run
 
 > A `--ctx-size 262144` flag silently caused Windows to page model weights to
 > system RAM, dropping eval from 45 t/s to 10 t/s. No error, no warning.
 > `calibr` automates the discovery of that cliff and the configuration that
 > avoids it.
 
-`calibr` is a benchmark crawler/tester for local GGUF models served by
-[llama.cpp](https://github.com/ggml-org/llama.cpp). Its sweet spot is NVIDIA
-CUDA on Windows — where it also detects the silent WDDM VRAM-to-RAM paging
-cliff — but it **runs on Linux too**. **It has no opinions about which models
-you should have.** You decide what sits on disk; it catalogs them, sweeps a
-planned set of configurations, runs each one, and emits an HTML dashboard plus
-per-model optimized launchers (`.bat` on Windows, `.sh` on Linux).
+`calibr` is a guided local-LLM recommender for GGUF models served by
+[llama.cpp](https://github.com/ggml-org/llama.cpp). It discovers or downloads
+candidate models, sweeps launch configurations, watches real memory behavior,
+and tells you which model/config is the fastest safe choice on your hardware.
+Its sweet spot is NVIDIA CUDA on Windows — where it also detects the silent
+WDDM VRAM-to-RAM paging cliff — but it **runs on Linux too**. The output is an
+HTML dashboard plus per-model optimized launchers (`.bat` on Windows, `.sh` on
+Linux).
 
-![dashboard screenshot](docs/screenshot.png)
+It is not a model-quality judge yet. The recommendation is based on measured
+fit, speed, headroom, and spill behavior on your machine.
+
+![calibr CLI all flow](docs/cli-all.png)
+
+![calibr full report](docs/report-complete.png)
 
 > **Windows + Linux.** The silent VRAM→system-RAM spill calibr targets is read
 > from a Windows-specific perf counter (`\GPU Adapter Memory(*)\Shared Usage`)
@@ -23,11 +29,11 @@ per-model optimized launchers (`.bat` on Windows, `.sh` on Linux).
 > [PowerShell Core (`pwsh`)](https://github.com/PowerShell/PowerShell). GPU
 > metrics: `nvidia-smi` (NVIDIA); on AMD, `radeontop` (live VRAM-used + util +
 > GTT) and `glxinfo`/mesa-utils (VRAM total) when installed, else sysfs
-> temperature only. RAM/disk come from `/proc`. See [`CLAUDE.md`](CLAUDE.md) for
+> temperature only. RAM/disk come from `/proc`. See [`AGENTS.md`](AGENTS.md) for
 > the phased direction.
 
 > **For an LLM (or contributor) reading this**: start with
-> [`CLAUDE.md`](CLAUDE.md) — it documents the current methodology,
+> [`AGENTS.md`](AGENTS.md) — it documents the current methodology,
 > the three-phase product direction (CLI → backend → web UI), and what
 > is REFERENCE ONLY vs authoritative. The folders `architecture/`,
 > `spec/`, `plans/`, `memories/` are kept for history but do not
@@ -40,6 +46,8 @@ per-model optimized launchers (`.bat` on Windows, `.sh` on Linux).
 ## Contents
 
 - [Quickstart](#quickstart)
+- [What calibr recommends](#what-calibr-recommends)
+- [Privacy and model licenses](#privacy-and-model-licenses)
 - [Why not just …?](#why-not-just-)
 - [Want comparable numbers across machines?](#want-comparable-numbers-across-machines)
 - [Requirements](#requirements)
@@ -58,10 +66,7 @@ per-model optimized launchers (`.bat` on Windows, `.sh` on Linux).
 
 ## Quickstart
 
-Two ways to run, same engine underneath.
-
-**Interactive CLI** (recommended — Node + Ink TUI with menus, forms, a
-live progress strip, and a results browser):
+Install the guided CLI:
 
 ```powershell
 npm install -g calibr
@@ -70,44 +75,36 @@ calibr
 
 You get a menu: `init`, `discover`, `plan`, `bench`, `report`, `all`,
 `results`. Walk through it with arrow keys + enter. The `all` form
-defaults to downloading the curated reference set and rotating files
-off disk per model, so peak disk stays bounded to the largest single
-model (~20 GB).
-
-**Raw engine** (no Node required — useful for headless / CI):
-
-```powershell
-# Windows (Windows PowerShell 5.1)
-git clone https://github.com/SpeederX/calibr.git    # or your fork
-cd calibr
-.\calibr.ps1 init                # detect HW + write config.json
-.\calibr.ps1 all                 # discover -> plan -> bench -> report
-start data\report.html           # open the dashboard
-```
-
-```bash
-# Linux (PowerShell Core — install pwsh first: https://github.com/PowerShell/PowerShell)
-git clone https://github.com/SpeederX/calibr.git
-cd calibr
-pwsh ./calibr.ps1 init           # detect HW + write config.json
-pwsh ./calibr.ps1 all            # discover -> plan -> bench -> report
-xdg-open data/report.html        # open the dashboard
-```
+defaults to downloading the starter `low` preset and rotating files off disk
+per model, so the first answer comes back faster. Switch the preset to
+`middle`, `high`, or `all` when you want the broader catalog sweep.
 
 Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
 to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
 — either way, llama-server runs with the optimized flags.
 
-Don't have any `.gguf` files yet? Add `-FetchCatalog` and calibr
-walks the curated set one model at a time (download → bench → delete):
+Don't have any `.gguf` files yet? Pick `all`, keep `model catalog: yes`, and
+let calibr walk the curated set one model at a time:
+download → bench → delete → next model → report.
 
-```powershell
-# full curated set, ~85 GB total bandwidth, ~20 GB peak on disk
-.\calibr.ps1 all -FetchCatalog
+## What calibr recommends
 
-# just one sample (fast, ~500 MB, finishes in minutes)
-.\calibr.ps1 all -FetchCatalog -CatalogId qwen3.5-0.8b-q4xl
-```
+`calibr` recommends the fastest safe local setup it has actually measured:
+model file, quant/variant, context/KV-cache choice, offload flags, and a ready
+launcher. "Safe" means the run completed without the hidden VRAM-to-system-RAM
+spill that makes a model look loaded but feel unusable.
+
+It does not rank instruction-following quality, coding ability, multilingual
+performance, or preference alignment. Treat the winner as "this is the best
+performing fit for this hardware", then choose between close candidates by
+task quality in the report.
+
+## Privacy and model licenses
+
+Benchmark data stays local under `data/` in a checkout, or under the platform
+user-data directory for the npm package. `calibr` does not upload results.
+The optional catalog download step fetches GGUF files from upstream model
+repositories; those files keep their original licenses and terms.
 
 ## Why not just …?
 
@@ -146,7 +143,7 @@ shared repo to crowdsource a "what runs well on what GPU" dataset.
 - **NVIDIA GPU + recent driver** (tested on RTX 2070 8 GB, compute 7.5)
 - `nvidia-smi` on PATH (bundled with the NVIDIA driver)
 
-**Linux (throughput benchmarking; WDDM detection skipped):**
+**Linux (throughput benchmarking; AMD/GTT spill detection when tooling is installed):**
 
 - **PowerShell Core (`pwsh`)** — [install guide](https://github.com/PowerShell/PowerShell).
   The engine is the same `calibr.ps1`, run under `pwsh`.
@@ -157,6 +154,22 @@ shared repo to crowdsource a "what runs well on what GPU" dataset.
   sysfs, power isn't exposed. Without those tools, metrics fall back to
   temperature-only and VRAM-budget planning is opt-in (set
   `hardware.vram_total_mib` yourself). CPU-only works too.
+
+Linux dependency map:
+
+| Dependency | Required? | Used for | Typical package |
+|---|---:|---|---|
+| `pwsh` | yes | run the PowerShell engine from the npm CLI and raw engine path | `powershell` (install from Microsoft/PowerShell release docs) |
+| `llama-server` | yes | actual llama.cpp inference backend | llama.cpp release/build |
+| `bash`, `chmod` | yes for `install` / launchers | write executable `.sh` launchers and `~/.local/bin/calibr` wrapper | usually preinstalled |
+| `xdg-open` | optional | open `data/report.html` from the CLI | `xdg-utils` |
+| `lspci` | optional | Linux GPU-name fallback when `nvidia-smi` is absent | `pciutils` |
+| `nvidia-smi` | optional, NVIDIA | NVIDIA VRAM / power / temp / utilization metrics | NVIDIA driver |
+| `radeontop` | optional, AMD | AMD live VRAM-used, GPU utilization, and GTT spill signal | `radeontop` |
+| `glxinfo` | optional, AMD | AMD VRAM-total detection | `mesa-utils` |
+
+For an AMD/Vulkan readiness check, `vulkaninfo` (`vulkan-tools`) is useful to
+verify that Vulkan sees a hardware GPU rather than only `llvmpipe`.
 
 **Both platforms:**
 
@@ -558,7 +571,8 @@ calibr/
 ├── LICENSE
 ├── .gitignore
 ├── docs/
-│   └── screenshot.png       # the dashboard image embedded above
+│   ├── cli-all.png          # npm install + guided all flow
+│   └── report-complete.png  # report screenshot embedded above
 └── data/                    # gitignored, all runtime artifacts
     ├── catalog.json         # discovered models
     ├── plan.json            # planned test configs
@@ -575,7 +589,7 @@ calibr/
   Windows, but calibr detects the same VRAM→system-RAM spill on AMD/Linux via
   GTT (`radeontop`), feeding the same `shared_peak_mib`. NVIDIA-on-Linux OOMs
   cleanly (no silent spill). Without `radeontop`, spill detection is off and
-  winners go by throughput + fit. macOS is untested.
+  winners go by throughput + fit. macOS/Metal is not supported yet.
 - **GPU power is unavailable on AMD Linux, and metrics need extra tools.**
   The `radeon`/`amdgpu` drivers don't expose `mem_info_vram` to calibr, so VRAM
   comes from `radeontop` (live used + util) and `glxinfo`/mesa-utils (total)
@@ -609,7 +623,7 @@ calibr/
 
 ## Roadmap
 
-Direction lives in [`CLAUDE.md`](CLAUDE.md) (the project pivoted from a
+Direction lives in [`AGENTS.md`](AGENTS.md) (the project pivoted from a
 strict SemVer + spec-driven backlog to a three-phase product approach:
 CLI → backend → web UI). Concrete near-term ideas being explored:
 

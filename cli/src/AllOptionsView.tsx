@@ -50,14 +50,16 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // (data/user_bench_presets.json) merged into one dict.
   const presets = useMemo(readPresetCatalog, []);
   // Cycle order: all, low, middle, high, then any extra user-saved presets,
-  // then 'custom' as the last sentinel that routes to CustomBenchView
-  // (TODO: Phase C — for now it just behaves like 'all').
+  // then 'custom' as the last sentinel that routes to CustomBenchView.
   const presetNames = useMemo<string[]>(() => {
     const builtin = ["all", "low", "middle", "high"].filter(n => presets[n]);
     const extras = Object.keys(presets).filter(n => !builtin.includes(n)).sort();
     return [...builtin, ...extras, "custom"];
   }, [presets]);
-  const [presetIdx, setPresetIdx] = useState<number>(0);
+  const [presetIdx, setPresetIdx] = useState<number>(() => {
+    const starterIdx = presetNames.indexOf("low");
+    return starterIdx >= 0 ? starterIdx : 0;
+  });
   const currentPreset = presetNames[presetIdx];
   const presetCount = (() => {
     if (currentPreset === "custom") return null;
@@ -67,7 +69,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     return Array.isArray(p.models) ? p.models.length : 0;
   })();
   const presetLabel = (() => {
-    if (currentPreset === "custom") return "custom (pick models + ctx — TODO Phase C)";
+    if (currentPreset === "custom") return "custom (pick models)";
     const p = presets[currentPreset];
     if (!p) return currentPreset;
     return `${p.label} · ${presetCount ?? "?"} entries${p.max_ctx ? `, max ctx ${p.max_ctx}` : ""}`;
@@ -121,8 +123,21 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     }
   };
 
-  const runGate = () => {
-    const filtered = filterCatalog(catalog, {});
+  const catalogScopeForGate = (pickedIds?: string): typeof catalog => {
+    const ids = pickedIds ?? customIds;
+    if (ids) return filterCatalog(catalog, { catalogId: ids });
+
+    if (currentPreset !== "all" && currentPreset !== "custom") {
+      const preset = presets[currentPreset];
+      if (preset?.models === "*") return catalog;
+      if (Array.isArray(preset?.models)) return filterCatalog(catalog, { catalogId: preset.models.join(",") });
+    }
+
+    return catalog;
+  };
+
+  const runGate = (pickedIds?: string) => {
+    const filtered = catalogScopeForGate(pickedIds);
     const { maxFileBytes } = downloadFootprintBytes(filtered);
     const available = freeBytesOn(destination);
     const required = maxFileBytes;
@@ -250,8 +265,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
           setCustomIds(idList);
           // After picking, go straight to the disk gate; the user already
           // accepted the form's other choices when they hit '> start all'.
-          setPhase({ kind: "form" });
-          runGate();
+          runGate(idList);
         }}
         onCancel={() => setPhase({ kind: "form" })}
       />

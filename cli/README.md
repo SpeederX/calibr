@@ -1,14 +1,19 @@
 # calibr
 
 Interactive console for **[calibr](https://github.com/SpeederX/calibr)** — a
-benchmark crawler that measures what your local `llama.cpp` builds actually
-do on your hardware (eval speed, prompt speed, real VRAM, and the silent
-shared-memory paging that turns a `47 t/s` config into `10 t/s` with no
-error message).
+guided local-LLM recommender that finds the fastest safe `llama.cpp`
+model/configuration your hardware can actually run. It measures eval speed,
+prompt speed, real VRAM, and the silent shared-memory paging that turns a
+`47 t/s` config into `10 t/s` with no error message.
 
 The CLI wraps the existing PowerShell engine and gives you a navigable
-console UI for running discovery → plan → bench → report and for browsing
-the resulting leaderboard.
+console UI for running discovery → plan → bench → report and for browsing the
+resulting winners. Recommendations are based on measured fit, speed, headroom,
+and spill behavior, not model-quality scoring.
+
+![calibr CLI all flow](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/cli-all.png)
+
+![calibr full report](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/report-complete.png)
 
 ## Install
 
@@ -29,8 +34,9 @@ README.
 
 - **Windows 10 / 11** or **Linux.** On Windows the engine uses Windows-only
   perf counters (`Get-Counter \GPU Adapter Memory(*)\Shared Usage`) to detect
-  silent WDDM paging; on Linux that detection is skipped (winners are picked on
-  throughput + fit). macOS is untested.
+  silent WDDM paging. On AMD/Linux, `radeontop` exposes the equivalent GTT
+  spill signal; on NVIDIA/Linux, OOMs are clean and there is no silent spill to
+  detect. macOS/Metal is not supported yet.
 - **PowerShell:** Windows PowerShell 5.1 (ships with Windows) on Windows, or
   [**PowerShell Core (`pwsh`)**](https://github.com/PowerShell/PowerShell) on
   Linux — the CLI spawns `pwsh` there.
@@ -43,16 +49,35 @@ README.
   **AMD Linux**, install `radeontop` + `mesa-utils` for VRAM + utilization
   metrics (else temperature-only); GPU power draw isn't exposed.
 
+### Linux dependencies
+
+`pwsh` is required on Linux. The npm package installs the Node CLI, but the
+engine still runs through PowerShell Core.
+
+| Dependency | Required? | Used for | Typical package |
+|---|---:|---|---|
+| `pwsh` | yes | run `calibr.ps1` from the CLI | `powershell` (see PowerShell install docs) |
+| `llama-server` | yes | llama.cpp inference backend | llama.cpp release/build |
+| `bash`, `chmod` | yes for `install` / launchers | `~/.local/bin/calibr` wrapper and `.sh` launchers | usually preinstalled |
+| `xdg-open` | optional | open the HTML report from the CLI | `xdg-utils` |
+| `lspci` | optional | GPU-name fallback | `pciutils` |
+| `nvidia-smi` | optional, NVIDIA | NVIDIA VRAM / power / temp / utilization metrics | NVIDIA driver |
+| `radeontop` | optional, AMD | AMD VRAM-used / utilization / GTT spill metrics | `radeontop` |
+| `glxinfo` | optional, AMD | AMD VRAM-total detection | `mesa-utils` |
+
+For AMD/Vulkan troubleshooting, `vulkaninfo` from `vulkan-tools` is the quick
+way to check whether Vulkan sees real hardware or only `llvmpipe`.
+
 ## Quickstart
 
 ```
 $ calibr
-> init        — detect hardware, write config.json
+  init        — detect hardware, write config.json
   discover    — scan scan_paths for .gguf files
   plan        — expand catalog into a test plan
   bench       — run pending bench configs
   report      — build HTML report + .bat launchers
-  all         — discover -> plan -> bench -> report
+> all         — guided run: download -> bench -> report
   results     — browse benchmark winners
 ```
 
@@ -62,22 +87,29 @@ A typical first session:
 2. Edit `config.json` and set `scan_paths` to the folders that contain
    your `.gguf` files. If you don't have any `.gguf` yet, skip this and
    let step 3 download the curated set.
-3. **all** → configure: turn `catalog: on (-FetchCatalog)`, leave
-   `rotate: yes` (default). The CLI shows the peak disk requirement
-   (~20 GB for the largest model in the curated set) and the free space
-   on your destination, then asks for confirmation. After you accept,
-   the engine downloads each model, benches it, deletes it, moves to
-   the next. Expect this to take a few hours; peak disk stays bounded
-   to one model at a time.
-4. **results** — browse a leaderboard of winners per model. Press
+3. **all** → configure: leave `catalog: yes`, start with the default
+   starter `low` preset, and leave `auto-cleanup: yes`. The CLI shows the peak
+   disk requirement and free space before it downloads anything. After you
+   accept, the engine downloads each model, benches it, deletes it, and moves
+   to the next.
+4. **results** — browse the fastest safe winners per model. Press
    `enter` to drill into per-config detail, `o` to open the full HTML
    report in your browser, `q` to go back.
+
+Once the starter run works, repeat `all` and switch `which models` to
+`middle`, `high`, or `all` for a broader recommendation set.
 
 For sub-tasks (re-bench one model, change run count):
 
 5. From the menu pick **bench** → configure model filter, tier, runs,
    force flag, rotation → start. If you want to keep the downloaded
    `.gguf` files on disk after the bench, toggle `rotate: no`.
+
+## Privacy and model licenses
+
+Benchmark data stays in the platform user-data directory and is not uploaded.
+The optional catalog download step fetches GGUF files from upstream model
+repositories; those files keep their original licenses and terms.
 
 ## Where things are stored
 
@@ -134,10 +166,13 @@ The menu exposes the engine verbs verbatim. Brief summary:
 
 ## Known limitations
 
-- **WDDM paging detection is Windows-only.** calibr runs on Linux too (the
-  CLI spawns `pwsh`), but there the silent-paging detection is skipped and
-  winners are chosen on throughput + fit. On non-NVIDIA Linux, GPU VRAM/power
-  metrics aren't available (temperature-only). macOS is untested.
+- **Quality scoring is not implemented yet.** calibr recommends by measured
+  fit, throughput, headroom, and spill behavior. Use the report to choose
+  between close winners by task quality.
+- **Spill detection depends on platform/tooling.** Windows/NVIDIA uses WDDM
+  shared-memory counters. AMD/Linux uses GTT from `radeontop` when installed.
+  NVIDIA/Linux usually fails cleanly at OOM, so there is no silent spill signal
+  to detect. macOS/Metal is not supported yet.
 - **`discover` pairs mmproj by directory.** If two model variants live
   in the same folder and physically share one `mmproj-*.gguf` file but
   the projector is only valid for one of them (different vision
@@ -176,8 +211,10 @@ smoke test before it can ship.
 
 Maintainer flow:
 
-1. From `cli/`: `npm version <patch|minor|major>` bumps
-   `package.json` and creates a matching git tag.
+1. Bump `cli/package.json` and `cli/package-lock.json`, then create a matching
+   tag (`vX.Y.Z`). `npm version <patch|minor|major>` does both when the working
+   tree is clean; if the release commit already contains the bump, create the
+   tag manually.
 2. `git push --follow-tags origin <branch>` — push the branch and
    the tag.
 3. GitHub Actions runs `.github/workflows/release.yml` on the tag.
@@ -192,7 +229,7 @@ Access Token* scoped to the `calibr` package, with **read and write**
 permissions, expiring no later than you intend to re-issue it.
 
 Plain commits to any branch run `.github/workflows/ci.yml` only
-(build + smoke test on `windows-latest`). They do not publish.
+(build + smoke test on Windows and Ubuntu). They do not publish.
 
 ## License
 

@@ -14,9 +14,13 @@ concurrency:
 
 jobs:
   cli:
-    name: CLI build + smoke install (Windows)
-    runs-on: windows-latest
+    name: CLI build + smoke install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
     defaults:
       run:
         working-directory: cli
@@ -29,6 +33,10 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: cli/package-lock.json
+
+      - name: Verify PowerShell Core on Linux
+        if: runner.os == 'Linux'
+        run: pwsh --version
 
       - name: Install dependencies
         run: npm ci

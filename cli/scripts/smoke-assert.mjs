@@ -5,10 +5,10 @@
 // Asserts that the bundled install path is fully wired:
 //   - findEngineLocation() picks the bundled engine, not a walk-up match
 //   - calibr.ps1 + config.default.json exist where the CLI expects them
-//   - the data dir resolves to %LOCALAPPDATA%\calibr
+//   - the data dir resolves to the platform user data directory
 //   - readStatus() loads the bundled default config (catalog/plan empty)
 import { existsSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 const failures = [];
 function check(name, condition, detail = "") {
@@ -59,9 +59,11 @@ if (catalog.length > 0) {
   );
 }
 
-const expectedDataRoot = (process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE || "");
+const expectedDataRoot = process.platform === "win32"
+  ? (process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE || "")
+  : (process.env.XDG_DATA_HOME || (process.env.HOME ? join(process.env.HOME, ".local", "share") : ""));
 check(
-  "data dir resolves under the user's local app data",
+  "data dir resolves under the platform user data directory",
   expectedDataRoot.length > 0 && mod.CALIBR_DATA_DIR.startsWith(expectedDataRoot),
   `dataDir=${mod.CALIBR_DATA_DIR} expected prefix=${expectedDataRoot}`,
 );
