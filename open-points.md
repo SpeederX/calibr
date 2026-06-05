@@ -11,6 +11,67 @@ group the rough order is "smaller / more isolated first".
 
 ## Engine + CLI: deferred but designed
 
+### Engine modularization + mirrored test hierarchy
+*Estimate: 1-2d. Do before auto-fetch / sharding / MTP.*
+
+`calibr.ps1` is still the public engine entrypoint, but internally it has grown
+into a monolith: config, platform probes, llama.cpp discovery, model discovery,
+catalog download, plan generation, bench execution, reporting, reset/install,
+and help all live in one file. That makes parallel feature work expensive
+because unrelated changes collide in the same script.
+
+Refactor this as a behavior-preserving extraction, not a rewrite:
+
+```
+calibr.ps1                 entrypoint: params, bootstrap, dispatch only
+engine/config.ps1          config read/merge/write + config command helpers
+engine/platform.ps1        hardware and OS probes
+engine/llama.ps1           llama-server find/version/backend/health
+engine/discover.ps1        GGUF scan, metadata, mmproj pairing
+engine/catalog.ps1         model catalog, presets, downloads, manifest
+engine/plan.ps1            tiering, context caps, plan generation
+engine/bench.ps1           bench orchestration, one-run, aggregation, failures
+engine/report.ps1          winners, report generation, launch scripts
+engine/commands.ps1        status/reset/install/help wrappers if still useful
+```
+
+Keep the first pass mechanical:
+
+- Same command-line interface.
+- Same function names where practical.
+- Same JSON/log contract consumed by the Node + Ink CLI.
+- No auto-fetch, MTP, sharding, scoring, or behavioral changes in the same
+  commit.
+- Use dot-sourced `.ps1` files first; avoid `.psm1` export/import machinery
+  until there is a concrete benefit.
+
+Mirror the tests to the same responsibility boundaries so the test tree becomes
+a map of the engine:
+
+```
+tests/unit/config.Tests.ps1
+tests/unit/platform.Tests.ps1
+tests/unit/llama.Tests.ps1
+tests/unit/discover.Tests.ps1
+tests/unit/catalog.Tests.ps1
+tests/unit/plan.Tests.ps1
+tests/unit/bench.Tests.ps1
+tests/unit/report.Tests.ps1
+tests/integration/config-command.Tests.ps1
+tests/integration/catalog-command.Tests.ps1
+tests/integration/report-command.Tests.ps1
+tests/integration/engine-dispatch.Tests.ps1
+tests/static/catalog.Tests.ps1
+tests/smoke/
+```
+
+No test-driven process required; the goal is readability and safer refactors:
+move existing tests first, add only cheap tests that catch load-order,
+packaging, or dispatch regressions introduced by the split.
+
+Update `cli/scripts/bundle-engine.js` during the split so npm packages include
+`engine/*.ps1` alongside `calibr.ps1`, JSON catalogs, and templates.
+
 ### Phase F — report UI redesign
 **Shipped.** See `report.template.html` + the `Phase F` markers in
 `tests/Report.Tests.ps1`. Visual demo: `node tests/generate-demo-report.mjs`
@@ -78,6 +139,64 @@ unsupported toolchain` in `ggml_cuda_kernel_can_use_pdl`). Probe with
 the highest CUDA variant whose minimum is `<= driver`. Cuda-12.4 is the
 safe default for anything R535+. The README's Requirements section
 holds the same table for users who set up manually.
+
+### Main menu guided run / advanced tools split + readiness badges
+*Estimate: 0.5d.*
+
+The top-level CLI menu currently exposes every engine verb. Rework it into:
+
+- **Guided run**: the current `all` flow. This is the default consumer path.
+- **Advanced tools**: the current individual verbs (`status`, `init`,
+  `discover`, `plan`, `bench`, `report`, `reset`, etc.) except `all`, because
+  `all` becomes the guided recommendation flow.
+- **Configure llama path**: keep as a top-level configuration action, not
+  buried under Advanced tools.
+
+Add readiness badges in the main menu:
+
+- `init`: red `*` when required setup is missing, green check when local config
+  exists and hardware was detected.
+- `configure llama path`: red `*` when `llama_server_exe` is unset/invalid,
+  green check when the configured executable exists.
+
+This should make the first screen answer "what do I need to do next?" without
+teaching the user the engine pipeline.
+
+### GGUF multi-shard model management
+*Post-Rust/helper-native candidate.*
+
+Current catalog entries assume one `hf_file` per model. Many 80B/100B+ GGUFs
+ship as multiple shards, and treating that as "just download more files" is
+fragile. Defer this until a native helper / Rust layer can own model
+acquisition and cache management.
+
+Needed shape:
+
+- Catalog schema for `hf_files` / shard groups, not only `hf_file`.
+- Ordered download with resume, cleanup after partial failures, and per-shard
+  size/hash validation when available.
+- Disk preflight based on the whole shard set while rotation still keeps peak
+  working-set predictable.
+- Path handoff to llama.cpp that preserves the expected first-shard filename.
+- Clear separation between single-file curated presets and workstation-class
+  multi-shard candidates.
+
+### MTP / speculative decoding benchmark mode
+*Depends on: current llama.cpp MTP support check.*
+
+Qwen-style MTP models should not be mixed into the normal preset path until the
+bench can compare baseline vs MTP fairly. Add an opt-in benchmark mode that:
+
+- Probes `llama-server --help` / version output for MTP support.
+- Runs the same model/prompt once as baseline and once with MTP/speculative
+  flags.
+- Captures `spec_type`, draft tokens, accepted tokens, acceptance rate, and
+  `speedup_vs_baseline` when llama.cpp exposes them.
+- Keeps prompt eval and generation speed separate; MTP mostly helps decode, so
+  a single aggregate TPS number can mislead.
+
+This is especially useful for MoE models, but it belongs in a dedicated track
+so the normal "recommend me a model" path stays stable.
 
 ### reasoning_mode wiring
 *Estimate: 1-2h.*
