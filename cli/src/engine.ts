@@ -298,14 +298,22 @@ export function readStatus(): Status {
   const config = loadConfig();
   const catalog = readJsonSafe<any[]>(CALIBR_CATALOG, []);
   const plan = readJsonSafe<any[]>(CALIBR_PLAN, []);
+  // Count only entries whose model file is still on disk, so the menu card
+  // never advertises a model that was rotated/deleted (the engine prunes the
+  // JSON on its next run; this keeps the UI honest before that happens).
+  // Coerce to array: a single-model catalog is serialized as a bare object.
+  const catArr = Array.isArray(catalog) ? catalog : (catalog ? [catalog] : []);
+  const planArr = Array.isArray(plan) ? plan : (plan ? [plan] : []);
+  const liveCatalog = catArr.filter(m => m?.path && existsSync(m.path));
+  const livePlan = planArr.filter(p => p?.model_path && existsSync(p.model_path));
   let resultsCount = 0;
   if (existsSync(CALIBR_RESULTS_DIR) && statSync(CALIBR_RESULTS_DIR).isDirectory()) {
     resultsCount = readdirSync(CALIBR_RESULTS_DIR).filter(f => f.endsWith(".json")).length;
   }
   return {
     config,
-    catalogCount: Array.isArray(catalog) ? catalog.length : 0,
-    planCount: Array.isArray(plan) ? plan.length : 0,
+    catalogCount: liveCatalog.length,
+    planCount: livePlan.length,
     resultsCount,
     hasReport: existsSync(CALIBR_REPORT),
     hasLocalConfig: existsSync(CALIBR_LOCAL_CFG),

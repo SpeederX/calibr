@@ -84,6 +84,59 @@ Describe "Find-MmprojSharedAcrossModels" {
     }
 }
 
+Describe "Remove-PhantomEntries" {
+    function _readArr($path) { return @(Get-Content $path -Raw | ConvertFrom-Json) }
+
+    It "prunes catalog/plan/downloads entries whose model file is gone" {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-phantom-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+        $real    = Join-Path $tmp "real.gguf"; Set-Content -LiteralPath $real -Value "x"
+        $missing = Join-Path $tmp "ghost.gguf"   # never created
+
+        $origCat = $script:CALIBR_CATALOG; $origPlan = $script:CALIBR_PLAN; $origDl = $script:CALIBR_DOWNLOADS
+        try {
+            $script:CALIBR_CATALOG   = Join-Path $tmp "catalog.json"
+            $script:CALIBR_PLAN      = Join-Path $tmp "plan.json"
+            $script:CALIBR_DOWNLOADS = Join-Path $tmp "downloads.json"
+
+            @(@{ model="Real"; path=$real }, @{ model="Ghost"; path=$missing }) | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $script:CALIBR_CATALOG
+            @(@{ id="r"; model_path=$real }, @{ id="g"; model_path=$missing }) | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $script:CALIBR_PLAN
+            @(@{ model="Ghost"; model_path=$missing }) | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $script:CALIBR_DOWNLOADS
+
+            $removed = Remove-PhantomEntries
+
+            Assert-Equal 1 $removed "one catalog model removed"
+            $cat = _readArr $script:CALIBR_CATALOG
+            Assert-Equal 1 $cat.Count "catalog keeps only the real model"
+            Assert-Equal "Real" $cat[0].model
+            Assert-Equal 1 (_readArr $script:CALIBR_PLAN).Count "plan keeps only the real config"
+            Assert-Equal 0 (_readArr $script:CALIBR_DOWNLOADS).Count "downloads drops the phantom (valid empty array)"
+        } finally {
+            $script:CALIBR_CATALOG = $origCat; $script:CALIBR_PLAN = $origPlan; $script:CALIBR_DOWNLOADS = $origDl
+            Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "leaves a fully-present index untouched (returns 0)" {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-phantom-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+        $real = Join-Path $tmp "real.gguf"; Set-Content -LiteralPath $real -Value "x"
+        $origCat = $script:CALIBR_CATALOG; $origPlan = $script:CALIBR_PLAN; $origDl = $script:CALIBR_DOWNLOADS
+        try {
+            $script:CALIBR_CATALOG   = Join-Path $tmp "catalog.json"
+            $script:CALIBR_PLAN      = Join-Path $tmp "plan.json"
+            $script:CALIBR_DOWNLOADS = Join-Path $tmp "downloads.json"
+            @(@{ model="Real"; path=$real }) | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $script:CALIBR_CATALOG
+            @(@{ id="r"; model_path=$real }) | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $script:CALIBR_PLAN
+            '[]' | Out-File -Encoding utf8 $script:CALIBR_DOWNLOADS
+            Assert-Equal 0 (Remove-PhantomEntries) "nothing removed when all files exist"
+        } finally {
+            $script:CALIBR_CATALOG = $origCat; $script:CALIBR_PLAN = $origPlan; $script:CALIBR_DOWNLOADS = $origDl
+            Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Exit-WithResults
 
 

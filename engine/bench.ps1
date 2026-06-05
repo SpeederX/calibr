@@ -882,6 +882,12 @@ function Invoke-RotationCheck {
 
 function Invoke-Bench {
     $cfg = Get-Config
+    # Reconcile with disk before reading the plan: a model rotated/deleted since
+    # the last discover would otherwise be benched against a phantom file.
+    $phantoms = Remove-PhantomEntries
+    if ($phantoms -gt 0) {
+        Write-Host ("[reconcile] dropped {0} model(s) no longer on disk (re-add with get-models)" -f $phantoms) -ForegroundColor DarkYellow
+    }
     if (-not (Test-Path $CALIBR_PLAN)) { throw "plan.json missing. Run 'calibr plan'." }
     $planRaw = Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json
     $plan = ConvertTo-Hashtable -obj $planRaw

@@ -133,6 +133,67 @@ function Invoke-Discover {
     }
 }
 
+function Remove-PhantomEntries {
+    # Reconcile the on-disk index with disk truth: drop any catalog.json /
+    # plan.json / downloads.json entry whose model .gguf is no longer present
+    # (rotated away by auto-cleanup, deleted, or moved). Without this, a model
+    # that was downloaded -> benched -> rotated leaves dangling references that
+    # later surface as confusing "server didn't become ready" failures and a
+    # model that looks selectable but can't run.
+    #
+    # Safe by construction: data/results/*.json (the historical leaderboard) is
+    # NOT touched, so a rotated-and-benched model keeps its results even after
+    # its catalog/plan entries are pruned. Returns the number of catalog models
+    # removed (0 = nothing stale). Cheap: a few Test-Path calls.
+    $exists = { param($p) $p -and (Test-Path -LiteralPath $p) }
+    # Always serialize as a JSON ARRAY: PowerShell's ConvertTo-Json emits an
+    # object for a single element and an empty string for @(), both of which
+    # break the array-expecting readers (CLI + engine). [] for empty, wrapped
+    # for one. Works on Windows PowerShell 5.1 (no -AsArray).
+    $toArr = {
+        param($a)
+        $a = @($a)
+        if ($a.Count -eq 0) { return '[]' }
+        $j = $a | ConvertTo-Json -Depth 5
+        if ($j.TrimStart() -notmatch '^\[') { $j = "[`n$j`n]" }
+        return $j
+    }
+    $removedModels = 0
+
+    if (Test-Path $CALIBR_CATALOG) {
+        try {
+            $cat  = @(Get-Content $CALIBR_CATALOG -Raw | ConvertFrom-Json)
+            $keep = @($cat | Where-Object { & $exists $_.path })
+            if ($keep.Count -ne $cat.Count) {
+                $removedModels = $cat.Count - $keep.Count
+                (& $toArr $keep) | Out-File -Encoding utf8 $CALIBR_CATALOG
+            }
+        } catch { }
+    }
+
+    if (Test-Path $CALIBR_PLAN) {
+        try {
+            $plan  = @(Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json)
+            $keepP = @($plan | Where-Object { & $exists $_.model_path })
+            if ($keepP.Count -ne $plan.Count) {
+                (& $toArr $keepP) | Out-File -Encoding utf8 $CALIBR_PLAN
+            }
+        } catch { }
+    }
+
+    if (Test-Path $CALIBR_DOWNLOADS) {
+        try {
+            $dl    = @(Get-Content $CALIBR_DOWNLOADS -Raw | ConvertFrom-Json)
+            $keepD = @($dl | Where-Object { & $exists $_.model_path })
+            if ($keepD.Count -ne $dl.Count) {
+                (& $toArr $keepD) | Out-File -Encoding utf8 $CALIBR_DOWNLOADS
+            }
+        } catch { }
+    }
+
+    return $removedModels
+}
+
 function Find-MmprojSharedAcrossModels {
     # Pure: groups catalog entries by their paired mmproj path; returns an
     # array of @{mmproj; models} for every mmproj seen with more than one

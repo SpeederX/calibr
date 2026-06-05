@@ -352,6 +352,10 @@ function Invoke-Reset {
 
 function Invoke-Status {
     $cfg = Get-Config
+    # Keep the reported counts honest with disk: prune entries for models that
+    # were rotated/deleted so 'status' (and the CLI card that mirrors it) never
+    # advertises a model that can't actually run.
+    Remove-PhantomEntries | Out-Null
     Write-Host "=== status ===" -ForegroundColor Cyan
     Write-Host "Config:"
     Write-Host "  llama_server_exe = $($cfg.llama_server_exe)"
