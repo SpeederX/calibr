@@ -4,10 +4,10 @@
 //
 // Asserts that the bundled install path is fully wired:
 //   - findEngineLocation() picks the bundled engine, not a walk-up match
-//   - calibr.ps1 + config.default.json exist where the CLI expects them
+//   - calibr.ps1 + engine/*.ps1 + config.default.json exist where the CLI expects them
 //   - the data dir resolves to the platform user data directory
 //   - readStatus() loads the bundled default config (catalog/plan empty)
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 
 const failures = [];
@@ -35,6 +35,26 @@ check(
   "calibr.ps1 looks non-trivial (>1 KB)",
   existsSync(mod.CALIBR_PS1) && statSync(mod.CALIBR_PS1).size > 1024,
 );
+const engineModulesDir = resolve(mod.CALIBR_ROOT, "engine");
+const requiredEngineModules = [
+  "bench.ps1",
+  "catalog.ps1",
+  "commands.ps1",
+  "config.ps1",
+  "discover.ps1",
+  "llama.ps1",
+  "plan.ps1",
+  "platform.ps1",
+  "report.ps1",
+];
+const bundledEngineModules = existsSync(engineModulesDir)
+  ? readdirSync(engineModulesDir).filter((f) => f.endsWith(".ps1")).sort()
+  : [];
+check(
+  "engine/*.ps1 modules are bundled",
+  requiredEngineModules.every((f) => bundledEngineModules.includes(f)),
+  `got ${bundledEngineModules.join(", ") || "(none)"}`,
+);
 check("config.default.json exists", existsSync(mod.CALIBR_DEFAULT_CFG), mod.CALIBR_DEFAULT_CFG);
 
 // `calibr report` reads $CALIBR_ROOT/report.template.html. Missed bundling
@@ -59,6 +79,13 @@ if (catalog.length > 0) {
   );
 }
 
+const presets = mod.readPresetCatalog();
+check(
+  "default bench presets are bundled and parseable",
+  ["all", "low", "middle", "high", "ultra"].every((name) => Boolean(presets[name])),
+  `got ${Object.keys(presets).join(", ") || "(none)"}`,
+);
+
 const expectedDataRoot = process.platform === "win32"
   ? (process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE || "")
   : (process.env.XDG_DATA_HOME || (process.env.HOME ? join(process.env.HOME, ".local", "share") : ""));
@@ -76,6 +103,11 @@ check(
   "data dir was created by the engine module",
   existsSync(mod.CALIBR_DATA_DIR),
   mod.CALIBR_DATA_DIR,
+);
+check(
+  "default download destination is under the data dir",
+  mod.downloadDestination({}).startsWith(mod.CALIBR_DATA_DIR),
+  mod.downloadDestination({}),
 );
 
 const status = mod.readStatus();

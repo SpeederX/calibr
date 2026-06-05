@@ -3,7 +3,7 @@
 // it under a stubbed DOM. Asserts the script reaches the end (i.e. the
 // initial `rerender()` call doesn't throw).
 //
-// Run: node tests/report-smoke.mjs
+// Run: node tests/integration/report-smoke.mjs
 // Exit 0 = pass, exit 1 = fail with stack trace.
 
 import { readFile } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE     = dirname(fileURLToPath(import.meta.url));
-const LAB_ROOT = dirname(HERE);
+const LAB_ROOT = dirname(dirname(HERE));
 const TPL_PATH = join(LAB_ROOT, "report.template.html");
 
 const tpl = await readFile(TPL_PATH, "utf8");

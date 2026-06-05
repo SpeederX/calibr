@@ -72,37 +72,33 @@ way to check whether Vulkan sees real hardware or only `llvmpipe`.
 
 ```
 $ calibr
-  init        — detect hardware, write config.json
-  discover    — scan scan_paths for .gguf files
-  plan        — expand catalog into a test plan
-  bench       — run pending bench configs
-  report      — build HTML report + .bat launchers
-> all         — guided run: download -> bench -> report
-  results     — browse benchmark winners
+> guided run           download -> bench -> report
+  results              browse benchmark winners
+  advanced tools       status, init, discover, plan, bench, report, reset
+  configure llama path * choose a llama.cpp server binary
 ```
 
 A typical first session:
 
-1. **init** — auto-detect GPU/CPU/VRAM, write the local config.
-2. Edit `config.json` and set `scan_paths` to the folders that contain
-   your `.gguf` files. If you don't have any `.gguf` yet, skip this and
-   let step 3 download the curated set.
-3. **all** → configure: leave `catalog: yes`, start with the default
+1. **configure llama path** if the menu marks it with `*`; otherwise skip it.
+   `guided run` can auto-run `init` when the llama path is missing, but this
+   screen is the quickest manual fix when you already have a specific build.
+2. **guided run** -> configure: leave `model catalog: yes`, start with the default
    starter `low` preset, and leave `auto-cleanup: yes`. The CLI shows the peak
    disk requirement and free space before it downloads anything. After you
    accept, the engine downloads each model, benches it, deletes it, and moves
    to the next.
-4. **results** — browse the fastest safe winners per model. Press
+3. **results** - browse the fastest safe winners per model. Press
    `enter` to drill into per-config detail, `o` to open the full HTML
    report in your browser, `q` to go back.
 
-Once the starter run works, repeat `all` and switch `which models` to
-`middle`, `high`, or `all` for a broader recommendation set.
+Once the starter run works, repeat `guided run` and switch `which models` to
+`middle`, `high`, `ultra`, or `all` for a broader recommendation set.
 
 For sub-tasks (re-bench one model, change run count):
 
-5. From the menu pick **bench** → configure model filter, tier, runs,
-   force flag, rotation → start. If you want to keep the downloaded
+4. From the menu pick **advanced tools** -> **bench** -> configure model filter,
+   tier, runs, force flag, rotation -> start. If you want to keep the downloaded
    `.gguf` files on disk after the bench, toggle `rotate: no`.
 
 ## Privacy and model licenses
@@ -144,7 +140,9 @@ calibr
 
 ## Commands
 
-The menu exposes the engine verbs verbatim. Brief summary:
+The main menu is product-facing. **Guided run** wraps the engine's `all` flow,
+while **advanced tools** exposes the individual engine verbs when you need
+manual control:
 
 | Verb | What it does |
 |---|---|
@@ -201,8 +199,8 @@ npm test             # install smoke test: npm pack -> install in tempdir -> ass
 ```
 
 The `npm test` command exercises the full publish path: it runs
-`npm pack` (which copies `calibr.ps1` into `engine/` via the prepack
-script), installs the tarball into a clean temp dir, and asserts the
+`npm pack` (which copies `calibr.ps1` and `engine/*.ps1` into the package via
+the prepack script), installs the tarball into a clean temp dir, and asserts the
 bundled engine resolves to the right paths and `readStatus()` loads
 the bundled default config. Anything that breaks packaging fails the
 smoke test before it can ship.

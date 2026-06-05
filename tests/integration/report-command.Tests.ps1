@@ -1,9 +1,9 @@
 # Smoke tests for the report template + Invoke-Report integration. Static
 # checks against report.template.html catch most regressions cheaply; the
-# data-derivation logic is unit-tested in Helpers.Tests.ps1.
-. "$PSScriptRoot\harness.ps1"
+# data-derivation logic is unit-tested in tests/unit/report.Tests.ps1.
+. "$PSScriptRoot\..\harness.ps1"
 
-$labRoot = (Resolve-Path "$PSScriptRoot\..").Path
+$labRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
 $tplPath = Join-Path $labRoot "report.template.html"
 
 Describe "report.template.html structure (v1.2 redesign)" {
@@ -129,7 +129,7 @@ Describe "Invoke-Report end-to-end on canned data" {
     # CALIBR_DATA_DIR in the child env. Without this, a test failure (or
     # the simple fact that the engine writes report.html in this dir)
     # leaks the canned fixture into the user's report. The $env:* assign
-    # only affects child processes spawned after this point — the parent
+    # only affects child processes spawned after this point - the parent
     # PowerShell's data dir is untouched.
     $env:CALIBR_DATA_DIR = $tmpData
     try {
@@ -185,7 +185,7 @@ Describe "Invoke-Report end-to-end on canned data" {
 }
 
 Describe "report.template.html script renders under a stubbed DOM" {
-    # tests/report-smoke.mjs extracts the <script> block, fills the
+    # report-smoke.mjs extracts the <script> block, fills the
     # placeholders with a small canned dataset, and runs it under a stubbed
     # document. A syntax error or a runtime throw during the initial
     # rerender() exits non-zero. Catches the kind of typo that would

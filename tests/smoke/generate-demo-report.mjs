@@ -3,7 +3,7 @@
 // 21 configs, varied tiers / WDDM flags / power data so every section of
 // the UI has something to render.
 //
-// Run: node tests/generate-demo-report.mjs
+// Run: node tests/smoke/generate-demo-report.mjs
 // Output: report_ui/demo-report.html (gitignored alongside the screenshot).
 
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const HERE     = dirname(fileURLToPath(import.meta.url));
-const LAB_ROOT = dirname(HERE);
+const LAB_ROOT = dirname(dirname(HERE));
 const TPL_PATH = join(LAB_ROOT, "report.template.html");
 const OUT_DIR  = join(LAB_ROOT, "report_ui");
 const OUT_PATH = join(OUT_DIR, "demo-report.html");

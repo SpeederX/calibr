@@ -11,9 +11,32 @@ group the rough order is "smaller / more isolated first".
 
 ## Engine + CLI: deferred but designed
 
+### Engine modularization + mirrored test hierarchy
+**Shipped in `feat/soc-ps-engine-and-test`.** `calibr.ps1` remains the public
+engine entrypoint, but it now bootstraps and dispatches only; the behavior was
+mechanically split across dot-sourced files:
+
+```
+calibr.ps1
+engine/config.ps1
+engine/platform.ps1
+engine/llama.ps1
+engine/discover.ps1
+engine/catalog.ps1
+engine/plan.ps1
+engine/bench.ps1
+engine/report.ps1
+engine/commands.ps1
+```
+
+Tests now mirror the same boundaries under `tests/unit/`, `tests/integration/`,
+`tests/static/`, and `tests/smoke/`. The npm bundle script copies
+`engine/*.ps1` with the root entrypoint so global installs keep working.
+
 ### Phase F — report UI redesign
 **Shipped.** See `report.template.html` + the `Phase F` markers in
-`tests/Report.Tests.ps1`. Visual demo: `node tests/generate-demo-report.mjs`
+`tests/integration/report-command.Tests.ps1`. Visual demo:
+`node tests/smoke/generate-demo-report.mjs`
 writes `report_ui/demo-report.html` from synthetic data. What landed:
 
 - Memory-vs-latency scatter is the first visible chart.
@@ -78,6 +101,62 @@ unsupported toolchain` in `ggml_cuda_kernel_can_use_pdl`). Probe with
 the highest CUDA variant whose minimum is `<= driver`. Cuda-12.4 is the
 safe default for anything R535+. The README's Requirements section
 holds the same table for users who set up manually.
+
+### Main menu guided run / advanced tools split + readiness badges
+**Shipped in `feat/soc-ps-engine-and-test`.** The top-level CLI menu is now:
+
+- **Guided run**: the current `all` flow. This is the default consumer path.
+- **Advanced tools**: the current individual verbs (`status`, `init`,
+  `discover`, `plan`, `bench`, `report`, `reset`, etc.) except `all`, because
+  `all` becomes the guided recommendation flow.
+- **Configure llama path**: keep as a top-level configuration action, not
+  buried under Advanced tools.
+
+Readiness badges:
+
+- `init`: red `*` when required setup is missing, green check when local config
+  exists and hardware was detected.
+- `configure llama path`: red `*` when `llama_server_exe` is unset/invalid,
+  green check when the configured executable exists.
+
+The first screen now answers "what do I need to do next?" without teaching the
+user the engine pipeline.
+
+### GGUF multi-shard model management
+*Post-Rust/helper-native candidate.*
+
+Current catalog entries assume one `hf_file` per model. Many 80B/100B+ GGUFs
+ship as multiple shards, and treating that as "just download more files" is
+fragile. Defer this until a native helper / Rust layer can own model
+acquisition and cache management.
+
+Needed shape:
+
+- Catalog schema for `hf_files` / shard groups, not only `hf_file`.
+- Ordered download with resume, cleanup after partial failures, and per-shard
+  size/hash validation when available.
+- Disk preflight based on the whole shard set while rotation still keeps peak
+  working-set predictable.
+- Path handoff to llama.cpp that preserves the expected first-shard filename.
+- Clear separation between single-file curated presets and workstation-class
+  multi-shard candidates.
+
+### MTP / speculative decoding benchmark mode
+*Depends on: current llama.cpp MTP support check.*
+
+Qwen-style MTP models should not be mixed into the normal preset path until the
+bench can compare baseline vs MTP fairly. Add an opt-in benchmark mode that:
+
+- Probes `llama-server --help` / version output for MTP support.
+- Runs the same model/prompt once as baseline and once with MTP/speculative
+  flags.
+- Captures `spec_type`, draft tokens, accepted tokens, acceptance rate, and
+  `speedup_vs_baseline` when llama.cpp exposes them.
+- Keeps prompt eval and generation speed separate; MTP mostly helps decode, so
+  a single aggregate TPS number can mislead.
+
+This is especially useful for MoE models, but it belongs in a dedicated track
+so the normal "recommend me a model" path stays stable.
 
 ### reasoning_mode wiring
 *Estimate: 1-2h.*
@@ -405,9 +484,8 @@ inference path.
   minimal-polling, report archival, init-in-all — is already merged there).
   `feat/linux-port` (off `dev`, 6 commits) adds the cross-platform port and is
   ready to fast-forward back into `dev`.
-- All engine helpers extracted as testable pure functions live in
-  `calibr.ps1` (look for `Get-`, `Test-`, `Select-`, `New-`, `Find-`
-  prefixes). 139 PowerShell tests in `tests/Helpers.Tests.ps1`.
+- Engine helpers are split across `engine/*.ps1` and covered by the mirrored
+  `tests/unit/*.Tests.ps1` tree.
 - CLI views in `cli/src/*.tsx`, with one screen per concern. Engine
   boundary is `cli/src/engine.ts`. CLI smoke install is
   `cli/scripts/smoke-install.js`.

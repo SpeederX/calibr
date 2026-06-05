@@ -1,0 +1,160 @@
+# This file is dot-sourced by calibr.ps1. Keep functions script-local aware;
+# command dispatch stays in the root entrypoint.
+
+# ============================================================================
+# SUBCOMMAND: discover
+# ============================================================================
+function Get-ModelMetadata {
+    param([string]$path)
+    $file = Get-Item -LiteralPath $path
+    $fname = $file.BaseName
+
+    $variant = "unknown"
+    $model   = $fname
+    $variantPatterns = @(
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_XL)$',
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_M)$',
+        '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_S)$',
+        '^(?<m>.+?)[\.\-](?<v>Q\d+_K_[A-Z]+)$',
+        '^(?<m>.+?)[\.\-](?<v>Q\d+_\d+)$',
+        '^(?<m>.+?)[\.\-](?<v>IQ\d+_[A-Z_]+)$',
+        '^(?<m>.+?)[\.\-](?<v>BF16|F16|F32)$'
+    )
+    foreach ($p in $variantPatterns) {
+        if ($fname -match $p) { $model = $Matches.m; $variant = $Matches.v; break }
+    }
+
+    # Series: parsed from model. Strip the trailing size+suffix token group
+    # (e.g. "Qwen3.5-9B" -> "Qwen3.5", "Gemma-4-E2B-it" -> "Gemma-4",
+    # "Qwen3.6-35B-A3B" -> "Qwen3.6"). Falls back to the model itself if
+    # nothing matches.
+    $series = $model
+    if ($model -match '^(.+?)-[A-Z]?\d+(\.\d+)?B(-A\d+B)?(-it|-Instruct)?$') {
+        $series = $Matches[1]
+    }
+
+    # MoE heuristics: -A\d+B (active params) or explicit MoE/Mixtral
+    $is_moe = ($model -match 'A\d+B' -or $model -match 'MoE' -or $model -match 'Mixtral')
+
+    # Param count in billions (best-effort)
+    $params_b = 0
+    if ($model -match '(\d+\.?\d*)B') { $params_b = [double]$Matches[1] }
+
+    # Sibling mmproj (prefer F16 < BF16 < F32)
+    $mmproj = $null
+    $mmCand = Get-ChildItem $file.Directory.FullName -Filter "mmproj-*.gguf" -ErrorAction SilentlyContinue
+    if ($mmCand) {
+        $pref = $mmCand | Sort-Object {
+            switch -Regex ($_.Name) { 'F16'{0}; 'BF16'{1}; 'F32'{2}; default{3} }
+        } | Select-Object -First 1
+        $mmproj = $pref.FullName
+    }
+
+    return @{
+        role       = "model"
+        path       = $file.FullName
+        name       = $file.Name
+        size_bytes = $file.Length
+        size_mib   = [int]($file.Length / 1MB)
+        model      = $model
+        series     = $series
+        variant    = $variant
+        params_b   = $params_b
+        is_moe     = $is_moe
+        mmproj     = $mmproj
+        dir        = $file.Directory.FullName
+    }
+}
+
+function Invoke-DenseOverrideFilter {
+    # Post-hoc filter: clear is_moe if the model is on the user's
+    # dense_overrides list. The MoE regex inside Get-ModelMetadata stays
+    # untouched (real MoE families are still detected by default); the
+    # override is a small, exact-match escape hatch for false positives.
+    # Pure: mutates and returns $meta but has no side effects.
+    param($meta, $denseOverrides)
+    if ($null -eq $meta) { return $meta }
+    if ($null -eq $denseOverrides) { return $meta }
+    $list = @($denseOverrides)
+    # -ccontains keeps the comparison case-sensitive (per spec). -contains
+    # in PowerShell is case-insensitive by default; we do not want
+    # `qwen3.6-35b-a3b` to silently match `Qwen3.6-35B-A3B` and disable MoE.
+    if ($meta.is_moe -and ($list -ccontains $meta.model)) {
+        $meta.is_moe = $false
+    }
+    return $meta
+}
+
+function Invoke-Discover {
+    $cfg = Get-Config
+    Write-Host "=== discover ===" -ForegroundColor Cyan
+    if (-not $cfg.scan_paths -or $cfg.scan_paths.Count -eq 0) {
+        throw "scan_paths is empty. Run 'calibr init' or edit config.json."
+    }
+
+    $catalog = @()
+    foreach ($base in $cfg.scan_paths) {
+        if (-not (Test-Path $base)) { Write-Warning "scan path not found: $base"; continue }
+        $abs = (Resolve-Path -LiteralPath $base -ErrorAction SilentlyContinue).Path
+        $display = if ($abs -and $abs -ne $base) { "$base  ->  $abs" } else { $base }
+        Write-Host "Scanning $display"
+        if ($base -eq "." -or $base -eq ".\") {
+            Write-Host "  (relative path; resolves against the current working directory)" -ForegroundColor DarkYellow
+        }
+        $ggufs = Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue
+        foreach ($f in $ggufs) {
+            $skip = $false
+            foreach ($ex in $cfg.exclude_patterns) {
+                if ($f.Name -like $ex) { $skip = $true; break }
+            }
+            if ($skip) { continue }
+            $meta = Get-ModelMetadata $f.FullName
+            $meta = Invoke-DenseOverrideFilter -meta $meta -denseOverrides $cfg.dense_overrides
+            $catalog += $meta
+            Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.model, $meta.size_mib, $meta.variant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
+        }
+    }
+
+    $catalog | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_CATALOG
+    Write-Host ("Catalog: {0} models -> {1}" -f $catalog.Count, $CALIBR_CATALOG) -ForegroundColor Green
+
+    # Surface the case where a single mmproj file on disk is paired with
+    # multiple distinct text models (historical Gemma 4 E2B vs E4B clash,
+    # different vision n_embd but same filename). The detection logic itself
+    # lives in Find-MmprojSharedAcrossModels so it can be unit-tested without
+    # a real filesystem walk; this loop just renders the warnings.
+    foreach ($warn in (Find-MmprojSharedAcrossModels -catalog $catalog)) {
+        Write-Host ""
+        Write-Host ("WARNING: mmproj shared across {0} distinct models:" -f $warn.models.Count) -ForegroundColor Yellow
+        Write-Host ("  mmproj: {0}" -f $warn.mmproj) -ForegroundColor Yellow
+        Write-Host ("  models: {0}" -f ($warn.models -join ', ')) -ForegroundColor Yellow
+        Write-Host  "  If these models have different vision n_embd, bench will fail at load." -ForegroundColor Yellow
+        Write-Host  "  Workaround: move each variant into its own subfolder so the mmproj files do not collide." -ForegroundColor Yellow
+    }
+}
+
+function Find-MmprojSharedAcrossModels {
+    # Pure: groups catalog entries by their paired mmproj path; returns an
+    # array of @{mmproj; models} for every mmproj seen with more than one
+    # distinct `model` name. Returns @() when nothing is shared. Two variants
+    # of the same model (e.g. Qwen3.5-2B Q4_K_XL + BF16) that share an
+    # mmproj are NOT flagged because the `model` field is identical - they
+    # genuinely use the same projector.
+    param($catalog)
+    $byMmproj = @{}
+    foreach ($e in $catalog) {
+        if (-not $e -or -not $e.mmproj) { continue }
+        if (-not $byMmproj.ContainsKey($e.mmproj)) { $byMmproj[$e.mmproj] = @() }
+        $byMmproj[$e.mmproj] += $e.model
+    }
+    $warnings = @()
+    foreach ($kv in $byMmproj.GetEnumerator()) {
+        $distinctModels = @($kv.Value | Sort-Object -Unique)
+        if ($distinctModels.Count -gt 1) {
+            $warnings += [pscustomobject]@{ mmproj = $kv.Key; models = $distinctModels }
+        }
+    }
+    return ,$warnings
+}
+
+

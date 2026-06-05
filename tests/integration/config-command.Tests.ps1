@@ -2,16 +2,16 @@
 # subprocess so we exercise the full dispatch path (param binding, dot-source
 # guard, exit codes), then inspects the on-disk config.json. We isolate state
 # by pointing -Config at a throwaway file in the system temp dir.
-. "$PSScriptRoot\harness.ps1"
+. "$PSScriptRoot\..\harness.ps1"
 
-$labRoot   = (Resolve-Path "$PSScriptRoot\..").Path
+$labRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
 $labScript = Join-Path $labRoot "calibr.ps1"
 $tmpCfg    = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-test-config-$([Guid]::NewGuid().ToString('N')).json"
 
 function Invoke-Lab {
     # Run the script with -Config pointing at our throwaway file. Returns
     # @{ stdout=...; exit=int }.
-    # NB: the parameter is $LabArgs, not $Args — $Args is a reserved
+    # NB: the parameter is $LabArgs, not $Args - $Args is a reserved
     # PowerShell automatic and shadowing it silently drops the values.
     param([string[]]$LabArgs)
     $allArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $labScript, "-Config", $tmpCfg) + $LabArgs

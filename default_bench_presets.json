@@ -6,8 +6,9 @@
     "User-saved presets live in data/user_bench_presets.json and override defaults with the same name (deep-replace, not merge — pick a different name if you want to keep both).",
     "Tier assignment rule: a model goes into a preset whose VRAM target roughly matches the model's GGUF footprint plus headroom for KV cache and compute buffers (typically ~30-40% on top of the file size). A model can appear in only one preset; if you want to bench a mid-size model on low hardware via CPU offload, use 'custom'.",
     "low      = files up to ~2.5 GB    (2-4 GB VRAM target)",
-    "middle   = files ~2.5-6 GB        (8 GB VRAM target)",
-    "high     = files above ~15 GB     (16-24 GB VRAM target; MoE models with low active params can also go in middle)"
+    "middle   = files ~2.5-6 GB        (8 GB VRAM target; compact MoE entries may be larger on disk when active params stay small)",
+    "high     = files ~7-17 GB         (12-24 GB VRAM target; 12B-27B dense or coder/reasoning models)",
+    "ultra    = files ~17-23 GB        (24-48 GB VRAM/UMA target; 30B-40B class, single-file only for now)"
   ],
 
   "presets": {
@@ -49,22 +50,42 @@
       "hardware_target": "RTX 2070 / 3060 8 GB + 32 GB system",
       "models": [
         "phi-3.5-mini-q4km",
+        "phi-4-mini-reasoning-q4km",
         "gemma-3-4b-q4km",
         "qwen3.5-4b-q4km",
         "qwen3.5-2b-bf16",
+        "gemma-3n-e4b-q4km",
         "gemma-4-e4b",
         "qwen3.5-9b-q4km",
-        "gemma-4-26b-a4b",
-        "qwen3.6-35b-a3b"
+        "gemma-4-26b-a4b"
       ],
       "max_ctx": 131072
     },
     "high": {
-      "label": "desktop-consumer-high-end — 16-24 GB VRAM + 32-96 GB RAM",
-      "hardware_target": "RTX 4090 / A6000 / etc + 64 GB system",
+      "label": "desktop-consumer-high-end — 12-24 GB VRAM + 32-96 GB RAM",
+      "hardware_target": "RTX 3060 12 GB / 4070 Ti / 4080 / 4090 / A-series + 64 GB system",
       "models": [
+        "gemma-4-12b-it-q4km",
+        "gemma-3-12b-it-qat-q4_0",
+        "phi-4-reasoning-plus-q4km",
+        "deepseek-coder-v2-lite-instruct-q4km",
         "qwen3.5-27b-q4ks",
-        "gemma-4-31b-q4km"
+        "gemma-3-27b-it-qat-q4_0"
+      ],
+      "max_ctx": 262144
+    },
+    "ultra": {
+      "label": "workstation-ultra — 24-48 GB VRAM/UMA + 64-128 GB RAM",
+      "hardware_target": "RTX 3090/4090 24 GB, RTX 6000 Ada, Mac Studio, large UMA/workstation boxes",
+      "models": [
+        "qwen3-30b-a3b-instruct-2507-udq4xl",
+        "qwen3-coder-30b-a3b-autoround-q4km",
+        "granite-4.1-30b-q4km",
+        "qwen3-30b-a3b-q4km",
+        "gemma-4-31b-q4km",
+        "qwen3-32b-q4km",
+        "deepseek-r1-distill-qwen-32b-q4km",
+        "qwen3.6-35b-a3b"
       ],
       "max_ctx": 262144
     }
