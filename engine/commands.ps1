@@ -597,6 +597,7 @@ function Invoke-Help {
         "status"            = "Show config + counts (catalog/plan/results) + global-install state."
         "config"            = "Get / set / list / unset config values from CLI."
         "get-models" = "List or download entries from the curated model catalog (HuggingFace)."
+        "doctor"            = "Sanity-check the system (CPU/GPU/OS + deps); show what's missing + how to fix it."
         "install"           = "Add this directory to user PATH so 'calibr' works globally."
         "uninstall"         = "Remove this directory from user PATH."
         "reset"             = "Wipe runtime state (results, catalog, plan, report, logs, bats, downloads, calibr-downloaded models, local config)."
@@ -730,6 +731,26 @@ function Invoke-Help {
                 "calibr get-models"
                 "calibr get-models -CatalogId qwen3.5-9b-q4km"
                 "calibr get-models -DownloadAll"
+            )
+        }
+        "doctor" = @{
+            Usage    = "calibr doctor [-Extended] [-Json] [-Export [-ExportPath <file>]]"
+            Flags    = @(
+                "(no flags)                 Print a human checklist: system info + every dep"
+                "                           with status (ok/warn/fail/missing/skipped) and the"
+                "                           exact fix for anything that isn't ok."
+                "-Extended                  Keep full (uncapped) command logs in the bundle."
+                "-Json                      Emit the diagnostic contract as JSON to stdout"
+                "                           (what the CLI's doctor view consumes)."
+                "-Export                    Write the JSON bundle to data/doctor-report.json"
+                "                           (home dir + hostname redacted). Attach it to an"
+                "                           'unable to start' issue."
+                "-ExportPath <file>         Override the export destination."
+            )
+            Examples = @(
+                "calibr doctor"
+                "calibr doctor -Extended"
+                "calibr doctor -Export -Extended"
             )
         }
         "install" = @{
