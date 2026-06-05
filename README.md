@@ -68,19 +68,22 @@ npm install -g calibr
 calibr
 ```
 
-You get a menu: `init`, `discover`, `plan`, `bench`, `report`, `all`,
-`results`. Walk through it with arrow keys + enter. The `all` form
-defaults to downloading the starter `low` preset and rotating files off disk
+You get a menu with `guided run`, `results`, `advanced tools`, and
+`configure llama path`. Walk through it with arrow keys + enter. Start with
+`guided run`: it is the consumer path that configures the old `all` flow,
+defaults to downloading the starter `low` preset, and rotates files off disk
 per model, so the first answer comes back faster. Switch the preset to
 `middle`, `high`, `ultra`, or `all` when you want the broader catalog sweep.
+The menu marks setup items with a green check when ready, or a red `*` when
+they need attention.
 
 Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
 to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
 — either way, llama-server runs with the optimized flags.
 
-Don't have any `.gguf` files yet? Pick `all`, keep `model catalog: yes`, and
-let calibr walk the curated set one model at a time:
-download → bench → delete → next model → report.
+Don't have any `.gguf` files yet? Pick `guided run`, keep `model catalog: yes`,
+and let calibr walk the curated set one model at a time:
+download -> bench -> delete -> next model -> report.
 
 ## What calibr recommends
 

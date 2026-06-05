@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
+import { existsSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
-import SelectInput from "ink-select-input";
-import { ENGINE_COMMANDS, readStatus, type Status } from "./engine.js";
+import { ENGINE_COMMANDS, readStatus, type EngineCommand, type Status } from "./engine.js";
 import { StatusView } from "./StatusView.js";
 import { RunView } from "./RunView.js";
 import { ResultsView } from "./ResultsView.js";
@@ -13,6 +13,7 @@ import { LlamaPathView } from "./LlamaPathView.js";
 
 type Screen =
   | { kind: "menu" }
+  | { kind: "advancedTools" }
   | { kind: "initOptions" }
   | { kind: "benchOptions" }
   | { kind: "allOptions" }
@@ -21,19 +22,155 @@ type Screen =
   | { kind: "run"; args: string[]; label: string }
   | { kind: "results" };
 
+type Badge = {
+  text: string;
+  color: "green" | "red";
+};
+
+type MenuItem = {
+  id: string;
+  label: string;
+  description: string;
+  badge?: Badge;
+  run: () => void;
+};
+
+function readinessBadge(ready: boolean): Badge {
+  return ready ? { text: "✓", color: "green" } : { text: "*", color: "red" };
+}
+
+function initIsReady(status: Status): boolean {
+  const hw = status.config.hardware ?? {};
+  return Boolean(status.hasLocalConfig && (hw.gpu_name || hw.vram_total_mib || hw.vram_safety_budget_mib));
+}
+
+function llamaPathIsReady(status: Status): boolean {
+  const path = status.config.llama_server_exe;
+  return Boolean(path && existsSync(path));
+}
+
+function renderRows(items: MenuItem[], cursor: number) {
+  return items.map((item, index) => {
+    const selected = index === cursor;
+    return (
+      <Box key={item.id}>
+        <Text color={selected ? "cyan" : undefined} inverse={selected}>
+          {selected ? "> " : "  "}
+          {item.label.padEnd(20)}
+        </Text>
+        {item.badge && (
+          <Text color={item.badge.color} bold>
+            {item.badge.text}
+          </Text>
+        )}
+        <Text dimColor>  {item.description}</Text>
+      </Box>
+    );
+  });
+}
+
 export function App() {
   const { exit } = useApp();
   const [screen, setScreen] = useState<Screen>({ kind: "menu" });
   const [status, setStatus] = useState<Status>(() => readStatus());
+  const [menuCursor, setMenuCursor] = useState(0);
+  const [advancedCursor, setAdvancedCursor] = useState(0);
 
-  // Refresh status whenever we return to the menu.
+  // Refresh status whenever we return to a menu with readiness indicators.
   useEffect(() => {
-    if (screen.kind === "menu") setStatus(readStatus());
+    if (screen.kind === "menu" || screen.kind === "advancedTools") setStatus(readStatus());
   }, [screen.kind]);
 
+  const openEngineCommand = (cmd: EngineCommand) => {
+    if (cmd.id === "init") {
+      setScreen({ kind: "initOptions" });
+      return;
+    }
+    if (cmd.id === "bench") {
+      setScreen({ kind: "benchOptions" });
+      return;
+    }
+    if (cmd.id === "reset") {
+      setScreen({ kind: "resetOptions" });
+      return;
+    }
+    setScreen({ kind: "run", args: cmd.args, label: cmd.label });
+  };
+
+  const mainItems: MenuItem[] = [
+    {
+      id: "guided-run",
+      label: "guided run",
+      description: "download, discover, plan, bench, report",
+      run: () => setScreen({ kind: "allOptions" }),
+    },
+    {
+      id: "results",
+      label: "results",
+      description: "browse benchmark winners",
+      run: () => setScreen({ kind: "results" }),
+    },
+    {
+      id: "advanced-tools",
+      label: "advanced tools",
+      description: "status, init, discover, plan, bench, report, reset",
+      run: () => setScreen({ kind: "advancedTools" }),
+    },
+    {
+      id: "llama-path",
+      label: "configure llama path",
+      description: "choose a llama.cpp server binary",
+      badge: readinessBadge(llamaPathIsReady(status)),
+      run: () => setScreen({ kind: "llamaPath" }),
+    },
+  ];
+
+  const advancedItems: MenuItem[] = ENGINE_COMMANDS
+    .filter((cmd) => cmd.id !== "all")
+    .map((cmd) => ({
+      id: cmd.id,
+      label: cmd.label,
+      description: cmd.description,
+      badge: cmd.id === "init" ? readinessBadge(initIsReady(status)) : undefined,
+      run: () => openEngineCommand(cmd),
+    }));
+
   useInput((input, key) => {
-    if (screen.kind === "menu" && (input === "q" || key.escape)) {
-      exit();
+    if (screen.kind === "menu") {
+      if (input === "q" || key.escape) {
+        exit();
+        return;
+      }
+      if (key.upArrow) {
+        setMenuCursor((c) => Math.max(0, c - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setMenuCursor((c) => Math.min(mainItems.length - 1, c + 1));
+        return;
+      }
+      if (key.return || input === " ") {
+        mainItems[menuCursor]?.run();
+        return;
+      }
+    }
+
+    if (screen.kind === "advancedTools") {
+      if (input === "q" || key.escape) {
+        setScreen({ kind: "menu" });
+        return;
+      }
+      if (key.upArrow) {
+        setAdvancedCursor((c) => Math.max(0, c - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setAdvancedCursor((c) => Math.min(advancedItems.length - 1, c + 1));
+        return;
+      }
+      if (key.return || input === " ") {
+        advancedItems[advancedCursor]?.run();
+      }
     }
   });
 
@@ -105,53 +242,39 @@ export function App() {
     );
   }
 
-  const items: { label: string; value: string }[] = [
-    { label: `${"results".padEnd(10)} — browse benchmark winners`, value: "__results" },
-    ...ENGINE_COMMANDS.map((c) => ({
-      label: `${c.label.padEnd(10)} — ${c.description}`,
-      value: c.id,
-    })),
-    { label: `${"llama".padEnd(10)} — change llama-server.exe path`, value: "__llamaPath" },
-  ];
+  if (screen.kind === "advancedTools") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <StatusView status={status} />
+        <Box marginTop={1} flexDirection="column">
+          <Text bold>advanced tools</Text>
+          <Box marginTop={1} flexDirection="column">
+            {renderRows(advancedItems, advancedCursor)}
+          </Box>
+          <Box marginTop={1} flexDirection="column">
+            <Text dimColor>up/down to move | enter to run | q/esc back</Text>
+            <Text dimColor>
+              <Text color="green">✓</Text> ready | <Text color="red">*</Text> needs attention
+            </Text>
+          </Box>
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
       <StatusView status={status} />
       <Box marginTop={1} flexDirection="column">
         <Text bold>what next?</Text>
-        <SelectInput
-          items={items}
-          onSelect={(item) => {
-            if (item.value === "__results") {
-              setScreen({ kind: "results" });
-              return;
-            }
-            if (item.value === "__llamaPath") {
-              setScreen({ kind: "llamaPath" });
-              return;
-            }
-            if (item.value === "init") {
-              setScreen({ kind: "initOptions" });
-              return;
-            }
-            if (item.value === "bench") {
-              setScreen({ kind: "benchOptions" });
-              return;
-            }
-            if (item.value === "all") {
-              setScreen({ kind: "allOptions" });
-              return;
-            }
-            if (item.value === "reset") {
-              setScreen({ kind: "resetOptions" });
-              return;
-            }
-            const cmd = ENGINE_COMMANDS.find((c) => c.id === item.value);
-            if (cmd) setScreen({ kind: "run", args: cmd.args, label: cmd.label });
-          }}
-        />
-        <Box marginTop={1}>
-          <Text dimColor>↑/↓ to move · enter to run · q to quit</Text>
+        <Box marginTop={1} flexDirection="column">
+          {renderRows(mainItems, menuCursor)}
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>up/down to move | enter to open | q to quit</Text>
+          <Text dimColor>
+            <Text color="green">✓</Text> ready | <Text color="red">*</Text> needs attention
+          </Text>
         </Box>
       </Box>
     </Box>

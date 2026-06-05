@@ -12,69 +12,31 @@ group the rough order is "smaller / more isolated first".
 ## Engine + CLI: deferred but designed
 
 ### Engine modularization + mirrored test hierarchy
-*Estimate: 1-2d. Do before auto-fetch / sharding / MTP.*
-
-`calibr.ps1` is still the public engine entrypoint, but internally it has grown
-into a monolith: config, platform probes, llama.cpp discovery, model discovery,
-catalog download, plan generation, bench execution, reporting, reset/install,
-and help all live in one file. That makes parallel feature work expensive
-because unrelated changes collide in the same script.
-
-Refactor this as a behavior-preserving extraction, not a rewrite:
+**Shipped in `feat/soc-ps-engine-and-test`.** `calibr.ps1` remains the public
+engine entrypoint, but it now bootstraps and dispatches only; the behavior was
+mechanically split across dot-sourced files:
 
 ```
-calibr.ps1                 entrypoint: params, bootstrap, dispatch only
-engine/config.ps1          config read/merge/write + config command helpers
-engine/platform.ps1        hardware and OS probes
-engine/llama.ps1           llama-server find/version/backend/health
-engine/discover.ps1        GGUF scan, metadata, mmproj pairing
-engine/catalog.ps1         model catalog, presets, downloads, manifest
-engine/plan.ps1            tiering, context caps, plan generation
-engine/bench.ps1           bench orchestration, one-run, aggregation, failures
-engine/report.ps1          winners, report generation, launch scripts
-engine/commands.ps1        status/reset/install/help wrappers if still useful
+calibr.ps1
+engine/config.ps1
+engine/platform.ps1
+engine/llama.ps1
+engine/discover.ps1
+engine/catalog.ps1
+engine/plan.ps1
+engine/bench.ps1
+engine/report.ps1
+engine/commands.ps1
 ```
 
-Keep the first pass mechanical:
-
-- Same command-line interface.
-- Same function names where practical.
-- Same JSON/log contract consumed by the Node + Ink CLI.
-- No auto-fetch, MTP, sharding, scoring, or behavioral changes in the same
-  commit.
-- Use dot-sourced `.ps1` files first; avoid `.psm1` export/import machinery
-  until there is a concrete benefit.
-
-Mirror the tests to the same responsibility boundaries so the test tree becomes
-a map of the engine:
-
-```
-tests/unit/config.Tests.ps1
-tests/unit/platform.Tests.ps1
-tests/unit/llama.Tests.ps1
-tests/unit/discover.Tests.ps1
-tests/unit/catalog.Tests.ps1
-tests/unit/plan.Tests.ps1
-tests/unit/bench.Tests.ps1
-tests/unit/report.Tests.ps1
-tests/integration/config-command.Tests.ps1
-tests/integration/catalog-command.Tests.ps1
-tests/integration/report-command.Tests.ps1
-tests/integration/engine-dispatch.Tests.ps1
-tests/static/catalog.Tests.ps1
-tests/smoke/
-```
-
-No test-driven process required; the goal is readability and safer refactors:
-move existing tests first, add only cheap tests that catch load-order,
-packaging, or dispatch regressions introduced by the split.
-
-Update `cli/scripts/bundle-engine.js` during the split so npm packages include
-`engine/*.ps1` alongside `calibr.ps1`, JSON catalogs, and templates.
+Tests now mirror the same boundaries under `tests/unit/`, `tests/integration/`,
+`tests/static/`, and `tests/smoke/`. The npm bundle script copies
+`engine/*.ps1` with the root entrypoint so global installs keep working.
 
 ### Phase F — report UI redesign
 **Shipped.** See `report.template.html` + the `Phase F` markers in
-`tests/Report.Tests.ps1`. Visual demo: `node tests/generate-demo-report.mjs`
+`tests/integration/report-command.Tests.ps1`. Visual demo:
+`node tests/smoke/generate-demo-report.mjs`
 writes `report_ui/demo-report.html` from synthetic data. What landed:
 
 - Memory-vs-latency scatter is the first visible chart.
@@ -141,9 +103,7 @@ safe default for anything R535+. The README's Requirements section
 holds the same table for users who set up manually.
 
 ### Main menu guided run / advanced tools split + readiness badges
-*Estimate: 0.5d.*
-
-The top-level CLI menu currently exposes every engine verb. Rework it into:
+**Shipped in `feat/soc-ps-engine-and-test`.** The top-level CLI menu is now:
 
 - **Guided run**: the current `all` flow. This is the default consumer path.
 - **Advanced tools**: the current individual verbs (`status`, `init`,
@@ -152,15 +112,15 @@ The top-level CLI menu currently exposes every engine verb. Rework it into:
 - **Configure llama path**: keep as a top-level configuration action, not
   buried under Advanced tools.
 
-Add readiness badges in the main menu:
+Readiness badges:
 
 - `init`: red `*` when required setup is missing, green check when local config
   exists and hardware was detected.
 - `configure llama path`: red `*` when `llama_server_exe` is unset/invalid,
   green check when the configured executable exists.
 
-This should make the first screen answer "what do I need to do next?" without
-teaching the user the engine pipeline.
+The first screen now answers "what do I need to do next?" without teaching the
+user the engine pipeline.
 
 ### GGUF multi-shard model management
 *Post-Rust/helper-native candidate.*
@@ -524,9 +484,8 @@ inference path.
   minimal-polling, report archival, init-in-all — is already merged there).
   `feat/linux-port` (off `dev`, 6 commits) adds the cross-platform port and is
   ready to fast-forward back into `dev`.
-- All engine helpers extracted as testable pure functions live in
-  `calibr.ps1` (look for `Get-`, `Test-`, `Select-`, `New-`, `Find-`
-  prefixes). 139 PowerShell tests in `tests/Helpers.Tests.ps1`.
+- Engine helpers are split across `engine/*.ps1` and covered by the mirrored
+  `tests/unit/*.Tests.ps1` tree.
 - CLI views in `cli/src/*.tsx`, with one screen per concern. Engine
   boundary is `cli/src/engine.ts`. CLI smoke install is
   `cli/scripts/smoke-install.js`.

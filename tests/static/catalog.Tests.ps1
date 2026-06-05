@@ -2,9 +2,9 @@
 # These catch the kind of drift where a new model is added to the catalog but
 # forgotten in the presets (or vice versa: a preset entry referencing a typo'd
 # catalog id). Pure file reads, no engine subprocess needed.
-. "$PSScriptRoot\harness.ps1"
+. "$PSScriptRoot\..\harness.ps1"
 
-$labRoot      = (Resolve-Path "$PSScriptRoot\..").Path
+$labRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
 $catalogPath  = Join-Path $labRoot "models_catalog.json"
 $presetsPath  = Join-Path $labRoot "default_bench_presets.json"
 
