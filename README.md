@@ -68,8 +68,11 @@ npm install -g calibr
 calibr
 ```
 
-You get a menu with `guided run`, `results`, `advanced tools`, and
-`configure llama path`. Walk through it with arrow keys + enter. Start with
+You get a menu with `guided run`, `results`, `advanced tools`,
+`configure llama path`, and `help`. Walk through it with arrow keys + enter.
+If something won't start, open `help` -> `doctor`: it checks your CPU/GPU/OS
+and every dependency, tells you exactly what's missing and how to fix it, and
+can export a redacted bundle to attach to a GitHub issue. Start with
 `guided run`: it is the consumer path that configures the old `all` flow,
 defaults to downloading the starter `low` preset, and rotates files off disk
 per model, so the first answer comes back faster. Switch the preset to
@@ -160,6 +163,13 @@ one wins.
   sysfs, power isn't exposed. Without those tools, metrics fall back to
   temperature-only and VRAM-budget planning is opt-in (set
   `hardware.vram_total_mib` yourself). CPU-only works too.
+
+**Not sure what you have or what's missing?** Run `calibr doctor` (or the menu's
+`help` -> `doctor`). It detects your CPU/GPU/OS, probes every dependency above,
+and prints each with a status and the exact fix — including AMD-APU specifics
+(amdgpu vs legacy `radeon` driver, hardware Vulkan vs `llvmpipe`, and the
+AVX2/BMI2 source-build flags old CPUs need). `calibr doctor -Export` writes a
+redacted JSON bundle for issue reports.
 
 Linux dependency map:
 

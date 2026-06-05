@@ -507,6 +507,109 @@ export function runEngine(args: string[]): EngineRun {
 }
 
 /**
+ * Run an engine verb and capture its full stdout/stderr (vs runEngine, which
+ * streams). Used for verbs whose stdout is structured data the CLI parses
+ * (today: `doctor -Json`). Resolves, never rejects.
+ */
+export function captureEngine(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  const isWin = process.platform === "win32";
+  const shell = isWin ? "powershell" : "pwsh";
+  const psArgs = [
+    "-NoProfile",
+    ...(isWin ? ["-ExecutionPolicy", "Bypass"] : []),
+    "-File", CALIBR_PS1,
+    ...injectNonInteractive(injectConfigArg(args)),
+  ];
+  return new Promise((res) => {
+    const proc = spawn(shell, psArgs, { cwd: ENGINE_ROOT, windowsHide: true, env: buildEngineEnv() });
+    let stdout = "", stderr = "";
+    proc.stdout?.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("close", (code) => res({ code: code ?? -1, stdout, stderr }));
+    proc.on("error", (e) => res({ code: -1, stdout, stderr: stderr + String(e) }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Doctor (sanity check). Mirrors the engine's JSON contract (schemaVersion 1).
+// ---------------------------------------------------------------------------
+export type DoctorCheck = "ok" | "warning" | "fail" | "missing" | "skipped";
+
+export interface DoctorDep {
+  name: string;
+  kind: string;
+  required: boolean;
+  present: boolean;
+  version?: string | null;
+  command?: string | null;
+  log?: string;
+  check: DoctorCheck;
+  detail?: string | null;
+  remediation?: string | null;
+}
+
+export interface DoctorReport {
+  schemaVersion: number;
+  calibrVersion?: string | null;
+  generatedAt: string;
+  extended: boolean;
+  overallStatus: "ok" | "degraded" | "unable-to-start";
+  inference: { gpuOffloadPossible: boolean; recommendedBackend: string; reason: string };
+  systemInfo: {
+    os: { platform: string; name: string; kernel?: string | null };
+    cpu: { model?: string | null; arch?: string | null; coresPhysical?: number | null; threadsLogical?: number | null; flags?: Record<string, boolean> | null };
+    ram: { totalMib?: number | null; availableMib?: number | null };
+    gpus: Array<{ name: string; vendor?: string | null; vramTotalMib?: number | null; kernelDriver?: string | null; powerW?: number | null; vulkanDevice?: string | null }>;
+  };
+  deps: DoctorDep[];
+}
+
+export const DOCTOR_ISSUE_URL = "https://github.com/SpeederX/calibr/issues/new";
+
+/** Open a URL in the OS default browser. */
+export function openUrl(url: string): void {
+  const [cmd, cmdArgs] =
+    process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
+    : process.platform === "darwin" ? ["open", [url]]
+    : ["xdg-open", [url]];
+  try {
+    const child = spawn(cmd as string, cmdArgs as string[], { windowsHide: true, detached: true, stdio: "ignore" });
+    child.unref();
+  } catch { /* best-effort */ }
+}
+
+/** Run `doctor -Json` and parse the contract. Resolves with an error string on failure. */
+export async function runDoctor(extended: boolean): Promise<{ report?: DoctorReport; error?: string }> {
+  const args = ["doctor", "-Json"];
+  if (extended) args.push("-Extended");
+  const { code, stdout, stderr } = await captureEngine(args);
+  const text = stdout.trim();
+  if (!text) return { error: stderr.trim() || `doctor exited with code ${code} and no output` };
+  try {
+    return { report: JSON.parse(text) as DoctorReport };
+  } catch {
+    // The JSON is the last contiguous {...} block; salvage it if a stray
+    // line slipped onto stdout ahead of it.
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try { return { report: JSON.parse(text.slice(start, end + 1)) as DoctorReport }; } catch { /* fall through */ }
+    }
+    return { error: `could not parse doctor output: ${text.slice(0, 200)}` };
+  }
+}
+
+/** Run `doctor -Export` (always extended) to a known path and return it. */
+export async function exportDoctor(extended: boolean): Promise<{ path?: string; error?: string }> {
+  const path = join(CALIBR_DATA_DIR, "doctor-report.json");
+  const args = ["doctor", "-Export", "-ExportPath", path];
+  if (extended) args.push("-Extended");
+  const { code, stderr } = await captureEngine(args);
+  if (existsSync(path)) return { path };
+  return { error: stderr.trim() || `export failed (exit ${code})` };
+}
+
+/**
  * Open the generated HTML report with the OS default browser.
  * Returns true if the report exists and the open command was launched,
  * false if the report has not been generated yet.
