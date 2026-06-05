@@ -72,7 +72,7 @@ You get a menu: `init`, `discover`, `plan`, `bench`, `report`, `all`,
 `results`. Walk through it with arrow keys + enter. The `all` form
 defaults to downloading the starter `low` preset and rotating files off disk
 per model, so the first answer comes back faster. Switch the preset to
-`middle`, `high`, or `all` when you want the broader catalog sweep.
+`middle`, `high`, `ultra`, or `all` when you want the broader catalog sweep.
 
 Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
 to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
@@ -178,9 +178,10 @@ running every config to fail.
 
 The bundled catalog is deliberately conservative: official or near-official
 model families from Google/Gemma, Alibaba/Qwen, Meta/Llama, Mistral,
-Hugging Face/SmolLM, Microsoft/Phi, IBM/Granite, and a small number of widely
-used GGUF packagers. It avoids random distillations, fine-tunes, and one-off
-community remixes because the goal is to recommend a reliable local baseline.
+Hugging Face/SmolLM, Microsoft/Phi, IBM/Granite, DeepSeek, and a small number
+of widely used GGUF packagers. It avoids random distillations, fine-tunes, and
+one-off community remixes because the goal is to recommend a reliable local
+baseline.
 
 ### Low - GTX 1650 / RTX 3050 / iGPU + 16 GB system
 
@@ -212,20 +213,38 @@ community remixes because the goal is to recommend a reliable local baseline.
 | Model | Variant | Tier | Source | Approx size |
 |---|---|---:|---|---:|
 | Phi-3.5-mini-Instruct | Q4_K_M | A | bartowski | 2.2 GB |
+| Phi-4-mini-reasoning | Q4_K_M | A | lmstudio-community | 2.3 GB |
 | Gemma-3-4B-it | Q4_K_M | A | ggml-org | 2.4 GB |
 | Qwen3.5-4B | Q4_K_M | A | unsloth | 2.6 GB |
 | Qwen3.5-2B | BF16 | A | unsloth | 3.5 GB |
+| Gemma-3n-E4B-it | Q4_K_M | A | unsloth | 4.2 GB |
 | Gemma-4-E4B | Q4_K_M | A | unsloth | 4.6 GB |
 | Qwen3.5-9B | Q4_K_M | A | unsloth | 5.2 GB |
 | Gemma-4-26B-A4B | UD-Q4_K_M | B | unsloth | 14.9 GB |
-| Qwen3.6-35B-A3B | UD-Q4_K_M | B | unsloth | 20.6 GB |
 
-### High - RTX 4090 / A6000 / etc + 64 GB system
+### High - 12-24 GB VRAM + 32-96 GB RAM
 
 | Model | Variant | Tier | Source | Approx size |
 |---|---|---:|---|---:|
+| Gemma-4-12B-it | Q4_K_M | C | unsloth | 6.6 GB |
+| Gemma-3-12B-it-QAT | Q4_0 | C | google | 7.5 GB |
+| Phi-4-reasoning-plus | Q4_K_M | C | unsloth | 8.4 GB |
+| DeepSeek-Coder-V2-Lite-Instruct | Q4_K_M | C | bartowski | 9.7 GB |
 | Qwen3.5-27B | Q4_K_S | C | unsloth | 14.7 GB |
-| Gemma-4-31B | Q4_K_M | C | unsloth | 17.2 GB |
+| Gemma-3-27B-it-QAT | Q4_0 | C | google | 16.0 GB |
+
+### Ultra - 24-48 GB VRAM/UMA + 64-128 GB RAM
+
+| Model | Variant | Tier | Source | Approx size |
+|---|---|---:|---|---:|
+| Qwen3-30B-A3B-Instruct-2507 | UD-Q4_K_XL | B | unsloth | 16.5 GB |
+| Qwen3-Coder-30B-A3B-Instruct | Q4_K_M | B | Intel | 16.1 GB |
+| Granite-4.1-30B | Q4_K_M | C | ibm-granite | 16.3 GB |
+| Qwen3-30B-A3B | Q4_K_M | B | Qwen | 17.3 GB |
+| Gemma-4-31B | Q4_K_M | C | unsloth | 17.1 GB |
+| Qwen3-32B | Q4_K_M | C | Qwen | 18.4 GB |
+| DeepSeek-R1-Distill-Qwen-32B | Q4_K_M | C | unsloth | 18.5 GB |
+| Qwen3.6-35B-A3B | UD-Q4_K_M | B | unsloth | 20.6 GB |
 
 ## Technical details
 
@@ -310,12 +329,13 @@ CLI → backend → web UI). Concrete near-term ideas being explored:
 
 The fastest first contribution is a trustworthy catalog entry in
 `models_catalog.json`: verify the HuggingFace URL resolves, add the correct
-`max_context`, and place the id in the appropriate `low`, `middle`, or `high`
-preset in `default_bench_presets.json`.
+`max_context`, and place the id in the appropriate `low`, `middle`, `high`, or
+`ultra` preset in `default_bench_presets.json`.
 
 Catalog additions should come from reliable model families or accountable
 publishers: Google/Gemma, Alibaba/Qwen, Meta/Llama, Mistral, Hugging
-Face/SmolLM, Microsoft/Phi, IBM/Granite, or similarly well-known upstreams.
+Face/SmolLM, Microsoft/Phi, IBM/Granite, DeepSeek, or similarly well-known
+upstreams.
 Avoid random distillations, custom fine-tunes, renamed reuploads, or novelty
 variants unless there is a clear consumer reason and the provenance is obvious.
 

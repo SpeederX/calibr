@@ -97,7 +97,7 @@ A typical first session:
    report in your browser, `q` to go back.
 
 Once the starter run works, repeat `all` and switch `which models` to
-`middle`, `high`, or `all` for a broader recommendation set.
+`middle`, `high`, `ultra`, or `all` for a broader recommendation set.
 
 For sub-tasks (re-bench one model, change run count):
 
