@@ -77,12 +77,20 @@ per model, so the first answer comes back faster. Switch the preset to
 The menu marks setup items with a green check when ready, or a red `*` when
 they need attention.
 
+On a fresh machine, `guided run` asks how to set up llama.cpp if
+`llama_server_exe` is missing: download an official release (latest by default,
+or type a `bNNNN` build tag), or scan for existing local `llama-server`
+binaries. One local binary is selected automatically; multiple binaries open a
+picker. Use `configure llama path` when you already know the exact custom build
+you want to keep.
+
 Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
 to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
 — either way, llama-server runs with the optimized flags.
 
 Don't have any `.gguf` files yet? Pick `guided run`, keep `model catalog: yes`,
-and let calibr walk the curated set one model at a time:
+choose the llama.cpp setup when prompted, and let calibr walk the curated set
+one model at a time:
 download -> bench -> delete -> next model -> report.
 
 ## What calibr recommends
@@ -134,13 +142,17 @@ one wins.
 - `nvidia-smi` on PATH (bundled with the NVIDIA driver)
 - **Node.js 18 or newer** and npm for the global `calibr` command.
 - A **llama.cpp build** with `llama-server.exe`, preferably CUDA on NVIDIA.
+  calibr can auto-fetch the official build during `guided run` / `init`;
+  manual install is only needed for custom builds or offline setups.
 
 **Linux:**
 
 - **Node.js 18 or newer** and npm for the global `calibr` command.
 - **PowerShell Core (`pwsh`)** — [install guide](https://github.com/PowerShell/PowerShell).
   The npm CLI starts the engine through `pwsh` on Linux.
-- A **llama.cpp build** with `llama-server`.
+- A **llama.cpp build** with `llama-server`. calibr can auto-fetch official
+  Linux release archives; manual install is only needed for custom builds,
+  offline setups, or unsupported platforms.
 - A GPU is optional. On **NVIDIA** with `nvidia-smi` on PATH you get VRAM /
   power / temp / util metrics. On **AMD**, install `radeontop` + `mesa-utils`
   (`apt install radeontop mesa-utils`) for VRAM total (`glxinfo`) and live
@@ -154,7 +166,8 @@ Linux dependency map:
 | Dependency | Required? | Used for | Typical package |
 |---|---:|---|---|
 | `pwsh` | yes | run the engine from the npm CLI | `powershell` (install from Microsoft/PowerShell release docs) |
-| `llama-server` | yes | actual llama.cpp inference backend | llama.cpp release/build |
+| `llama-server` | yes, auto/manual | actual llama.cpp inference backend | auto-fetched llama.cpp release or custom build |
+| `tar` | yes for auto-fetch on Linux | extract official `.tar.gz` llama.cpp archives | usually preinstalled |
 | `bash`, `chmod` | yes for launchers | write executable `.sh` launchers | usually preinstalled |
 | `xdg-open` | optional | open `data/report.html` from the CLI | `xdg-utils` |
 | `lspci` | optional | Linux GPU-name fallback when `nvidia-smi` is absent | `pciutils` |
@@ -167,11 +180,20 @@ verify that Vulkan sees a hardware GPU rather than only `llvmpipe`.
 
 **llama.cpp build choice:**
 
-Get a release from the
-[llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases)
-(CUDA recommended on NVIDIA), or build from source. A Vulkan-only build also
-works on NVIDIA, but is usually slower than CUDA. On Windows/NVIDIA, the
-broadest-compatible llama.cpp release artifact is usually the CUDA 12.4 build.
+The easiest path is to leave `llama.cpp: auto-fetch official build if missing`
+enabled. calibr resolves the latest
+[llama.cpp release](https://github.com/ggml-org/llama.cpp/releases), picks the
+highest compatible CUDA artifact on Windows/NVIDIA, prefers Vulkan for
+AMD/Intel-class GPUs, and falls back to CPU when no GPU artifact matches. For
+CUDA, it also downloads the matching `cudart-llama` package into the same
+folder.
+
+Manual setup still works: get a release from the llama.cpp releases page
+(CUDA recommended on NVIDIA), or build from source, then use `configure llama
+path`. A Vulkan-only build also works on NVIDIA, but is usually slower than
+CUDA. On Windows/NVIDIA, the broadest-compatible llama.cpp release artifact is
+usually the CUDA 12.4 build. To pin auto-fetch to a specific llama.cpp tag for
+testing, set `CALIBR_LLAMA_CPP_TAG=b9360` before running `calibr`.
 
 Older builds may lack newer model architectures. calibr detects "unknown model
 architecture" failures and skips the remaining tests for that model instead of

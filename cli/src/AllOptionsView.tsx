@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
+import { existsSync } from "node:fs";
 import {
   readModelCatalog,
   filterCatalog,
@@ -10,6 +11,9 @@ import {
   loadConfig,
   cachedResultsCount,
   readPresetCatalog,
+  findLlamaServerCandidates,
+  normalizeLlamaBuildInput,
+  type LlamaServerCandidate,
 } from "./engine.js";
 import { CustomBenchView } from "./CustomBenchView.js";
 
@@ -27,8 +31,16 @@ interface Props {
 type Phase =
   | { kind: "form" }
   | { kind: "custom" }   // CustomBenchView for model multi-pick
+  | { kind: "llamaSource" }
+  | { kind: "llamaDownloadVersion"; error?: string }
+  | { kind: "llamaLocalPick" }
+  | { kind: "llamaNoLocal" }
   | { kind: "gate"; required: number; available: number; entryCount: number; sufficient: boolean }
   | { kind: "cachePrompt" };
+
+type LlamaDecision =
+  | { kind: "download"; build: string }
+  | { kind: "local"; path: string };
 
 export function AllOptionsView({ onRun, onCancel }: Props) {
   // 'all' is the typical "I want everything" path; defaulting fetch on
@@ -39,11 +51,23 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
   const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
+  const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(null);
+  const [llamaVersionInput, setLlamaVersionInput] = useState<string>("");
+  const [llamaCandidates, setLlamaCandidates] = useState<LlamaServerCandidate[]>([]);
+  const [llamaSourceCursor, setLlamaSourceCursor] = useState(0);
+  const [llamaCursor, setLlamaCursor] = useState(0);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
   const catalog = useMemo(readModelCatalog, []);
   const cfg = useMemo(loadConfig, []);
+  const llamaConfigured = Boolean(cfg.llama_server_exe && existsSync(cfg.llama_server_exe));
+  const llamaLabel = (() => {
+    if (llamaConfigured) return `configured (${cfg.llama_server_exe})`;
+    if (llamaDecision?.kind === "download") return llamaDecision.build ? `download ${llamaDecision.build}` : "download latest";
+    if (llamaDecision?.kind === "local") return `use local (${llamaDecision.path})`;
+    return "choose when missing";
+  })();
   const destination = useMemo(() => downloadDestination(cfg), [cfg]);
   const cachedCount = useMemo(cachedResultsCount, []);
   // Presets: built-in (default_bench_presets.json) + user-saved
@@ -79,6 +103,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   })();
 
   const rows = [
+    { kind: "llama"    as const, label: `llama.cpp:       ${llamaLabel}` },
     { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — only bench what's already in scan_paths"}` },
     { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog },
     { kind: "rotate"   as const, label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its bench finishes)"}` },
@@ -95,9 +120,20 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
 
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
-  const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
+  const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): { args: string[]; label: string } => {
     const args: string[] = ["all"];
     const parts: string[] = [];
+    if (decision?.kind === "download") {
+      args.push("-AutoFetchLlama");
+      parts.push("-AutoFetchLlama");
+      if (decision.build) {
+        args.push("-LlamaCppBuild", decision.build);
+        parts.push(`-LlamaCppBuild ${decision.build}`);
+      }
+    } else if (decision?.kind === "local") {
+      args.push("-LlamaServer", decision.path);
+      parts.push(`-LlamaServer "${decision.path}"`);
+    }
     if (fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
     // Custom selection overrides the named preset path entirely.
     if (fetchCatalog && customIds) {
@@ -153,9 +189,63 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     });
   };
 
+  const startAfterLlamaSetup = (decision: LlamaDecision | null = llamaDecision) => {
+    if (fetchCatalog && currentPreset === "custom" && !customIds) {
+      setPhase({ kind: "custom" });
+      return;
+    }
+    if (fetchCatalog) {
+      runGate();
+    } else if (cachedCount > 0) {
+      setPhase({ kind: "cachePrompt" });
+    } else {
+      const { args, label } = buildArgs(false, decision);
+      onRun(args, label);
+    }
+  };
+
+  const startRun = () => {
+    if (!llamaConfigured && !llamaDecision) {
+      setLlamaSourceCursor(0);
+      setPhase({ kind: "llamaSource" });
+      return;
+    }
+    startAfterLlamaSetup();
+  };
+
+  const submitDownloadVersion = () => {
+    const build = normalizeLlamaBuildInput(llamaVersionInput);
+    if (build === null) {
+      setPhase({ kind: "llamaDownloadVersion", error: "Use bNNNN or NNNN (1-4 digits), or leave empty for latest." });
+      return;
+    }
+    const decision: LlamaDecision = { kind: "download", build };
+    setLlamaDecision(decision);
+    startAfterLlamaSetup(decision);
+  };
+
+  const chooseLocalLlama = () => {
+    const candidates = findLlamaServerCandidates();
+    if (candidates.length === 0) {
+      setLlamaCandidates([]);
+      setPhase({ kind: "llamaNoLocal" });
+      return;
+    }
+    if (candidates.length === 1) {
+      const decision: LlamaDecision = { kind: "local", path: candidates[0]!.path };
+      setLlamaDecision(decision);
+      startAfterLlamaSetup(decision);
+      return;
+    }
+    setLlamaCandidates(candidates);
+    setLlamaCursor(0);
+    setPhase({ kind: "llamaLocalPick" });
+  };
+
   const activate = (i: number) => {
     const row = rows[i];
     switch (row.kind) {
+      case "llama":    setLlamaSourceCursor(0); setPhase({ kind: "llamaSource" }); break;
       case "fetch":    setFetchCatalog(!fetchCatalog); break;
       case "preset": {
         if (!fetchCatalog) break;
@@ -170,25 +260,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       case "rotate":   setKeepDownloads(!keepDownloads); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
       case "polling":  setMinimalPolling(!minimalPolling); break;
-      case "run": {
-        // If preset is 'custom' and the user hasn't yet picked any models
-        // (customIds empty), route into CustomBenchView first. After the
-        // picker submits, AllOptionsView re-enters this branch from the
-        // 'run' button — customIds will then be populated.
-        if (fetchCatalog && currentPreset === "custom" && !customIds) {
-          setPhase({ kind: "custom" });
-          break;
-        }
-        if (fetchCatalog) {
-          runGate();
-        } else if (cachedCount > 0) {
-          setPhase({ kind: "cachePrompt" });
-        } else {
-          const { args, label } = buildArgs(false);
-          onRun(args, label);
-        }
-        break;
-      }
+      case "run": startRun(); break;
       case "cancel": onCancel(); break;
     }
   };
@@ -198,6 +270,58 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     // (which has its own useInput inside) so we MUST not also consume
     // keystrokes here — otherwise the picker can't toggle.
     if (phase.kind === "custom") return;
+    if (phase.kind === "llamaSource") {
+      if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
+      if (key.upArrow || input === "k") { setLlamaSourceCursor(c => Math.max(0, c - 1)); return; }
+      if (key.downArrow || input === "j") { setLlamaSourceCursor(c => Math.min(2, c + 1)); return; }
+      if (key.return || input === " ") {
+        if (llamaSourceCursor === 0) {
+          setLlamaVersionInput("");
+          setPhase({ kind: "llamaDownloadVersion" });
+        } else if (llamaSourceCursor === 1) {
+          chooseLocalLlama();
+        } else {
+          setPhase({ kind: "form" });
+        }
+      }
+      return;
+    }
+    if (phase.kind === "llamaDownloadVersion") {
+      if (key.escape) { setLlamaSourceCursor(0); setPhase({ kind: "llamaSource" }); return; }
+      if (key.return) { submitDownloadVersion(); return; }
+      if (key.backspace || key.delete) {
+        setLlamaVersionInput(v => v.slice(0, -1));
+        setPhase({ kind: "llamaDownloadVersion" });
+        return;
+      }
+      if (input && /^[bB0-9]+$/.test(input)) {
+        setLlamaVersionInput(v => (v + input).slice(0, 5));
+        setPhase({ kind: "llamaDownloadVersion" });
+      }
+      return;
+    }
+    if (phase.kind === "llamaLocalPick") {
+      if (key.escape || input === "q") { setLlamaSourceCursor(1); setPhase({ kind: "llamaSource" }); return; }
+      if (key.upArrow || input === "k") { setLlamaCursor(c => Math.max(0, c - 1)); return; }
+      if (key.downArrow || input === "j") { setLlamaCursor(c => Math.min(llamaCandidates.length - 1, c + 1)); return; }
+      if (key.return || input === " ") {
+        const picked = llamaCandidates[llamaCursor];
+        if (picked) {
+          const decision: LlamaDecision = { kind: "local", path: picked.path };
+          setLlamaDecision(decision);
+          startAfterLlamaSetup(decision);
+        }
+      }
+      return;
+    }
+    if (phase.kind === "llamaNoLocal") {
+      if (key.escape || input === "q") { setLlamaSourceCursor(1); setPhase({ kind: "llamaSource" }); return; }
+      if (input === "d" || input === "D" || key.return) {
+        setLlamaVersionInput("");
+        setPhase({ kind: "llamaDownloadVersion" });
+      }
+      return;
+    }
     if (phase.kind === "gate") {
       if (key.escape || input === "q" || input === "n" || input === "N") {
         setPhase({ kind: "form" });
@@ -227,6 +351,78 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     else if (key.return || input === " ") activate(cursor);
     else if (key.escape || input === "q") onCancel();
   });
+
+  if (phase.kind === "llamaSource") {
+    const sourceRows = [
+      "download official llama.cpp",
+      "scan existing llama-server",
+      "back",
+    ];
+    return (
+      <Box flexDirection="column">
+        <Text bold color="cyan">llama.cpp setup</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>llama_server_exe is not configured. Choose how guided run should continue.</Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          {sourceRows.map((label, i) => {
+            const selected = i === llamaSourceCursor;
+            return (
+              <Text key={label} color={selected ? "cyan" : undefined} inverse={selected}>
+                {selected ? "> " : "  "}{label}
+              </Text>
+            );
+          })}
+        </Box>
+        <Box marginTop={1}><Text dimColor>up/down to move | enter to select | q/esc back</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "llamaDownloadVersion") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="cyan">download llama.cpp</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text>build tag: <Text color="cyan">{llamaVersionInput || "(latest)"}</Text></Text>
+          <Text dimColor>Enter bNNNN or NNNN, 1-4 digits. Leave empty for latest.</Text>
+          {phase.error && <Text color="red">{phase.error}</Text>}
+        </Box>
+        <Box marginTop={1}><Text dimColor>type build | enter continue | backspace edit | esc back</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "llamaLocalPick") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="cyan">choose local llama-server</Text>
+        <Box marginTop={1} flexDirection="column">
+          {llamaCandidates.map((candidate, i) => {
+            const selected = i === llamaCursor;
+            return (
+              <Text key={candidate.path} color={selected ? "cyan" : undefined} inverse={selected}>
+                {selected ? "> " : "  "}{candidate.label}
+              </Text>
+            );
+          })}
+        </Box>
+        <Box marginTop={1}><Text dimColor>up/down to move | enter to use | q/esc back</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "llamaNoLocal") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="yellow">no local llama-server found</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>calibr did not find llama-server on PATH, in its llama-bin folder, or nearby folders.</Text>
+          <Text>Press <Text color="cyan">enter</Text> to download official llama.cpp, or <Text color="cyan">q</Text> to go back.</Text>
+        </Box>
+      </Box>
+    );
+  }
 
   if (phase.kind === "gate") {
     const sufficient = phase.sufficient;
