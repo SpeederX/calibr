@@ -362,15 +362,17 @@ function Invoke-AutoFetchLlama {
     Write-Host ("  Selected llama.cpp {0} ({1})" -f $plan.tag, $label) -ForegroundColor Green
 
     $archivesDir = Join-Path $root "archives"
-    foreach ($asset in @($plan.assets)) {
-        $name = Get-ObjectField -Object $asset -Name "name"
-        $url = Get-ObjectField -Object $asset -Name "browser_download_url"
-        $size = [long](Get-ObjectField -Object $asset -Name "size")
-        if (-not $name -or -not $url) { throw "Malformed llama.cpp release asset." }
-        $archivePath = Join-Path $archivesDir $name
-        $ok = Invoke-CalibrUrlDownload -Url $url -DestPath $archivePath -ExpectedBytes $size
-        if (-not $ok) { throw "Download failed for $name." }
-        Expand-LlamaArchive -ArchivePath $archivePath -Destination $installDir
+    foreach ($assetGroup in @($plan.assets)) {
+        foreach ($asset in @($assetGroup | Where-Object { $_ })) {
+            $name = Get-ObjectField -Object $asset -Name "name"
+            $url = Get-ObjectField -Object $asset -Name "browser_download_url"
+            $size = [long](Get-ObjectField -Object $asset -Name "size")
+            if (-not $name -or -not $url) { throw "Malformed llama.cpp release asset." }
+            $archivePath = Join-Path $archivesDir $name
+            $ok = Invoke-CalibrUrlDownload -Url $url -DestPath $archivePath -ExpectedBytes $size
+            if (-not $ok) { throw "Download failed for $name." }
+            Expand-LlamaArchive -ArchivePath $archivePath -Destination $installDir
+        }
     }
 
     $server = @(Find-LlamaServerUnder -Root $installDir | Select-Object -First 1)

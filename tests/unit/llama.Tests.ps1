@@ -123,4 +123,69 @@ Describe "llama.cpp auto-fetch discovery" {
     }
 }
 
+Describe "llama.cpp auto-fetch execution" {
+    It "downloads and extracts a stub llama.cpp build into CALIBR_DATA_DIR" {
+        With-TestPlatform -Win $true -Lin $false -Body {
+            $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-llama-stub-" + [guid]::NewGuid())
+            $oldData = $script:CALIBR_DATA_DIR
+            $oldForce = $script:Force
+            $oldRelease = (Get-Command Get-LlamaCppRelease -CommandType Function).ScriptBlock
+            $oldDriver = (Get-Command Get-NvidiaDriverVersion -CommandType Function).ScriptBlock
+            $oldDownload = (Get-Command Invoke-CalibrUrlDownload -CommandType Function).ScriptBlock
+            $oldExpand = (Get-Command Expand-LlamaArchive -CommandType Function).ScriptBlock
+            try {
+                $script:CALIBR_DATA_DIR = $tmp
+                $script:Force = $false
+                $script:LLAMA_STUB_DOWNLOADS = @()
+                $script:LLAMA_STUB_EXTRACTS = @()
+                $script:LLAMA_STUB_RELEASE = [PSCustomObject]@{
+                    tag_name = "b9360"
+                    assets = @(
+                        New-TestAsset "llama-b9360-bin-win-cuda-13.1-x64.zip" 123
+                        New-TestAsset "cudart-llama-bin-win-cuda-13.1-x64.zip" 456
+                    )
+                }
+
+                Set-Item -Path Function:\Get-LlamaCppRelease -Value { return $script:LLAMA_STUB_RELEASE }
+                Set-Item -Path Function:\Get-NvidiaDriverVersion -Value { return "596.21" }
+                Set-Item -Path Function:\Invoke-CalibrUrlDownload -Value {
+                    param([string]$Url, [string]$DestPath, [long]$ExpectedBytes = 0)
+                    $script:LLAMA_STUB_DOWNLOADS += $Url
+                    $dir = Split-Path $DestPath -Parent
+                    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+                    Set-Content -LiteralPath $DestPath -Value "stub archive"
+                    return $true
+                }
+                Set-Item -Path Function:\Expand-LlamaArchive -Value {
+                    param([string]$ArchivePath, [string]$Destination)
+                    $script:LLAMA_STUB_EXTRACTS += $ArchivePath
+                    if (-not (Test-Path -LiteralPath $Destination)) { New-Item -ItemType Directory -Path $Destination -Force | Out-Null }
+                    New-Item -ItemType File -Path (Join-Path $Destination "llama-server.exe") -Force | Out-Null
+                }
+
+                $server = Invoke-AutoFetchLlama -Hardware @{ gpu_name = "NVIDIA GeForce RTX 2070" }
+                $expectedServer = Join-Path (Join-Path (Join-Path $tmp "llama-bin") "b9360") "cuda-13.1\llama-server.exe"
+                Assert-Equal $expectedServer $server
+                Assert-True (Test-Path -LiteralPath $server) "stub llama-server should be extracted"
+                Assert-Equal 2 @($script:LLAMA_STUB_DOWNLOADS).Count
+                Assert-True (@($script:LLAMA_STUB_DOWNLOADS) -contains "https://example.invalid/llama-b9360-bin-win-cuda-13.1-x64.zip")
+                Assert-True (@($script:LLAMA_STUB_DOWNLOADS) -contains "https://example.invalid/cudart-llama-bin-win-cuda-13.1-x64.zip")
+                Assert-Equal 2 @($script:LLAMA_STUB_EXTRACTS).Count
+                Assert-True (@(Find-LlamaServerExe) -contains $server) "stub server should be discoverable after fetch"
+            } finally {
+                Set-Item -Path Function:\Get-LlamaCppRelease -Value $oldRelease
+                Set-Item -Path Function:\Get-NvidiaDriverVersion -Value $oldDriver
+                Set-Item -Path Function:\Invoke-CalibrUrlDownload -Value $oldDownload
+                Set-Item -Path Function:\Expand-LlamaArchive -Value $oldExpand
+                $script:CALIBR_DATA_DIR = $oldData
+                $script:Force = $oldForce
+                Remove-Variable -Name LLAMA_STUB_DOWNLOADS -Scope Script -ErrorAction SilentlyContinue
+                Remove-Variable -Name LLAMA_STUB_EXTRACTS -Scope Script -ErrorAction SilentlyContinue
+                Remove-Variable -Name LLAMA_STUB_RELEASE -Scope Script -ErrorAction SilentlyContinue
+                if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    }
+}
+
 Exit-WithResults
