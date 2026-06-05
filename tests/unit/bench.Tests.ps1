@@ -36,12 +36,12 @@ Describe "Get-Median" {
 Describe "New-AggregatedBenchResult" {
     # Minimal fixtures: planning item + config + N per-run hashtables.
     # The aggregator is pure, so we hand-roll exactly what Invoke-OneBenchRun
-    # would produce on a synthetic Tier A config.
+    # would produce on a synthetic context-sweep config.
     function _item {
         return @{
             id = "qwen3.5-9b-q4km__ctx16384_q8"
             label = "Qwen3.5-9B Q4_K_M @ ctx=16384 / kv=q8_0"
-            model = "Qwen3.5-9B"; variant = "Q4_K_M"; series = "Qwen3.5"; tier = "A"
+            model = "Qwen3.5-9B"; variant = "Q4_K_M"; series = "Qwen3.5"; sweep = "context"; level = "high"
             model_path = "C:\models\Qwen3.5-9B-Q4_K_M.gguf"
             mmproj_path = $null
             extra_args = "--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0"
@@ -111,7 +111,8 @@ Describe "New-AggregatedBenchResult" {
         $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
         Assert-Equal "qwen3.5-9b-q4km__ctx16384_q8" $r.id
         Assert-Equal "Qwen3.5-9B" $r.model
-        Assert-Equal "A" $r.tier
+        Assert-Equal "context" $r.sweep
+        Assert-Equal "high" $r.level
         Assert-Equal 80 $r.prompt_n          # runs[0]
         Assert-Equal 128 $r.eval_n           # runs[0]
         Assert-Equal "33/33" $r.layers_offloaded
@@ -219,19 +220,28 @@ Describe "Select-PlanForBench" {
         Assert-Equal 0 $r.Count
     }
     It "returns the single matching entry when no filters are set" {
-        $plan = @(@{ model = "Qwen3.5-9B"; tier = "A"; id = "T001" })
+        $plan = @(@{ model = "Qwen3.5-9B"; level = "high"; id = "T001" })
         $r = Select-PlanForBench -plan $plan
         Assert-Equal 1 $r.Count
         Assert-Equal "Qwen3.5-9B" $r[0].model
     }
     It "applies ModelFilter as a regex match" {
         $plan = @(
-            @{ model = "Qwen3.5-9B"; tier = "A" }
-            @{ model = "Gemma-4-E2B"; tier = "A" }
+            @{ model = "Qwen3.5-9B"; level = "high" }
+            @{ model = "Gemma-4-E2B"; level = "low" }
         )
         $r = Select-PlanForBench -plan $plan -ModelFilter "Qwen"
         Assert-Equal 1 $r.Count
         Assert-Equal "Qwen3.5-9B" $r[0].model
+    }
+    It "applies LevelFilter on the model's hardware level" {
+        $plan = @(
+            @{ model = "Qwen3.5-9B"; level = "high" }
+            @{ model = "Gemma-4-E2B"; level = "low" }
+        )
+        $r = Select-PlanForBench -plan $plan -LevelFilter "low"
+        Assert-Equal 1 $r.Count
+        Assert-Equal "Gemma-4-E2B" $r[0].model
     }
     It "drops phantom \$null entries from the input (regression: empty-plan ContainsKey crash)" {
         # When $plan is empty in PowerShell, `$plan | Where-Object` actually
@@ -385,7 +395,7 @@ Describe "Invoke-RotationCheck" {
 
     It "deletes the file even when configs were skipped via abandonment" {
         # Same policy: the model abandonment path (unsupported_arch, or the
-        # tier-aware vram_overflow abandon) leaves skip > 0 on the modelStatus.
+        # sweep-aware vram_overflow abandon) leaves skip > 0 on the modelStatus.
         # We still delete: keeping the file 'just in case the user updates
         # llama.cpp / buys more VRAM' would accumulate dead files forever.
         # If the user wants to bench it again, they can re-fetch in seconds.
@@ -462,7 +472,7 @@ Describe "Invoke-OneBench model-file pre-flight" {
         return @{
             id = "preflight_missing_test"
             label = "Preflight Missing @ test"
-            model = "PreflightModel"; variant = "Q4_K_M"; series = "Preflight"; tier = "C"
+            model = "PreflightModel"; variant = "Q4_K_M"; series = "Preflight"; sweep = "offload"; level = "ultra"
             model_path = (Join-Path ([System.IO.Path]::GetTempPath()) "calibr-does-not-exist-xyz.gguf")
             mmproj_path = $null
             extra_args = "--ctx-size 2048 --gpu-layers 99"

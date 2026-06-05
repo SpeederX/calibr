@@ -18,7 +18,7 @@ interface Props {
 // Future iterations will add (a) typed search filter, (b) context-size
 // checkboxes, (c) save-as-user-preset. For now, the user picks which
 // models to bench; ctx sweep stays at the defaults from
-// tier_a_candidates (filtered by per-model max_context and the global
+// context_candidates (filtered by per-model max_context and the global
 // max_context_cap as usual).
 export function CustomBenchView({ onSubmit, onCancel }: Props) {
   const catalog = useMemo<CatalogEntry[]>(readModelCatalog, []);
@@ -70,7 +70,7 @@ export function CustomBenchView({ onSubmit, onCancel }: Props) {
         {catalog.map((e, i) => {
           const selected = i === cursor;
           const mark = checked[i] ? "[x]" : "[ ]";
-          const tag = e.tier_hint ? `[${e.tier_hint}]` : "[ ]";
+          const tag = e.sweep_hint ? `[${e.sweep_hint}]` : "[ ]";
           const sz  = e.size_bytes ? ((e.size_bytes / (1024 ** 3)).toFixed(2) + " GB") : "?";
           return (
             <Text key={e.id} color={selected ? "cyan" : undefined} inverse={selected}>

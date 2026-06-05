@@ -114,7 +114,7 @@ export function ResultsView({ onExit }: Props) {
       <Text bold color="cyan">leaderboard ({groups.length} models)</Text>
       <Box marginTop={1}>
         <Text dimColor>
-          {"  "}{"model".padEnd(28)} {"variant".padEnd(10)} {"tier".padEnd(5)} {"safe".padEnd(6)} {" eval t/s"} {" prompt t/s"} {" ctx".padStart(7)} {" kv"}
+          {"  "}{"model".padEnd(28)} {"variant".padEnd(10)} {"level".padEnd(7)} {"safe".padEnd(6)} {" eval t/s"} {" prompt t/s"} {" ctx".padStart(7)} {" kv"}
         </Text>
       </Box>
       {groups.map((g, i) => {
@@ -125,7 +125,7 @@ export function ResultsView({ onExit }: Props) {
           <Box key={g.model}>
             <Text color={selected ? "cyan" : undefined} inverse={selected}>
               {selected ? "▶ " : "  "}
-              {g.model.padEnd(28)} {(w.variant ?? "—").padEnd(10)} {(w.tier ?? "—").padEnd(5)}{" "}
+              {g.model.padEnd(28)} {(w.variant ?? "—").padEnd(10)} {(w.level ?? "custom").padEnd(7)}{" "}
             </Text>
             <Text color={tag.color}>{tag.text}</Text>
             <Text color={selected ? "cyan" : undefined} inverse={selected}>

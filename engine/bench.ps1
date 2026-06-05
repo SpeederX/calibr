@@ -98,7 +98,8 @@ function New-AggregatedBenchResult {
         model           = $item.model
         variant         = $item.variant
         series          = $item.series
-        tier            = $item.tier
+        level           = $item.level
+        sweep           = $item.sweep
         timestamp       = $first.timestamp
         model_path      = $item.model_path
         mmproj_path     = $item.mmproj_path
@@ -567,7 +568,7 @@ function Invoke-OneBench {
     if ($missingFiles.Count -gt 0) {
         $failResult = [ordered]@{
             id = $item.id; label = $item.label; model = $item.model; variant = $item.variant
-            series = $item.series; tier = $item.tier
+            series = $item.series; level = $item.level; sweep = $item.sweep
             timestamp = (Get-Date).ToUniversalTime().ToString('o')
             model_path = $item.model_path; mmproj_path = $item.mmproj_path
             extra_args = $item.extra_args
@@ -645,7 +646,8 @@ function Invoke-OneBench {
                 model           = $item.model
                 variant         = $item.variant
                 series          = $item.series
-                tier            = $item.tier
+                level           = $item.level
+                sweep           = $item.sweep
                 timestamp       = $r.timestamp
                 model_path      = $item.model_path
                 mmproj_path     = $item.mmproj_path
@@ -757,7 +759,7 @@ function Get-FailureReason {
 }
 
 function Select-PlanForBench {
-    # Pure filter: applies the same -Model/-Tier/-Id rules Invoke-Bench uses,
+    # Pure filter: applies the same -Model/-Level/-Id rules Invoke-Bench uses,
     # returns an array (possibly empty). The leading `$_ -and` is load-bearing:
     # PowerShell's `$null | Where-Object` yields one $null item, and @() wraps
     # it to a 1-element array, which would then crash the rotation context
@@ -766,13 +768,13 @@ function Select-PlanForBench {
     param(
         $plan,
         [string]$ModelFilter = "",
-        [string]$TierFilter = "",
+        [string]$LevelFilter = "",
         [string]$IdFilter = ""
     )
     return ,@($plan | Where-Object {
         $_ -and
         (-not $ModelFilter -or $_.model -match $ModelFilter) -and
-        (-not $TierFilter  -or $_.tier  -eq $TierFilter) -and
+        (-not $LevelFilter -or $_.level -eq $LevelFilter) -and
         (-not $IdFilter    -or $_.id    -like $IdFilter)
     })
 }
@@ -929,38 +931,37 @@ function Invoke-Bench {
         Write-Host "WARNING: $w" -ForegroundColor Yellow
     }
 
-    $filtered = Select-PlanForBench -plan $plan -ModelFilter $Model -TierFilter $Tier -IdFilter $Id
+    $filtered = Select-PlanForBench -plan $plan -ModelFilter $Model -LevelFilter $Level -IdFilter $Id
     Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $planCount)
 
     if ($filtered.Count -eq 0) {
         # planCount > 0 here (the planCount == 0 case returned earlier
         # before we even loaded llama-server). The user picked a filter
-        # that no config in the plan matches - show the tier breakdown so
+        # that no config in the plan matches - show the level breakdown so
         # they see WHY the filter missed.
-        Write-Host "No configs match the current filter (-Model / -Tier / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
-        $byTier = @{}
+        Write-Host "No configs match the current filter (-Model / -Level / -Id). Plan has $planCount configs total." -ForegroundColor Yellow
+        $byLevel = @{}
         foreach ($p in $plan) {
             if (-not $p) { continue }
-            $t = if ($p.tier) { $p.tier } else { "?" }
-            if (-not $byTier.ContainsKey($t)) { $byTier[$t] = @() }
-            $byTier[$t] += $p.model
+            $t = if ($p.level) { $p.level } else { "custom" }
+            if (-not $byLevel.ContainsKey($t)) { $byLevel[$t] = @() }
+            $byLevel[$t] += $p.model
         }
-        foreach ($t in @('A','B','C')) {
-            $modelsInTier = if ($byTier.ContainsKey($t)) {
-                @($byTier[$t] | Sort-Object -Unique)
-            } else { @() }
-            $count = if ($byTier.ContainsKey($t)) { $byTier[$t].Count } else { 0 }
-            $modelStr = if ($modelsInTier.Count -gt 0) { " (" + ($modelsInTier -join ', ') + ")" } else { "" }
-            Write-Host ("  Tier {0}: {1} config{2}{3}" -f $t, $count, $(if ($count -eq 1) {''} else {'s'}), $modelStr) -ForegroundColor DarkGray
+        foreach ($t in @('low','middle','high','ultra','custom')) {
+            if (-not $byLevel.ContainsKey($t)) { continue }
+            $modelsInLevel = @($byLevel[$t] | Sort-Object -Unique)
+            $count = $byLevel[$t].Count
+            $modelStr = if ($modelsInLevel.Count -gt 0) { " (" + ($modelsInLevel -join ', ') + ")" } else { "" }
+            Write-Host ("  {0}: {1} config{2}{3}" -f $t, $count, $(if ($count -eq 1) {''} else {'s'}), $modelStr) -ForegroundColor DarkGray
         }
-        if ($Tier) {
-            Write-Host ("Hint: drop '-Tier {0}' to bench what's available, or run 'all -FetchCatalog -CatalogId <a-tier-{1}-sample>' to add a Tier {0} model first." -f $Tier, $Tier.ToLower()) -ForegroundColor DarkGray
+        if ($Level) {
+            Write-Host ("Hint: drop '-Level {0}' to bench what's available, or run 'all -FetchCatalog -Preset {0}' to download + bench that level first." -f $Level) -ForegroundColor DarkGray
         }
         return
     }
 
     if ($DryRun) {
-        $filtered | ForEach-Object { Write-Host ("  [{0}] {1}" -f $_.tier, $_.label) }
+        $filtered | ForEach-Object { Write-Host ("  [{0}] {1}" -f $(if ($_.level) { $_.level } else { 'custom' }), $_.label) }
         return
     }
 
@@ -1045,18 +1046,18 @@ function Invoke-Bench {
             Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
         }
 
-        # Tier-aware abandonment on VRAM overflow. Tier A sweeps ctx
-        # ascending: if the smallest ctx already pages, larger ctxs make
-        # it worse. Tier C sweeps gpu-layers ascending: if 20 already
-        # pages, 24..36 push even more onto GPU. Tier B sweeps
-        # n-cpu-moe ascending = MORE on CPU = LESS GPU pressure, so a
+        # Sweep-aware abandonment on VRAM overflow. The context sweep raises
+        # ctx ascending: if the smallest ctx already pages, larger ctxs make
+        # it worse. The offload sweep raises gpu-layers ascending: if 20
+        # already pages, 24..36 push even more onto the GPU. The moe-cpu sweep
+        # raises n-cpu-moe ascending = MORE on CPU = LESS GPU pressure, so a
         # failure on 28 (most-on-GPU) does NOT predict failure on 36;
-        # do not abandon Tier B on vram_overflow.
+        # do not abandon a moe-cpu sweep on vram_overflow.
         if (-not $r.ok -and -not $abandoned.ContainsKey($item.model)) {
             $reason = Get-FailureReason -result $r -sharedConfirmMib $confirmThresh
-            if ($reason -eq "vram_overflow" -and ($item.tier -eq "A" -or $item.tier -eq "C")) {
-                $abandoned[$item.model] = "vram overflow at smallest config in tier $($item.tier) sweep; larger configs will be worse"
-                Write-Host ("  -> abandoning remaining tier {0} tests for model '{1}' (vram overflow detected; bigger ctx/ngl can only worsen it)" -f $item.tier, $item.model) -ForegroundColor DarkYellow
+            if ($reason -eq "vram_overflow" -and ($item.sweep -eq "context" -or $item.sweep -eq "offload")) {
+                $abandoned[$item.model] = "vram overflow at smallest config in the $($item.sweep) sweep; larger configs will be worse"
+                Write-Host ("  -> abandoning remaining {0}-sweep tests for model '{1}' (vram overflow detected; bigger ctx/ngl can only worsen it)" -f $item.sweep, $item.model) -ForegroundColor DarkYellow
             }
         }
 

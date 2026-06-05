@@ -325,7 +325,8 @@ export function readStatus(): Status {
 export interface Result {
   id: string;
   label: string;
-  tier: "A" | "B" | "C" | string;
+  level?: "low" | "middle" | "high" | "ultra" | string | null;
+  sweep?: "context" | "moe-cpu" | "offload" | string | null;
   model: string;
   variant: string;
   series?: string;
@@ -690,7 +691,7 @@ export interface CatalogEntry {
   model: string;
   series?: string;
   variant?: string;
-  tier_hint?: "A" | "B" | "C" | string;
+  sweep_hint?: "context" | "moe-cpu" | "offload" | string;
   hf_repo: string;
   hf_file: string;
   target_dir: string;

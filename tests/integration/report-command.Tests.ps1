@@ -90,7 +90,7 @@ Describe "Invoke-Report end-to-end on canned data" {
     New-Item -ItemType Directory -Path (Join-Path $tmpData "logs")    -Force | Out-Null
 
     $cannedResult = [ordered]@{
-        id="T001_canned"; label="canned config"; model="cannedFam"; series="canned"; variant="Q4"; tier="A"
+        id="T001_canned"; label="canned config"; model="cannedFam"; series="canned"; variant="Q4"; level="high"; sweep="context"
         prompt_tps=100.0; eval_tps=50.0; prompt_n=80; eval_n=128
         vram_peak_mib=2000; shared_peak_mib=0; load_sec=2.5
         kv_cache_mib=50; ctx_size=16384
@@ -105,7 +105,7 @@ Describe "Invoke-Report end-to-end on canned data" {
     }
     $cannedResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 (Join-Path $tmpData "results\T001_canned.json")
     $cannedPlan = @([ordered]@{
-        id="T001_canned"; label="canned config"; model="cannedFam"; series="canned"; variant="Q4"; tier="A"
+        id="T001_canned"; label="canned config"; model="cannedFam"; series="canned"; variant="Q4"; level="high"; sweep="context"
         extra_args="--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0"
         model_path="C:\fake\model.gguf"; mmproj_path=$null
     })

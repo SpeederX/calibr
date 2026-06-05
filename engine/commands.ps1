@@ -508,7 +508,7 @@ function Invoke-All {
             # actually deliver the 'peak ~ largest single file' promise the
             # CLI's pre-flight gate shows.
             $samples = Get-ModelCatalog
-            # Preset narrows the catalog to a hardware-tier-curated subset
+            # Preset narrows the catalog to a hardware-level-curated subset
             # (low / middle / high / user-saved). Applied BEFORE the
             # other filters so -CatalogId / -Model can further narrow
             # inside the preset.
@@ -655,19 +655,19 @@ function Invoke-Help {
             Examples = @( "calibr discover", "calibr discover -ScanPath D:\models" )
         }
         "plan" = @{
-            Usage    = "calibr plan [-Model <regex>] [-Tier {A,B,C}] [-DryRun]"
+            Usage    = "calibr plan [-Model <regex>] [-Level {low,middle,high,ultra}] [-DryRun]"
             Flags    = @(
                 "-Model <regex>    Only plan models whose name matches"
-                "-Tier {A|B|C}     Only plan tests for the selected tier"
+                "-Level <level>    Only plan models in that hardware level (low|middle|high|ultra)"
                 "-DryRun           Print what would be planned, don't write plan.json"
             )
             Examples = @( "calibr plan", "calibr plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "calibr bench [-Model <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun] [-KeepDownloads]"
+            Usage    = "calibr bench [-Model <regex>] [-Level {low,middle,high,ultra}] [-Id <wildcard>] [-Force] [-DryRun] [-KeepDownloads]"
             Flags    = @(
                 "-Model <regex>    Only run configs whose model name matches"
-                "-Tier {A|B|C}     Only run configs for this tier"
+                "-Level <level>    Only run configs for that hardware level (low|middle|high|ultra)"
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
                 "-DryRun           List configs that would run, don't execute"
@@ -680,7 +680,7 @@ function Invoke-Help {
             Examples = @(
                 "calibr bench"
                 "calibr bench -Model Qwen3.5-9B"
-                "calibr bench -Tier A -Force"
+                "calibr bench -Level low -Force"
                 "calibr bench -KeepDownloads"
             )
         }

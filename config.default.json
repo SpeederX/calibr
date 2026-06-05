@@ -16,7 +16,7 @@
   ],
 
   "dense_overrides": [],
-  "_comment_dense": "Model names (exact, case-sensitive) that the MoE-detection regex (`A\\d+B`, `MoE`, `Mixtral`) matches but are actually dense. Add models here to force them to a Tier A or C plan sweep instead of the wasted Tier B `--n-cpu-moe` sweep. Example: [\"something-A100B-special\"].",
+  "_comment_dense": "Model names (exact, case-sensitive) that the MoE-detection regex (`A\\d+B`, `MoE`, `Mixtral`) matches but are actually dense. Add models here to force them to a context/offload plan sweep instead of the wasted MoE `--n-cpu-moe` sweep. Example: [\"something-A100B-special\"].",
 
   "hardware": {
     "auto_detect": true,
@@ -44,14 +44,14 @@
   "base_args": "--flash-attn auto --parallel 1 --batch-size 2048 --ubatch-size 512 --no-mmap --prio 2",
   "_comment_base": "Flags applied to every benchmark. --flash-attn auto is safer than 'on' (falls back on builds that don't support it). Thread counts are injected dynamically from hardware.cpu_cores_*.",
 
-  "tier_classification": {
+  "planning": {
     "overhead_mib": 1200,
-    "_comment_overhead": "Approximate fixed VRAM overhead beyond model weights: compute buffers (~500), recurrent/SSM state (~50-200), mmproj (~900 if present), graph+misc (~100). Used to decide A vs C.",
-    "moe_ncpumoe_sweep": [28, 30, 32, 34, 36],
-    "c_ngl_sweep": [20, 24, 28, 32, 36]
+    "_comment_overhead": "Approximate fixed VRAM overhead beyond model weights: compute buffers (~500), recurrent/SSM state (~50-200), mmproj (~900 if present), graph+misc (~100). Used to decide which sweep a model gets: context (fits fully) vs offload (too big).",
+    "moecpu_sweep": [28, 30, 32, 34, 36],
+    "offload_sweep": [20, 24, 28, 32, 36]
   },
 
-  "tier_a_candidates": [
+  "context_candidates": [
     { "ctx": 16384,  "kv": "q8_0" },
     { "ctx": 32768,  "kv": "q8_0" },
     { "ctx": 65536,  "kv": "q8_0" },
@@ -59,10 +59,10 @@
     { "ctx": 131072, "kv": "q4_0" },
     { "ctx": 163840, "kv": "q4_0" }
   ],
-  "_comment_candidates": "Context / KV-cache-quantization combos to try for Tier A models. q8_0 -> near-lossless, q4_0 -> unlocks ~2x more ctx at minor quality hit.",
+  "_comment_candidates": "Context / KV-cache-quantization combos to try for models that fully fit the GPU (the context sweep). q8_0 -> near-lossless, q4_0 -> unlocks ~2x more ctx at minor quality hit.",
 
   "max_context_cap": 262144,
-  "_comment_cap": "Global sanity ceiling for Tier A context sweep. Any tier_a_candidates entry with ctx above this value is silently dropped at plan time. Set to 0 to disable. Today's highest sample-set model (Qwen3.5/3.6) caps at 262144, so this is a no-op for the curated samples but guards against accidentally pushing huge ctx values that no current GGUF supports.",
+  "_comment_cap": "Global sanity ceiling for the context sweep. Any context_candidates entry with ctx above this value is silently dropped at plan time. Set to 0 to disable. Today's highest sample-set model (Qwen3.5/3.6) caps at 262144, so this is a no-op for the curated samples but guards against accidentally pushing huge ctx values that no current GGUF supports.",
 
   "wddm_detection": {
     "vram_saturation_threshold": 0.92,

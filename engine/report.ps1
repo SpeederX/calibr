@@ -229,7 +229,7 @@ function Invoke-Report {
         $unsupportedArch = if ($null -ne $r.unsupported_architecture) { [string]$r.unsupported_architecture } else { $null }
         $readyFlag    = if ($null -ne $r.ready) { [bool]$r.ready } else { $null }
         [ordered]@{
-            id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; tier=$r.tier
+            id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; level=$r.level; sweep=$r.sweep
             prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
             vram_peak_mib=([int]$r.vram_peak_mib); shared_peak_mib=([int]$r.shared_peak_mib)
             load_sec=([double]$r.load_sec); layers_offloaded=$r.layers_offloaded

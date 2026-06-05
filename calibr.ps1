@@ -49,7 +49,7 @@ param(
 
     [string]$Config = "",
     [string]$Model = "",
-    [ValidateSet("", "A", "B", "C")][string]$Tier = "",
+    [ValidateSet("", "low", "middle", "high", "ultra")][string]$Level = "",
     [string]$Id = "",
     [switch]$DryRun,
     [switch]$Force,
