@@ -248,6 +248,30 @@ respectively. Do not scaffold them ahead of time.
 
 
 
+\## Branch flow
+
+
+
+\- Normal work starts from `dev`. Create feature branches from `dev`,
+
+&#x20; merge them back into `dev`, then promote `dev` to `master` for
+
+&#x20; release.
+
+\- Avoid direct work on `master` except for urgent release/hotfix moves.
+
+&#x20; If a hotfix, release patch, or version bump lands on `master`,
+
+&#x20; immediately merge or fast-forward `dev` back to `master` before
+
+&#x20; starting any new feature branch.
+
+\- Before creating a new feature branch, verify `dev` contains the latest
+
+&#x20; `master` release/hotfix commit.
+
+
+
 \## In-flight branches
 
 
