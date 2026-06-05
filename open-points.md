@@ -64,6 +64,11 @@ matching `cudart-llama` archive. Follow-ups only if useful: checksum
 validation, a config key for tag pinning (currently `CALIBR_LLAMA_CPP_TAG`),
 and Metal/macOS auto-fetch once macOS is in scope.
 
+Follow-up UX shipped later on the same branch: guided run now asks before
+configuring llama.cpp when `llama_server_exe` is missing. The user can download
+latest, type a `bNNNN` build tag, or scan existing local binaries; one local
+candidate is selected automatically and multiple candidates open a picker.
+
 Historical design note: the original fresh-machine problem was that `init`
 required the user to have llama-server.exe installed. The shipped path fetches
 llama.cpp itself from the upstream releases:

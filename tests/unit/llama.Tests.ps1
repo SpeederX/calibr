@@ -146,7 +146,11 @@ Describe "llama.cpp auto-fetch execution" {
                     )
                 }
 
-                Set-Item -Path Function:\Get-LlamaCppRelease -Value { return $script:LLAMA_STUB_RELEASE }
+                Set-Item -Path Function:\Get-LlamaCppRelease -Value {
+                    param([string]$BuildTag = "")
+                    $script:LLAMA_STUB_BUILD_TAG = $BuildTag
+                    return $script:LLAMA_STUB_RELEASE
+                }
                 Set-Item -Path Function:\Get-NvidiaDriverVersion -Value { return "596.21" }
                 Set-Item -Path Function:\Invoke-CalibrUrlDownload -Value {
                     param([string]$Url, [string]$DestPath, [long]$ExpectedBytes = 0)
@@ -182,6 +186,7 @@ Describe "llama.cpp auto-fetch execution" {
                 Remove-Variable -Name LLAMA_STUB_DOWNLOADS -Scope Script -ErrorAction SilentlyContinue
                 Remove-Variable -Name LLAMA_STUB_EXTRACTS -Scope Script -ErrorAction SilentlyContinue
                 Remove-Variable -Name LLAMA_STUB_RELEASE -Scope Script -ErrorAction SilentlyContinue
+                Remove-Variable -Name LLAMA_STUB_BUILD_TAG -Scope Script -ErrorAction SilentlyContinue
                 if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
             }
         }

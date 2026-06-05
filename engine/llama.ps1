@@ -203,7 +203,12 @@ function Select-LlamaDownloadPlan {
 }
 
 function Get-LlamaCppRelease {
-    $tagOverride = $env:CALIBR_LLAMA_CPP_TAG
+    param([string]$BuildTag = "")
+    $tagOverride = if ($BuildTag) { $BuildTag } else { $env:CALIBR_LLAMA_CPP_TAG }
+    if ($tagOverride) {
+        if ($tagOverride -match '^\d{1,4}$') { $tagOverride = "b$tagOverride" }
+        elseif ($tagOverride -notmatch '^b\d{1,4}$') { throw "LlamaCppBuild must be bNNNN (or NNNN), got '$tagOverride'." }
+    }
     $url = if ($tagOverride) {
         "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/$tagOverride"
     } else {
@@ -345,7 +350,7 @@ function Invoke-AutoFetchLlama {
     }
 
     Write-Host "  Resolving latest llama.cpp release from GitHub..." -ForegroundColor Cyan
-    $release = Get-LlamaCppRelease
+    $release = Get-LlamaCppRelease -BuildTag $LlamaCppBuild
     $driver = Get-NvidiaDriverVersion
     $plan = Select-LlamaDownloadPlan -Release $release -Hardware $Hardware -DriverVersion $driver
 

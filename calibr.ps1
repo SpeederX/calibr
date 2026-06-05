@@ -60,6 +60,7 @@ param(
     [string[]]$ScanPath = @(),
     [string]$LlamaServer = "",
     [switch]$AutoFetchLlama,         # init/all: download an official llama.cpp build when llama-server is missing
+    [string]$LlamaCppBuild = "",     # init/all with -AutoFetchLlama: bNNNN release tag (empty = latest)
     [string[]]$ExcludePattern = @(),
 
     # Used by get-models

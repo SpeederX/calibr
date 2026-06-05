@@ -82,13 +82,14 @@ $ calibr
 
 A typical first session:
 
-1. **configure llama path** if the menu marks it with `*`; otherwise skip it.
-   `guided run` can auto-run `init` and auto-fetch llama.cpp when the path is
-   missing, but this screen is the quickest manual fix when you already have a
-   specific build.
+1. **configure llama path** if you already know the exact custom build you want.
+   Otherwise skip it: if `llama_server_exe` is missing, **guided run** asks
+   whether to download official llama.cpp (latest, or a typed `bNNNN` build) or
+   scan existing local `llama-server` binaries. One local binary is selected
+   automatically; multiple binaries open a picker.
 2. **guided run** -> configure: leave `model catalog: yes`, start with the default
-   starter `low` preset, leave `llama.cpp: auto-fetch official build if
-   missing`, and leave `auto-cleanup: yes`. The CLI shows the peak disk
+   starter `low` preset, choose the llama.cpp setup when prompted, and leave
+   `auto-cleanup: yes`. The CLI shows the peak disk
    requirement and free space before it downloads catalog models. After you
    accept, the engine downloads each model, benches it, deletes it, and moves
    to the next.

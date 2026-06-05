@@ -77,19 +77,20 @@ per model, so the first answer comes back faster. Switch the preset to
 The menu marks setup items with a green check when ready, or a red `*` when
 they need attention.
 
-On a fresh machine, keep `llama.cpp: auto-fetch official build if missing`
-enabled in `guided run` or `init`. calibr downloads an official llama.cpp
-release into your user-data directory, picks CUDA/Vulkan/CPU from detected
-hardware, writes `llama_server_exe`, then continues. Use `configure llama path`
-only when you already have a custom llama.cpp build you want to keep.
+On a fresh machine, `guided run` asks how to set up llama.cpp if
+`llama_server_exe` is missing: download an official release (latest by default,
+or type a `bNNNN` build tag), or scan for existing local `llama-server`
+binaries. One local binary is selected automatically; multiple binaries open a
+picker. Use `configure llama path` when you already know the exact custom build
+you want to keep.
 
 Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
 to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
 — either way, llama-server runs with the optimized flags.
 
 Don't have any `.gguf` files yet? Pick `guided run`, keep `model catalog: yes`,
-keep llama.cpp auto-fetch enabled, and let calibr walk the curated set one
-model at a time:
+choose the llama.cpp setup when prompted, and let calibr walk the curated set
+one model at a time:
 download -> bench -> delete -> next model -> report.
 
 ## What calibr recommends

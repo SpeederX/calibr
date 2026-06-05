@@ -1,6 +1,6 @@
 import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, parse as parsePath } from "node:path";
+import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -127,6 +127,89 @@ export function loadConfig(): Config {
   const def = readJsonSafe<Config>(CALIBR_DEFAULT_CFG, {});
   const loc = readJsonSafe<Config>(CALIBR_LOCAL_CFG, {});
   return deepMerge(def, loc);
+}
+
+export interface LlamaServerCandidate {
+  path: string;
+  label: string;
+  version?: string;
+}
+
+export function normalizeLlamaBuildInput(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return "";
+  if (/^\d{1,4}$/.test(trimmed)) return `b${trimmed}`;
+  if (/^b\d{1,4}$/i.test(trimmed)) return `b${trimmed.slice(1)}`;
+  return null;
+}
+
+function findFileUnder(root: string, filename: string, maxDepth: number): string[] {
+  if (!root || maxDepth < 0 || !existsSync(root)) return [];
+  const out: string[] = [];
+  let entries: Array<{ name: string; isFile: () => boolean; isDirectory: () => boolean }> = [];
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const full = join(root, entry.name);
+    if (entry.isFile() && entry.name.toLowerCase() === filename.toLowerCase()) {
+      out.push(full);
+    } else if (entry.isDirectory() && maxDepth > 0) {
+      out.push(...findFileUnder(full, filename, maxDepth - 1));
+    }
+  }
+  return out;
+}
+
+function candidateLabel(path: string): { label: string; version?: string } {
+  const version = path.match(/\b(b\d{1,5})\b/i)?.[1];
+  const dir = basename(dirname(path));
+  return {
+    version,
+    label: `${version ?? dir} - ${path}`,
+  };
+}
+
+export function findLlamaServerCandidates(): LlamaServerCandidate[] {
+  const binName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
+  const paths: string[] = [];
+  const rootsOnly = process.env.CALIBR_LLAMA_SCAN_ROOTS_ONLY === "1";
+
+  if (!rootsOnly) {
+    for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+      const candidate = join(dir, binName);
+      if (existsSync(candidate)) paths.push(candidate);
+    }
+
+    paths.push(...findFileUnder(join(CALIBR_DATA_DIR, "llama-bin"), binName, 5));
+  }
+
+  const extraRoots = (process.env.CALIBR_LLAMA_SCAN_ROOTS ?? "")
+    .split(delimiter)
+    .map(s => s.trim())
+    .filter(Boolean);
+  for (const root of extraRoots) paths.push(...findFileUnder(root, binName, 5));
+
+  if (!rootsOnly) {
+    let parent = CALIBR_ROOT;
+    for (let i = 0; i < 3; i++) {
+      parent = dirname(parent);
+      if (!parent) break;
+      paths.push(...findFileUnder(parent, binName, 2));
+    }
+  }
+
+  const seen = new Set<string>();
+  return paths
+    .filter(path => {
+      const key = process.platform === "win32" ? path.toLowerCase() : path;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map(path => ({ path, ...candidateLabel(path) }));
 }
 
 /**
