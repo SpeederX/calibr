@@ -457,5 +457,44 @@ Describe "Invoke-RotationCheck" {
     $script:CALIBR_DOWNLOADS = $script:_origDlPath
 }
 
+Describe "Invoke-OneBench model-file pre-flight" {
+    function _missingItem {
+        return @{
+            id = "preflight_missing_test"
+            label = "Preflight Missing @ test"
+            model = "PreflightModel"; variant = "Q4_K_M"; series = "Preflight"; tier = "C"
+            model_path = (Join-Path ([System.IO.Path]::GetTempPath()) "calibr-does-not-exist-xyz.gguf")
+            mmproj_path = $null
+            extra_args = "--ctx-size 2048 --gpu-layers 99"
+        }
+    }
+    function _cfg2 {
+        return @{
+            llama_server_exe = "llama-server"
+            hardware = @{ vram_total_mib = 8192 }
+            wddm_detection = @{ vram_saturation_threshold = 0.92; shared_delta_confirm_mib = 500 }
+            bench = @{ runs_per_config = 1 }
+        }
+    }
+
+    It "fails fast with failure_reason 'model_missing' when the .gguf is absent" {
+        $item = _missingItem
+        $jsonFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
+        if (Test-Path $jsonFile) { Remove-Item -LiteralPath $jsonFile -Force }
+        $r = Invoke-OneBench -item $item -cfg (_cfg2)
+        Assert-False $r.ok "should not be ok"
+        Assert-Equal 'model_missing' $r.failure_reason
+        Assert-False $r.ready "should report not-ready"
+    }
+
+    It "does not persist a results JSON for a missing model (so re-download retries)" {
+        $item = _missingItem
+        $jsonFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
+        Set-Content -LiteralPath $jsonFile -Value '{"stale":true}' -Encoding utf8   # pretend a stale result exists
+        Invoke-OneBench -item $item -cfg (_cfg2) | Out-Null
+        Assert-False (Test-Path $jsonFile) "stale results JSON should have been removed"
+    }
+}
+
 Exit-WithResults
 

@@ -555,6 +555,39 @@ function Invoke-OneBench {
         [int]$cfg.wddm_detection.shared_delta_confirm_mib
     } else { 500 }
 
+    # Pre-flight: the model .gguf (and its mmproj, if any) must exist on disk.
+    # When a model was rotated/deleted but the catalog/plan still reference it,
+    # llama-server just exits with "No such file or directory" and the run
+    # surfaces as the opaque "server didn't become ready". Catch it up front and
+    # fail with an actionable reason. Not cached (the file may come back via
+    # re-download); we re-check on every bench.
+    $missingFiles = @()
+    if (-not (Test-Path -LiteralPath $item.model_path)) { $missingFiles += $item.model_path }
+    if ($item.mmproj_path -and -not (Test-Path -LiteralPath $item.mmproj_path)) { $missingFiles += $item.mmproj_path }
+    if ($missingFiles.Count -gt 0) {
+        $failResult = [ordered]@{
+            id = $item.id; label = $item.label; model = $item.model; variant = $item.variant
+            series = $item.series; tier = $item.tier
+            timestamp = (Get-Date).ToUniversalTime().ToString('o')
+            model_path = $item.model_path; mmproj_path = $item.mmproj_path
+            extra_args = $item.extra_args
+            vram_before_mib = $null; vram_peak_mib = $null; shared_peak_mib = $null
+            load_sec = $null; ready = $false; ok = $false
+            error = "model file(s) not found on disk: " + ($missingFiles -join ', ')
+            fit_status = $null; unsupported_architecture = $null
+            failure_reason = 'model_missing'
+            bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+            bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+            llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+            llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
+        }
+        # Don't persist a results JSON: this is an environment problem, not a
+        # benchmark negative, so a later re-download + bench should just retry.
+        if (Test-Path $jsonFile) { Remove-Item -LiteralPath $jsonFile -Force -ErrorAction SilentlyContinue }
+        Write-BenchStatusLine -item $item -result $failResult
+        return $failResult
+    }
+
     # Resolve N: CLI flag > config > default 3. Minimum 1.
     $N = if ($Runs -gt 0) { $Runs }
          elseif ($null -ne $cfg.bench.runs_per_config) { [int]$cfg.bench.runs_per_config }
@@ -683,6 +716,8 @@ function Write-BenchStatusLine {
         $detail = "prompt={0,6}t/s   eval={1,5}t/s   peak={2} MiB" -f $result.prompt_tps, $result.eval_tps, $result.vram_peak_mib
         if ($result.wddm_flag_shared_pos)    { $detail += "   [WDDM: shared=+$($result.shared_peak_mib)MiB]" }
         elseif ($result.wddm_flag_high_vram) { $detail += "   [WDDM: VRAM $([int]($result.wddm_vram_saturation*100))%]" }
+    } elseif ($result.failure_reason -eq 'model_missing') {
+        $detail = "(model file missing - re-download with get-models, or run discover to drop it)"
     } elseif ($result.unsupported_architecture) {
         $detail = "(unsupported architecture: $($result.unsupported_architecture))"
     } elseif (-not $result.ready) {
@@ -847,6 +882,12 @@ function Invoke-RotationCheck {
 
 function Invoke-Bench {
     $cfg = Get-Config
+    # Reconcile with disk before reading the plan: a model rotated/deleted since
+    # the last discover would otherwise be benched against a phantom file.
+    $phantoms = Remove-PhantomEntries
+    if ($phantoms -gt 0) {
+        Write-Host ("[reconcile] dropped {0} model(s) no longer on disk (re-add with get-models)" -f $phantoms) -ForegroundColor DarkYellow
+    }
     if (-not (Test-Path $CALIBR_PLAN)) { throw "plan.json missing. Run 'calibr plan'." }
     $planRaw = Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json
     $plan = ConvertTo-Hashtable -obj $planRaw

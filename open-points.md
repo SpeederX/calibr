@@ -55,12 +55,23 @@ writes `report_ui/demo-report.html` from synthetic data. What landed:
   report JSON so the efficiency scorer and the bat generator work.
 
 ### llama.cpp auto-fetch
-*Estimate: 0.5-1d.*
+**Shipped in `feat/llama-auto-fetch`.** `init` can download an official
+llama.cpp release when `llama-server` is missing; `-AutoFetchLlama` bypasses
+the prompt for CLI/headless use, and `all -AutoFetchLlama` passes it through
+during auto-init. Downloads land under
+`$CALIBR_DATA_DIR/llama-bin/<tag>/<flavor>/`; CUDA on Windows also fetches the
+matching `cudart-llama` archive. Follow-ups only if useful: checksum
+validation, a config key for tag pinning (currently `CALIBR_LLAMA_CPP_TAG`),
+and Metal/macOS auto-fetch once macOS is in scope.
 
-Currently `init` requires the user to have llama-server.exe installed.
-On a fresh machine `init` walks `PATH` + sibling folders and either
-finds it or asks the user to point at it. The user wants `calibr` to
-*fetch llama.cpp itself* from the upstream releases:
+Follow-up UX shipped later on the same branch: guided run now asks before
+configuring llama.cpp when `llama_server_exe` is missing. The user can download
+latest, type a `bNNNN` build tag, or scan existing local binaries; one local
+candidate is selected automatically and multiple candidates open a picker.
+
+Historical design note: the original fresh-machine problem was that `init`
+required the user to have llama-server.exe installed. The shipped path fetches
+llama.cpp itself from the upstream releases:
 
 - `https://github.com/ggml-org/llama.cpp/releases/download/<bN>/llama-<bN>-bin-win-cuda-<x>.<y>-x64.zip`
 - `https://github.com/ggml-org/llama.cpp/releases/download/<bN>/cudart-llama-bin-win-cuda-<x>.<y>-x64.zip` (only if CUDA build)
@@ -77,10 +88,9 @@ Steps:
    For CUDA, also fetch + unzip cudart into the same dir.
 5. Point `llama_server_exe` at the new path; persist in `config.json`.
 
-UX-wise, this means `init` no longer fails when llama isn't installed —
-it offers to fetch it. Add a confirmation prompt in interactive mode
-(`Download ~250 MB from GitHub? y/N`), bypassable with `-AutoFetchLlama`
-flag for headless setups.
+UX-wise, this means `init` no longer fails when llama isn't installed: it
+offers to fetch it in interactive mode and uses `-AutoFetchLlama` for
+headless/CLI setups.
 
 **CUDA build picker rules (load-bearing — silently picking the wrong
 CUDA variant bricks every bench with a PTX toolchain error):**
@@ -419,19 +429,27 @@ the llama.cpp default). Concretely:
   Apple silicon (CI or a real user's machine).
 
 ### User-diagnostics + structured feedback layer
-*Estimate: 1-2d. Design discussed in chat: `doctor`/preflight -> redacted,
-versioned diagnostic bundle -> GitHub issue-form intake -> opt-in phone-home
-(Phase 2). The `doctor` "does llama-server --version run?" check would
-auto-diagnose the kind of silent SIGILL this dev box hit (AVX2/BMI2).*
+*Partially DONE (`feat/linux-check-deps`): the `doctor`/preflight check layer
+and the redacted, versioned diagnostic bundle shipped. Remaining: a GitHub
+issue-form template that asks for the bundle, and the opt-in phone-home (needs
+the Phase-2 backend).*
 
-A `doctor`/preflight "check layer" plus a redacted diagnostic bundle and
-GitHub issue intake, so failures on machines we don't own come back as
-structured, parseable data instead of vague bug reports. Graduates to an
-opt-in phone-home once the Phase-2 backend exists. (Captured separately
-once the design is settled.)
+DONE: `calibr doctor` (engine `doctor.ps1`, schemaVersion-1 JSON contract) +
+`-Export` redacted bundle (home dir -> ~, hostname -> <host>; `-Extended` for
+full logs) + the navigable CLI view (`help` -> `doctor`) that points users to
+"export the extended bundle and open an issue" for failures with no known fix.
+The `llama-server --version` probe auto-diagnoses the silent SIGILL (AVX2/BMI2).
+
+STILL TODO: a GitHub **issue-form template** (`.github/ISSUE_TEMPLATE/`) that
+requests the bundle and structures "unable to start" reports, and the opt-in
+**phone-home** that uploads the bundle once the Phase-2 backend exists.
 
 ### GPU-readiness check — guide the user to a working GPU path (esp. AMD APUs)
-*Estimate: ~0.5d. Concrete checklist discovered on the Mullins APU dev box.*
+*DONE (`feat/linux-check-deps`): implemented as part of `calibr doctor`. The
+decision tree below is encoded as dependency checks with per-failure remediation
+(driver amdgpu vs radeon, hardware Vulkan vs llvmpipe, the apt lines, the
+AVX2/BMI2 source-build flags), plus an `inference{}` rollup that reports whether
+GPU offload is possible and the recommended backend. Kept here for reference.*
 
 App-side `doctor` step that detects whether GPU inference is even possible and
 tells the user exactly what's missing + the steps. The decision tree we hit:

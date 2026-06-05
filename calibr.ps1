@@ -30,7 +30,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position=0)]
-    [ValidateSet("init","discover","plan","bench","report","all","status","help","get-models","config","install","uninstall","reset","")]
+    [ValidateSet("init","discover","plan","bench","report","all","status","help","get-models","config","install","uninstall","reset","doctor","")]
     [string]$Command = "help",
 
     # Sub-action / target name. Meaning depends on $Command:
@@ -59,6 +59,8 @@ param(
     # Used by: discover (ScanPath, ExcludePattern), bench/report (LlamaServer), all (all of them), init (pre-fills instead of auto-detecting).
     [string[]]$ScanPath = @(),
     [string]$LlamaServer = "",
+    [switch]$AutoFetchLlama,         # init/all: download an official llama.cpp build when llama-server is missing
+    [string]$LlamaCppBuild = "",     # init/all with -AutoFetchLlama: bNNNN release tag (empty = latest)
     [string[]]$ExcludePattern = @(),
 
     # Used by get-models
@@ -113,7 +115,16 @@ param(
     [switch]$Downloads,         # data/downloads.json (manifest only, not the files)
     [switch]$DownloadedModels,  # the actual .gguf + mmproj listed in the manifest
     [switch]$LocalConfig,       # config.json (the user's local override)
-    [switch]$All                # convenience: all of the above
+    [switch]$All,               # convenience: all of the above
+
+    # Used by 'doctor': -Extended keeps full (uncapped) command logs in the
+    # bundle; -Json prints the diagnostic contract to stdout (consumed by the
+    # CLI); -Export writes it to a file (default data/doctor-report.json),
+    # -ExportPath overrides the destination.
+    [switch]$Extended,
+    [switch]$Json,
+    [switch]$Export,
+    [string]$ExportPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -157,6 +168,7 @@ $script:CALIBR_ENGINE_MODULES = @(
     'bench.ps1'
     'report.ps1'
     'catalog.ps1'
+    'doctor.ps1'
 )
 foreach ($m in $script:CALIBR_ENGINE_MODULES) {
     $modulePath = Join-Path $script:CALIBR_ENGINE_DIR $m
@@ -187,6 +199,7 @@ switch ($Command) {
     "uninstall"          { Invoke-Uninstall }
     "reset"              { Invoke-Reset }
     "get-models"         { Invoke-FetchModels }
+    "doctor"             { Invoke-Doctor }
     "all"                { Invoke-All }
     default              { Invoke-Help }
 }

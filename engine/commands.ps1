@@ -95,12 +95,37 @@ function Invoke-Init {
     } elseif ($existing.llama_server_exe -and (Test-Path -LiteralPath $existing.llama_server_exe)) {
         Write-Host "`nKeeping existing llama_server_exe: $($existing.llama_server_exe)" -ForegroundColor Green
         $override.llama_server_exe = $existing.llama_server_exe
+    } elseif ($AutoFetchLlama) {
+        try {
+            $picked = Invoke-AutoFetchLlama -Hardware $hw
+            Write-Host "`nFetched: $picked" -ForegroundColor Green
+            $override.llama_server_exe = $picked
+        } catch {
+            Write-Warning "  Auto-fetch failed: $($_.Exception.Message)"
+            $override.llama_server_exe = $null
+        }
     } else {
         Write-Host "`nSearching for llama-server$script:ExeExt..."
         $exes = Find-LlamaServerExe
         if ($exes.Count -eq 0) {
-            Write-Warning "  Not found. Edit config.json and set llama_server_exe manually."
-            $override.llama_server_exe = $null
+            $shouldFetch = $false
+            if (-not $NonInteractive) {
+                $answer = Read-Host "  Not found. Download official llama.cpp now? (y/N)"
+                $shouldFetch = ($answer -match '^[yY]')
+            }
+            if ($shouldFetch) {
+                try {
+                    $picked = Invoke-AutoFetchLlama -Hardware $hw
+                    Write-Host "  Fetched: $picked" -ForegroundColor Green
+                    $override.llama_server_exe = $picked
+                } catch {
+                    Write-Warning "  Auto-fetch failed: $($_.Exception.Message)"
+                    $override.llama_server_exe = $null
+                }
+            } else {
+                Write-Warning "  Not found. Re-run init with -AutoFetchLlama or set llama_server_exe manually."
+                $override.llama_server_exe = $null
+            }
         } elseif ($exes.Count -eq 1) {
             Write-Host "  Found: $($exes[0])" -ForegroundColor Green
             $override.llama_server_exe = $exes[0]
@@ -108,8 +133,8 @@ function Invoke-Init {
             Write-Host "  Multiple candidates:" -ForegroundColor Yellow
             for ($i=0; $i -lt $exes.Count; $i++) { Write-Host "    [$i] $($exes[$i])" }
             if ($NonInteractive) {
-                $override.llama_server_exe = $exes[0]
-                Write-Host "  Picked [0] (non-interactive). Re-run with -LlamaServer to pick a specific one."
+                Write-Warning "  Multiple llama-server candidates found. Re-run with -LlamaServer <path> to choose one."
+                $override.llama_server_exe = $null
             } else {
                 $idx = Read-Host "  Pick index [0]"
                 if (-not $idx) { $idx = 0 }
@@ -327,6 +352,10 @@ function Invoke-Reset {
 
 function Invoke-Status {
     $cfg = Get-Config
+    # Keep the reported counts honest with disk: prune entries for models that
+    # were rotated/deleted so 'status' (and the CLI card that mirrors it) never
+    # advertises a model that can't actually run.
+    Remove-PhantomEntries | Out-Null
     Write-Host "=== status ===" -ForegroundColor Cyan
     Write-Host "Config:"
     Write-Host "  llama_server_exe = $($cfg.llama_server_exe)"
@@ -466,7 +495,7 @@ function Invoke-All {
             }
             $cfgUp = Get-Config
             if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
-                throw "llama-server$script:ExeExt could not be auto-detected. Install llama.cpp (https://github.com/ggml-org/llama.cpp/releases), then run 'calibr init -LlamaServer <path>' once. Future versions will fetch llama.cpp automatically - see open-points.md."
+                throw "llama-server$script:ExeExt could not be configured. Run 'calibr init -AutoFetchLlama' to download llama.cpp automatically, or run 'calibr init -LlamaServer <path>' if you already have a build."
             }
             Write-Host ("[all] init done. llama_server_exe = {0}" -f $cfgUp.llama_server_exe) -ForegroundColor Green
         }
@@ -597,6 +626,7 @@ function Invoke-Help {
         "status"            = "Show config + counts (catalog/plan/results) + global-install state."
         "config"            = "Get / set / list / unset config values from CLI."
         "get-models" = "List or download entries from the curated model catalog (HuggingFace)."
+        "doctor"            = "Sanity-check the system (CPU/GPU/OS + deps); show what's missing + how to fix it."
         "install"           = "Add this directory to user PATH so 'calibr' works globally."
         "uninstall"         = "Remove this directory from user PATH."
         "reset"             = "Wipe runtime state (results, catalog, plan, report, logs, bats, downloads, calibr-downloaded models, local config)."
@@ -605,8 +635,10 @@ function Invoke-Help {
 
     $details = @{
         "init" = @{
-            Usage    = "calibr init [-LlamaServer <path>] [-ScanPath <paths>] [-Force] [-NonInteractive]"
+            Usage    = "calibr init [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-LlamaServer <path>] [-ScanPath <paths>] [-Force] [-NonInteractive]"
             Flags    = @(
+                "-AutoFetchLlama       Download an official llama.cpp build if llama-server is missing"
+                "-LlamaCppBuild bNNNN   With -AutoFetchLlama, pin a specific llama.cpp release"
                 "-LlamaServer <path>   Pre-fill llama_server_exe instead of auto-detecting"
                 "-ScanPath <paths>     Pre-fill scan_paths (comma-separated or repeated)"
                 "-Force                Overwrite an existing config.json"
@@ -663,8 +695,10 @@ function Invoke-Help {
             Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "calibr all [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-KeepDownloads]"
+            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-KeepDownloads]"
             Flags    = @(
+                "-AutoFetchLlama       Run init with automatic llama.cpp download when setup is incomplete"
+                "-LlamaCppBuild bNNNN   With -AutoFetchLlama, pin a specific llama.cpp release"
                 "-FetchCatalog         Interleaved mode: walk catalog entries one-by-one,"
                 "                         download -> discover -> plan -> bench -> rotate per"
                 "                         entry so peak disk stays bounded to one model."
@@ -730,6 +764,26 @@ function Invoke-Help {
                 "calibr get-models"
                 "calibr get-models -CatalogId qwen3.5-9b-q4km"
                 "calibr get-models -DownloadAll"
+            )
+        }
+        "doctor" = @{
+            Usage    = "calibr doctor [-Extended] [-Json] [-Export [-ExportPath <file>]]"
+            Flags    = @(
+                "(no flags)                 Print a human checklist: system info + every dep"
+                "                           with status (ok/warn/fail/missing/skipped) and the"
+                "                           exact fix for anything that isn't ok."
+                "-Extended                  Keep full (uncapped) command logs in the bundle."
+                "-Json                      Emit the diagnostic contract as JSON to stdout"
+                "                           (what the CLI's doctor view consumes)."
+                "-Export                    Write the JSON bundle to data/doctor-report.json"
+                "                           (home dir + hostname redacted). Attach it to an"
+                "                           'unable to start' issue."
+                "-ExportPath <file>         Override the export destination."
+            )
+            Examples = @(
+                "calibr doctor"
+                "calibr doctor -Extended"
+                "calibr doctor -Export -Extended"
             )
         }
         "install" = @{

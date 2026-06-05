@@ -1,6 +1,6 @@
 import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, parse as parsePath } from "node:path";
+import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -129,6 +129,89 @@ export function loadConfig(): Config {
   return deepMerge(def, loc);
 }
 
+export interface LlamaServerCandidate {
+  path: string;
+  label: string;
+  version?: string;
+}
+
+export function normalizeLlamaBuildInput(input: string): string | null {
+  const trimmed = input.trim();
+  if (!trimmed) return "";
+  if (/^\d{1,4}$/.test(trimmed)) return `b${trimmed}`;
+  if (/^b\d{1,4}$/i.test(trimmed)) return `b${trimmed.slice(1)}`;
+  return null;
+}
+
+function findFileUnder(root: string, filename: string, maxDepth: number): string[] {
+  if (!root || maxDepth < 0 || !existsSync(root)) return [];
+  const out: string[] = [];
+  let entries: Array<{ name: string; isFile: () => boolean; isDirectory: () => boolean }> = [];
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const full = join(root, entry.name);
+    if (entry.isFile() && entry.name.toLowerCase() === filename.toLowerCase()) {
+      out.push(full);
+    } else if (entry.isDirectory() && maxDepth > 0) {
+      out.push(...findFileUnder(full, filename, maxDepth - 1));
+    }
+  }
+  return out;
+}
+
+function candidateLabel(path: string): { label: string; version?: string } {
+  const version = path.match(/\b(b\d{1,5})\b/i)?.[1];
+  const dir = basename(dirname(path));
+  return {
+    version,
+    label: `${version ?? dir} - ${path}`,
+  };
+}
+
+export function findLlamaServerCandidates(): LlamaServerCandidate[] {
+  const binName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
+  const paths: string[] = [];
+  const rootsOnly = process.env.CALIBR_LLAMA_SCAN_ROOTS_ONLY === "1";
+
+  if (!rootsOnly) {
+    for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
+      const candidate = join(dir, binName);
+      if (existsSync(candidate)) paths.push(candidate);
+    }
+
+    paths.push(...findFileUnder(join(CALIBR_DATA_DIR, "llama-bin"), binName, 5));
+  }
+
+  const extraRoots = (process.env.CALIBR_LLAMA_SCAN_ROOTS ?? "")
+    .split(delimiter)
+    .map(s => s.trim())
+    .filter(Boolean);
+  for (const root of extraRoots) paths.push(...findFileUnder(root, binName, 5));
+
+  if (!rootsOnly) {
+    let parent = CALIBR_ROOT;
+    for (let i = 0; i < 3; i++) {
+      parent = dirname(parent);
+      if (!parent) break;
+      paths.push(...findFileUnder(parent, binName, 2));
+    }
+  }
+
+  const seen = new Set<string>();
+  return paths
+    .filter(path => {
+      const key = process.platform === "win32" ? path.toLowerCase() : path;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map(path => ({ path, ...candidateLabel(path) }));
+}
+
 /**
  * Set a single top-level field on the LOCAL config.json without touching
  * any other key. Used by the config-edit screens (e.g. LlamaPathView).
@@ -215,14 +298,22 @@ export function readStatus(): Status {
   const config = loadConfig();
   const catalog = readJsonSafe<any[]>(CALIBR_CATALOG, []);
   const plan = readJsonSafe<any[]>(CALIBR_PLAN, []);
+  // Count only entries whose model file is still on disk, so the menu card
+  // never advertises a model that was rotated/deleted (the engine prunes the
+  // JSON on its next run; this keeps the UI honest before that happens).
+  // Coerce to array: a single-model catalog is serialized as a bare object.
+  const catArr = Array.isArray(catalog) ? catalog : (catalog ? [catalog] : []);
+  const planArr = Array.isArray(plan) ? plan : (plan ? [plan] : []);
+  const liveCatalog = catArr.filter(m => m?.path && existsSync(m.path));
+  const livePlan = planArr.filter(p => p?.model_path && existsSync(p.model_path));
   let resultsCount = 0;
   if (existsSync(CALIBR_RESULTS_DIR) && statSync(CALIBR_RESULTS_DIR).isDirectory()) {
     resultsCount = readdirSync(CALIBR_RESULTS_DIR).filter(f => f.endsWith(".json")).length;
   }
   return {
     config,
-    catalogCount: Array.isArray(catalog) ? catalog.length : 0,
-    planCount: Array.isArray(plan) ? plan.length : 0,
+    catalogCount: liveCatalog.length,
+    planCount: livePlan.length,
     resultsCount,
     hasReport: existsSync(CALIBR_REPORT),
     hasLocalConfig: existsSync(CALIBR_LOCAL_CFG),
@@ -247,7 +338,7 @@ export interface Result {
   shared_peak_mib?: number;
   wddm_vram_saturation?: number;
   fit_status?: string;
-  failure_reason?: "vram_overflow" | "server_timeout" | "unsupported_arch" | "other" | null;
+  failure_reason?: "vram_overflow" | "server_timeout" | "unsupported_arch" | "model_missing" | "other" | null;
   unsupported_architecture?: string | null;
   extra_args?: string;
   timestamp?: string;
@@ -424,26 +515,149 @@ export function runEngine(args: string[]): EngineRun {
 }
 
 /**
+ * Run an engine verb and capture its full stdout/stderr (vs runEngine, which
+ * streams). Used for verbs whose stdout is structured data the CLI parses
+ * (today: `doctor -Json`). Resolves, never rejects.
+ */
+export function captureEngine(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  const isWin = process.platform === "win32";
+  const shell = isWin ? "powershell" : "pwsh";
+  const psArgs = [
+    "-NoProfile",
+    ...(isWin ? ["-ExecutionPolicy", "Bypass"] : []),
+    "-File", CALIBR_PS1,
+    ...injectNonInteractive(injectConfigArg(args)),
+  ];
+  return new Promise((res) => {
+    const proc = spawn(shell, psArgs, { cwd: ENGINE_ROOT, windowsHide: true, env: buildEngineEnv() });
+    let stdout = "", stderr = "";
+    proc.stdout?.on("data", (d) => { stdout += d.toString(); });
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("close", (code) => res({ code: code ?? -1, stdout, stderr }));
+    proc.on("error", (e) => res({ code: -1, stdout, stderr: stderr + String(e) }));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Doctor (sanity check). Mirrors the engine's JSON contract (schemaVersion 1).
+// ---------------------------------------------------------------------------
+export type DoctorCheck = "ok" | "warning" | "fail" | "missing" | "skipped";
+
+export interface DoctorDep {
+  name: string;
+  kind: string;
+  required: boolean;
+  present: boolean;
+  version?: string | null;
+  command?: string | null;
+  log?: string;
+  check: DoctorCheck;
+  detail?: string | null;
+  remediation?: string | null;
+}
+
+export interface DoctorReport {
+  schemaVersion: number;
+  calibrVersion?: string | null;
+  generatedAt: string;
+  extended: boolean;
+  overallStatus: "ok" | "degraded" | "unable-to-start";
+  inference: { gpuOffloadPossible: boolean; recommendedBackend: string; reason: string };
+  systemInfo: {
+    os: { platform: string; name: string; kernel?: string | null };
+    cpu: { model?: string | null; arch?: string | null; coresPhysical?: number | null; threadsLogical?: number | null; flags?: Record<string, boolean> | null };
+    ram: { totalMib?: number | null; availableMib?: number | null };
+    gpus: Array<{ name: string; vendor?: string | null; vramTotalMib?: number | null; kernelDriver?: string | null; powerW?: number | null; vulkanDevice?: string | null }>;
+  };
+  deps: DoctorDep[];
+}
+
+export const DOCTOR_ISSUE_URL = "https://github.com/SpeederX/calibr/issues/new";
+
+function hasCommand(cmd: string): boolean {
+  try {
+    return spawnSync(process.platform === "win32" ? "where" : "which", [cmd], { stdio: "ignore" }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pick a command that opens `target` (a local file path or a URL) in a web
+ * browser. On Linux we deliberately prefer real browser launchers
+ * (`$BROWSER`, x-www-browser, sensible-browser) over `xdg-open`: xdg-open
+ * dispatches a local .html by its text/html MIME association, which a
+ * non-browser app can hijack (seen in the wild: a password manager grabbing
+ * text/html, so the report opened there instead of Firefox). Browser
+ * launchers and Windows `start` / macOS `open` use the browser association.
+ */
+function browserOpener(target: string): [string, string[]] {
+  if (process.platform === "win32") return ["cmd", ["/c", "start", "", target]];
+  if (process.platform === "darwin") return ["open", [target]];
+  const envBrowser = process.env.BROWSER?.trim();
+  if (envBrowser) return [envBrowser, [target]];
+  for (const c of ["x-www-browser", "sensible-browser"]) {
+    if (hasCommand(c)) return [c, [target]];
+  }
+  return ["xdg-open", [target]];
+}
+
+function launchDetached(cmd: string, args: string[]): boolean {
+  try {
+    const child = spawn(cmd, args, { windowsHide: true, detached: true, stdio: "ignore" });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Open a URL in the OS default browser. */
+export function openUrl(url: string): void {
+  const [cmd, args] = browserOpener(url);
+  launchDetached(cmd, args);
+}
+
+/** Run `doctor -Json` and parse the contract. Resolves with an error string on failure. */
+export async function runDoctor(extended: boolean): Promise<{ report?: DoctorReport; error?: string }> {
+  const args = ["doctor", "-Json"];
+  if (extended) args.push("-Extended");
+  const { code, stdout, stderr } = await captureEngine(args);
+  const text = stdout.trim();
+  if (!text) return { error: stderr.trim() || `doctor exited with code ${code} and no output` };
+  try {
+    return { report: JSON.parse(text) as DoctorReport };
+  } catch {
+    // The JSON is the last contiguous {...} block; salvage it if a stray
+    // line slipped onto stdout ahead of it.
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try { return { report: JSON.parse(text.slice(start, end + 1)) as DoctorReport }; } catch { /* fall through */ }
+    }
+    return { error: `could not parse doctor output: ${text.slice(0, 200)}` };
+  }
+}
+
+/** Run `doctor -Export` (always extended) to a known path and return it. */
+export async function exportDoctor(extended: boolean): Promise<{ path?: string; error?: string }> {
+  const path = join(CALIBR_DATA_DIR, "doctor-report.json");
+  const args = ["doctor", "-Export", "-ExportPath", path];
+  if (extended) args.push("-Extended");
+  const { code, stderr } = await captureEngine(args);
+  if (existsSync(path)) return { path };
+  return { error: stderr.trim() || `export failed (exit ${code})` };
+}
+
+/**
  * Open the generated HTML report with the OS default browser.
  * Returns true if the report exists and the open command was launched,
  * false if the report has not been generated yet.
  */
 export function openReport(): boolean {
   if (!existsSync(CALIBR_REPORT)) return false;
-  // Platform default-browser opener: cmd start (Windows), open (macOS),
-  // xdg-open (Linux).
-  const [cmd, cmdArgs] =
-    process.platform === "win32" ? ["cmd", ["/c", "start", "", CALIBR_REPORT]]
-    : process.platform === "darwin" ? ["open", [CALIBR_REPORT]]
-    : ["xdg-open", [CALIBR_REPORT]];
-  const child = spawn(cmd as string, cmdArgs as string[], {
-    cwd: ENGINE_ROOT,
-    windowsHide: true,
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
-  return true;
+  const [cmd, args] = browserOpener(CALIBR_REPORT);
+  return launchDetached(cmd, args);
 }
 
 export interface EngineCommand {
