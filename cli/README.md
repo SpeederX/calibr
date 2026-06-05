@@ -153,6 +153,7 @@ manual control:
 | `report` | Build the HTML dashboard and per-config `.bat` launchers. |
 | `all` | discover → plan → bench → report, end to end. With `catalog: on`, fetches the curated set first; the CLI runs a pre-flight disk-space gate before launching. |
 | `status` | Print current config + counts (also shown as a card in the menu). |
+| `doctor` | Sanity-check the system: CPU/GPU/OS + every dependency, each with a status (ok/warn/fail/missing/skipped) and the exact fix. `-Export` writes a redacted JSON bundle to attach to an issue; `-Extended` keeps full logs. In the TUI it lives under `help` → `doctor` with navigable rows. |
 
 ## Status keybinds
 

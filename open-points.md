@@ -419,19 +419,27 @@ the llama.cpp default). Concretely:
   Apple silicon (CI or a real user's machine).
 
 ### User-diagnostics + structured feedback layer
-*Estimate: 1-2d. Design discussed in chat: `doctor`/preflight -> redacted,
-versioned diagnostic bundle -> GitHub issue-form intake -> opt-in phone-home
-(Phase 2). The `doctor` "does llama-server --version run?" check would
-auto-diagnose the kind of silent SIGILL this dev box hit (AVX2/BMI2).*
+*Partially DONE (`feat/linux-check-deps`): the `doctor`/preflight check layer
+and the redacted, versioned diagnostic bundle shipped. Remaining: a GitHub
+issue-form template that asks for the bundle, and the opt-in phone-home (needs
+the Phase-2 backend).*
 
-A `doctor`/preflight "check layer" plus a redacted diagnostic bundle and
-GitHub issue intake, so failures on machines we don't own come back as
-structured, parseable data instead of vague bug reports. Graduates to an
-opt-in phone-home once the Phase-2 backend exists. (Captured separately
-once the design is settled.)
+DONE: `calibr doctor` (engine `doctor.ps1`, schemaVersion-1 JSON contract) +
+`-Export` redacted bundle (home dir -> ~, hostname -> <host>; `-Extended` for
+full logs) + the navigable CLI view (`help` -> `doctor`) that points users to
+"export the extended bundle and open an issue" for failures with no known fix.
+The `llama-server --version` probe auto-diagnoses the silent SIGILL (AVX2/BMI2).
+
+STILL TODO: a GitHub **issue-form template** (`.github/ISSUE_TEMPLATE/`) that
+requests the bundle and structures "unable to start" reports, and the opt-in
+**phone-home** that uploads the bundle once the Phase-2 backend exists.
 
 ### GPU-readiness check — guide the user to a working GPU path (esp. AMD APUs)
-*Estimate: ~0.5d. Concrete checklist discovered on the Mullins APU dev box.*
+*DONE (`feat/linux-check-deps`): implemented as part of `calibr doctor`. The
+decision tree below is encoded as dependency checks with per-failure remediation
+(driver amdgpu vs radeon, hardware Vulkan vs llvmpipe, the apt lines, the
+AVX2/BMI2 source-build flags), plus an `inference{}` rollup that reports whether
+GPU offload is possible and the recommended backend. Kept here for reference.*
 
 App-side `doctor` step that detects whether GPU inference is even possible and
 tells the user exactly what's missing + the steps. The decision tree we hit:
