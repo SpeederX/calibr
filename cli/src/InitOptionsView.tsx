@@ -16,9 +16,14 @@ interface Props {
 export function InitOptionsView({ onRun, onCancel }: Props) {
   const exists = useMemo(() => existsSync(CALIBR_LOCAL_CFG), []);
   const [force, setForce] = useState<boolean>(false);
+  const [autoFetch, setAutoFetch] = useState<boolean>(true);
   const [cursor, setCursor] = useState(0);
 
   const rows = [
+    {
+      kind: "autoFetch" as const,
+      label: `llama.cpp: ${autoFetch ? "auto-fetch official build if missing" : "manual path only"}`,
+    },
     {
       kind: "force" as const,
       label: `overwrite: ${force ? "yes (-Force; replaces existing config.json)" : "no (engine will refuse if config.json exists)"}`,
@@ -30,11 +35,14 @@ export function InitOptionsView({ onRun, onCancel }: Props) {
   const activate = (i: number) => {
     const row = rows[i];
     switch (row.kind) {
+      case "autoFetch": setAutoFetch(!autoFetch); break;
       case "force": setForce(!force); break;
       case "run": {
         const args: string[] = ["init"];
+        if (autoFetch) args.push("-AutoFetchLlama");
         if (force) args.push("-Force");
-        const label = force ? "init -Force" : "init";
+        const parts = [autoFetch ? "-AutoFetchLlama" : "", force ? "-Force" : ""].filter(Boolean);
+        const label = parts.length ? `init ${parts.join(" ")}` : "init";
         onRun(args, label);
         break;
       }

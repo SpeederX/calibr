@@ -35,6 +35,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // matches what most users want (download the curated catalog + bench it).
   // Users with their own .gguf collections in scan_paths toggle it off
   // in one keystroke.
+  const [autoFetchLlama, setAutoFetchLlama] = useState<boolean>(true);
   const [fetchCatalog, setFetchCatalog] = useState<boolean>(true);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
@@ -79,6 +80,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   })();
 
   const rows = [
+    { kind: "llama"    as const, label: `llama.cpp:       ${autoFetchLlama ? "auto-fetch official build if missing" : "manual path only"}` },
     { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — only bench what's already in scan_paths"}` },
     { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog },
     { kind: "rotate"   as const, label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its bench finishes)"}` },
@@ -98,6 +100,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
     const args: string[] = ["all"];
     const parts: string[] = [];
+    if (autoFetchLlama) { args.push("-AutoFetchLlama"); parts.push("-AutoFetchLlama"); }
     if (fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
     // Custom selection overrides the named preset path entirely.
     if (fetchCatalog && customIds) {
@@ -156,6 +159,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const activate = (i: number) => {
     const row = rows[i];
     switch (row.kind) {
+      case "llama":    setAutoFetchLlama(!autoFetchLlama); break;
       case "fetch":    setFetchCatalog(!fetchCatalog); break;
       case "preset": {
         if (!fetchCatalog) break;

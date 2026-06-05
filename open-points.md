@@ -55,12 +55,18 @@ writes `report_ui/demo-report.html` from synthetic data. What landed:
   report JSON so the efficiency scorer and the bat generator work.
 
 ### llama.cpp auto-fetch
-*Estimate: 0.5-1d.*
+**Shipped in `feat/llama-auto-fetch`.** `init` can download an official
+llama.cpp release when `llama-server` is missing; `-AutoFetchLlama` bypasses
+the prompt for CLI/headless use, and `all -AutoFetchLlama` passes it through
+during auto-init. Downloads land under
+`$CALIBR_DATA_DIR/llama-bin/<tag>/<flavor>/`; CUDA on Windows also fetches the
+matching `cudart-llama` archive. Follow-ups only if useful: checksum
+validation, a config key for tag pinning (currently `CALIBR_LLAMA_CPP_TAG`),
+and Metal/macOS auto-fetch once macOS is in scope.
 
-Currently `init` requires the user to have llama-server.exe installed.
-On a fresh machine `init` walks `PATH` + sibling folders and either
-finds it or asks the user to point at it. The user wants `calibr` to
-*fetch llama.cpp itself* from the upstream releases:
+Historical design note: the original fresh-machine problem was that `init`
+required the user to have llama-server.exe installed. The shipped path fetches
+llama.cpp itself from the upstream releases:
 
 - `https://github.com/ggml-org/llama.cpp/releases/download/<bN>/llama-<bN>-bin-win-cuda-<x>.<y>-x64.zip`
 - `https://github.com/ggml-org/llama.cpp/releases/download/<bN>/cudart-llama-bin-win-cuda-<x>.<y>-x64.zip` (only if CUDA build)
@@ -77,10 +83,9 @@ Steps:
    For CUDA, also fetch + unzip cudart into the same dir.
 5. Point `llama_server_exe` at the new path; persist in `config.json`.
 
-UX-wise, this means `init` no longer fails when llama isn't installed —
-it offers to fetch it. Add a confirmation prompt in interactive mode
-(`Download ~250 MB from GitHub? y/N`), bypassable with `-AutoFetchLlama`
-flag for headless setups.
+UX-wise, this means `init` no longer fails when llama isn't installed: it
+offers to fetch it in interactive mode and uses `-AutoFetchLlama` for
+headless/CLI setups.
 
 **CUDA build picker rules (load-bearing — silently picking the wrong
 CUDA variant bricks every bench with a PTX toolchain error):**

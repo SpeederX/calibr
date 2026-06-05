@@ -41,9 +41,10 @@ README.
   [**PowerShell Core (`pwsh`)**](https://github.com/PowerShell/PowerShell) on
   Linux — the CLI spawns `pwsh` there.
 - **Node.js 18 or newer.**
-- A working **llama.cpp** build with `llama-server` (`.exe` on Windows). The
-  first run (`init`) detects it if it is on `PATH`; otherwise you set the path
-  in `config.json`.
+- A working **llama.cpp** build with `llama-server` (`.exe` on Windows).
+  `guided run` and `init` can auto-fetch an official llama.cpp release when it
+  is missing; use **configure llama path** only for custom builds or offline
+  setups.
 - An **NVIDIA GPU** for the headline use case. CPU-only and other backends
   bench fine, but the WDDM-paging heuristic is NVIDIA + Windows shaped. On
   **AMD Linux**, install `radeontop` + `mesa-utils` for VRAM + utilization
@@ -57,7 +58,8 @@ engine still runs through PowerShell Core.
 | Dependency | Required? | Used for | Typical package |
 |---|---:|---|---|
 | `pwsh` | yes | run `calibr.ps1` from the CLI | `powershell` (see PowerShell install docs) |
-| `llama-server` | yes | llama.cpp inference backend | llama.cpp release/build |
+| `llama-server` | yes, auto/manual | llama.cpp inference backend | auto-fetched llama.cpp release or custom build |
+| `tar` | yes for auto-fetch on Linux | extract official `.tar.gz` llama.cpp archives | usually preinstalled |
 | `bash`, `chmod` | yes for `install` / launchers | `~/.local/bin/calibr` wrapper and `.sh` launchers | usually preinstalled |
 | `xdg-open` | optional | open the HTML report from the CLI | `xdg-utils` |
 | `lspci` | optional | GPU-name fallback | `pciutils` |
@@ -81,11 +83,13 @@ $ calibr
 A typical first session:
 
 1. **configure llama path** if the menu marks it with `*`; otherwise skip it.
-   `guided run` can auto-run `init` when the llama path is missing, but this
-   screen is the quickest manual fix when you already have a specific build.
+   `guided run` can auto-run `init` and auto-fetch llama.cpp when the path is
+   missing, but this screen is the quickest manual fix when you already have a
+   specific build.
 2. **guided run** -> configure: leave `model catalog: yes`, start with the default
-   starter `low` preset, and leave `auto-cleanup: yes`. The CLI shows the peak
-   disk requirement and free space before it downloads anything. After you
+   starter `low` preset, leave `llama.cpp: auto-fetch official build if
+   missing`, and leave `auto-cleanup: yes`. The CLI shows the peak disk
+   requirement and free space before it downloads catalog models. After you
    accept, the engine downloads each model, benches it, deletes it, and moves
    to the next.
 3. **results** - browse the fastest safe winners per model. Press
@@ -119,6 +123,7 @@ calibr-data/
 ├── catalog.json         models discovered on disk
 ├── plan.json            test plan expanded from catalog
 ├── downloads.json       which .gguf files calibr downloaded (rotation manifest)
+├── llama-bin/           auto-fetched llama.cpp builds
 ├── results/*.json       one file per bench config
 ├── logs/*.log           full llama-server stderr per config
 ├── bats/*.bat           per-config launch scripts (*.sh on Linux)
@@ -146,12 +151,12 @@ manual control:
 
 | Verb | What it does |
 |---|---|
-| `init` | Detect hardware, write `config.json` with sane defaults. |
+| `init` | Detect hardware, auto-fetch llama.cpp if requested, write `config.json` with sane defaults. |
 | `discover` | Scan `scan_paths` for `*.gguf`, build the model catalog. |
 | `plan` | Expand the catalog into a sweep of bench configurations per tier. |
 | `bench` | Run each pending plan entry, write a result JSON per config. When models came from `get-models`, each model's .gguf is deleted from disk after its configs all finish (use `-KeepDownloads` to opt out). |
 | `report` | Build the HTML dashboard and per-config `.bat` launchers. |
-| `all` | discover → plan → bench → report, end to end. With `catalog: on`, fetches the curated set first; the CLI runs a pre-flight disk-space gate before launching. |
+| `all` | discover → plan → bench → report, end to end. With `catalog: on`, fetches the curated set first; with auto-fetch on, downloads llama.cpp when setup is incomplete. |
 | `status` | Print current config + counts (also shown as a card in the menu). |
 
 ## Status keybinds

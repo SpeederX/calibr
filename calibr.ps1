@@ -59,6 +59,7 @@ param(
     # Used by: discover (ScanPath, ExcludePattern), bench/report (LlamaServer), all (all of them), init (pre-fills instead of auto-detecting).
     [string[]]$ScanPath = @(),
     [string]$LlamaServer = "",
+    [switch]$AutoFetchLlama,         # init/all: download an official llama.cpp build when llama-server is missing
     [string[]]$ExcludePattern = @(),
 
     # Used by get-models
