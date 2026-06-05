@@ -10,10 +10,13 @@ import { AllOptionsView } from "./AllOptionsView.js";
 import { InitOptionsView } from "./InitOptionsView.js";
 import { ResetOptionsView } from "./ResetOptionsView.js";
 import { LlamaPathView } from "./LlamaPathView.js";
+import { DoctorView } from "./DoctorView.js";
 
 type Screen =
   | { kind: "menu" }
   | { kind: "advancedTools" }
+  | { kind: "help" }
+  | { kind: "doctor" }
   | { kind: "initOptions" }
   | { kind: "benchOptions" }
   | { kind: "allOptions" }
@@ -75,6 +78,7 @@ export function App() {
   const [status, setStatus] = useState<Status>(() => readStatus());
   const [menuCursor, setMenuCursor] = useState(0);
   const [advancedCursor, setAdvancedCursor] = useState(0);
+  const [helpCursor, setHelpCursor] = useState(0);
 
   // Refresh status whenever we return to a menu with readiness indicators.
   useEffect(() => {
@@ -123,6 +127,21 @@ export function App() {
       badge: readinessBadge(llamaPathIsReady(status)),
       run: () => setScreen({ kind: "llamaPath" }),
     },
+    {
+      id: "help",
+      label: "help",
+      description: "doctor: check system & dependencies",
+      run: () => setScreen({ kind: "help" }),
+    },
+  ];
+
+  const helpItems: MenuItem[] = [
+    {
+      id: "doctor",
+      label: "doctor",
+      description: "sanity-check CPU/GPU/OS + deps, see fixes, export a bundle",
+      run: () => setScreen({ kind: "doctor" }),
+    },
   ];
 
   const advancedItems: MenuItem[] = ENGINE_COMMANDS
@@ -170,6 +189,24 @@ export function App() {
       }
       if (key.return || input === " ") {
         advancedItems[advancedCursor]?.run();
+      }
+    }
+
+    if (screen.kind === "help") {
+      if (input === "q" || key.escape) {
+        setScreen({ kind: "menu" });
+        return;
+      }
+      if (key.upArrow) {
+        setHelpCursor((c) => Math.max(0, c - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setHelpCursor((c) => Math.min(helpItems.length - 1, c + 1));
+        return;
+      }
+      if (key.return || input === " ") {
+        helpItems[helpCursor]?.run();
       }
     }
   });
@@ -238,6 +275,28 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <LlamaPathView onCancel={() => setScreen({ kind: "menu" })} />
+      </Box>
+    );
+  }
+
+  if (screen.kind === "doctor") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <DoctorView onExit={() => setScreen({ kind: "help" })} />
+      </Box>
+    );
+  }
+
+  if (screen.kind === "help") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <Text bold>help</Text>
+        <Box marginTop={1} flexDirection="column">
+          {renderRows(helpItems, helpCursor)}
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>up/down to move | enter to open | q/esc back</Text>
+        </Box>
       </Box>
     );
   }
