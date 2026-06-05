@@ -104,4 +104,20 @@ Describe "Select-CatalogByPreset" {
     }
 }
 
+Describe "Download destination" {
+    It "falls back to CALIBR_DATA_DIR downloaded-models, not CALIBR_ROOT" {
+        $cfg = @{ scan_paths = @() }
+        $sample = @{ target_dir = "Qwen/Fake" }
+        $oldDestination = $script:Destination
+        try {
+            $script:Destination = ""
+            $dest = Get-DownloadDestination -sample $sample -cfg $cfg
+            $expected = Join-Path $CALIBR_DOWNLOADED_MODELS_DIR "Qwen/Fake"
+            Assert-Equal $expected $dest
+        } finally {
+            $script:Destination = $oldDestination
+        }
+    }
+}
 
+Exit-WithResults

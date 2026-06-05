@@ -125,4 +125,6 @@ Describe "Get-ResultDerivedFields" {
     }
 }
 
+Exit-WithResults
+
 

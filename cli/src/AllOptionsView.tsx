@@ -52,7 +52,10 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // Cycle order: all, low, middle, high, ultra, then any extra user-saved presets,
   // then 'custom' as the last sentinel that routes to CustomBenchView.
   const presetNames = useMemo<string[]>(() => {
-    const builtin = ["all", "low", "middle", "high", "ultra"].filter(n => presets[n]);
+    // Keep 'all' as a non-custom fallback even if default_bench_presets.json is
+    // missing/unreadable. A broken preset file should not dump a first-time
+    // user straight into CustomBenchView.
+    const builtin = ["all", "low", "middle", "high", "ultra"].filter(n => n === "all" || presets[n]);
     const extras = Object.keys(presets).filter(n => !builtin.includes(n)).sort();
     return [...builtin, ...extras, "custom"];
   }, [presets]);

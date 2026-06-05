@@ -79,6 +79,13 @@ if (catalog.length > 0) {
   );
 }
 
+const presets = mod.readPresetCatalog();
+check(
+  "default bench presets are bundled and parseable",
+  ["all", "low", "middle", "high", "ultra"].every((name) => Boolean(presets[name])),
+  `got ${Object.keys(presets).join(", ") || "(none)"}`,
+);
+
 const expectedDataRoot = process.platform === "win32"
   ? (process.env.LOCALAPPDATA || process.env.APPDATA || process.env.USERPROFILE || "")
   : (process.env.XDG_DATA_HOME || (process.env.HOME ? join(process.env.HOME, ".local", "share") : ""));
@@ -96,6 +103,11 @@ check(
   "data dir was created by the engine module",
   existsSync(mod.CALIBR_DATA_DIR),
   mod.CALIBR_DATA_DIR,
+);
+check(
+  "default download destination is under the data dir",
+  mod.downloadDestination({}).startsWith(mod.CALIBR_DATA_DIR),
+  mod.downloadDestination({}),
 );
 
 const status = mod.readStatus();

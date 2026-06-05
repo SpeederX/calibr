@@ -1,8 +1,22 @@
 # This file is dot-sourced by calibr.ps1. Keep functions script-local aware;
 # command dispatch stays in the root entrypoint.
 
+function Test-IsPackagedEngineRoot {
+    $rootLeaf = Split-Path $CALIBR_ROOT -Leaf
+    $pkgRoot = Split-Path $CALIBR_ROOT -Parent
+    return (
+        $rootLeaf -eq "engine" -and
+        (Test-Path -LiteralPath (Join-Path $pkgRoot "package.json")) -and
+        (Test-Path -LiteralPath (Join-Path $pkgRoot "dist"))
+    )
+}
+
 function Find-ModelRoots {
     # Suggest scan_paths: parent of ROOT, sibling folders that look like model storage
+    # In an npm install ROOT is node_modules/calibr/engine. Recursing upward from
+    # there scans node_modules and can look like init is frozen on a fresh box.
+    if (Test-IsPackagedEngineRoot) { return @() }
+
     $p = Split-Path $CALIBR_ROOT -Parent
     $parent = Split-Path $p -Parent
     $candidates = [System.Collections.Generic.List[string]]::new()
@@ -20,6 +34,16 @@ function Find-ModelRoots {
     return @($candidates | Select-Object -Unique)
 }
 
+function Test-ConfigNeedsInit {
+    param($cfg)
+    if (-not $cfg) { return $true }
+    $llamaMissing = (-not $cfg.llama_server_exe -or -not (Test-Path -LiteralPath $cfg.llama_server_exe))
+    $hw = $cfg.hardware
+    $hardwareMissing = (-not $hw -or (-not $hw.gpu_name -and -not $hw.vram_total_mib -and -not $hw.cpu_cores_physical))
+    $scanMissing = (-not $cfg.scan_paths -or @($cfg.scan_paths).Count -eq 0)
+    return ($llamaMissing -or $hardwareMissing -or $scanMissing)
+}
+
 # ============================================================================
 # SUBCOMMAND: init
 # ============================================================================
@@ -28,6 +52,16 @@ function Invoke-Init {
 
     $cfgRaw = Get-Content $CALIBR_DEFAULT_CFG -Raw | ConvertFrom-Json
     $cfg = ConvertTo-Hashtable -obj $cfgRaw
+    $existing = @{}
+    if (Test-Path $CALIBR_LOCAL_CFG) {
+        try {
+            $existingRaw = Get-Content $CALIBR_LOCAL_CFG -Raw | ConvertFrom-Json
+            $existing = ConvertTo-Hashtable -obj $existingRaw
+        } catch {
+            Write-Warning "  Existing config.json is unreadable; init will rewrite it. ($($_.Exception.Message))"
+            $existing = @{}
+        }
+    }
     $override = @{}
 
     Write-Host "Detecting hardware..."
@@ -58,6 +92,9 @@ function Invoke-Init {
     if ($LlamaServer) {
         Write-Host "`nUsing -LlamaServer override: $LlamaServer" -ForegroundColor Cyan
         $override.llama_server_exe = $LlamaServer
+    } elseif ($existing.llama_server_exe -and (Test-Path -LiteralPath $existing.llama_server_exe)) {
+        Write-Host "`nKeeping existing llama_server_exe: $($existing.llama_server_exe)" -ForegroundColor Green
+        $override.llama_server_exe = $existing.llama_server_exe
     } else {
         Write-Host "`nSearching for llama-server$script:ExeExt..."
         $exes = Find-LlamaServerExe
@@ -84,6 +121,9 @@ function Invoke-Init {
     if ($ScanPath -and $ScanPath.Count -gt 0) {
         Write-Host "`nUsing -ScanPath override: $($ScanPath -join ', ')" -ForegroundColor Cyan
         $override.scan_paths = @($ScanPath)
+    } elseif ($existing.scan_paths -and @($existing.scan_paths).Count -gt 0) {
+        Write-Host "`nKeeping existing scan_paths: $(@($existing.scan_paths) -join ', ')" -ForegroundColor Green
+        $override.scan_paths = @($existing.scan_paths)
     } else {
         Write-Host "`nSearching for .gguf folders..."
         $roots = Find-ModelRoots
@@ -91,10 +131,14 @@ function Invoke-Init {
             Write-Warning "  No folders with .gguf files found near this script."
             if (-not $NonInteractive) {
                 $manual = Read-Host "  Enter scan path (or empty to skip)"
-                if ($manual) { $override.scan_paths = @($manual) } else { $override.scan_paths = @() }
+                if ($manual) { $override.scan_paths = @($manual) } else { $override.scan_paths = @($CALIBR_DOWNLOADED_MODELS_DIR) }
             } else {
-                $override.scan_paths = @()
+                $override.scan_paths = @($CALIBR_DOWNLOADED_MODELS_DIR)
             }
+            if (-not (Test-Path -LiteralPath $CALIBR_DOWNLOADED_MODELS_DIR)) {
+                New-Item -ItemType Directory -Path $CALIBR_DOWNLOADED_MODELS_DIR -Force | Out-Null
+            }
+            Write-Host "  Defaulting scan_paths to $CALIBR_DOWNLOADED_MODELS_DIR" -ForegroundColor Cyan
         } else {
             Write-Host "  Found $($roots.Count) candidate root(s):" -ForegroundColor Green
             $roots | ForEach-Object { Write-Host "    $_" }
@@ -102,10 +146,15 @@ function Invoke-Init {
         }
     }
 
-    # Write config.json
+    # Write config.json. If a partial local config already exists (for example
+    # created by the CLI's "configure llama path" picker), init augments it
+    # instead of refusing to run. This is the fresh-machine path.
     $out = [ordered]@{}
-    if ($override.llama_server_exe) { $out.llama_server_exe = $override.llama_server_exe }
-    if ($override.scan_paths)       { $out.scan_paths = $override.scan_paths }
+    if ((Test-Path $CALIBR_LOCAL_CFG) -and (-not $Force)) {
+        foreach ($k in $existing.Keys) { $out[$k] = $existing[$k] }
+    }
+    if ($override.ContainsKey('llama_server_exe')) { $out.llama_server_exe = $override.llama_server_exe }
+    if ($override.ContainsKey('scan_paths'))       { $out.scan_paths = @($override.scan_paths) }
     $out.hardware = @{
         auto_detect            = $false
         vram_total_mib         = $override.hardware.vram_total_mib
@@ -116,10 +165,6 @@ function Invoke-Init {
         cpu_threads_logical    = $override.hardware.cpu_threads_logical
     }
 
-    if ((Test-Path $CALIBR_LOCAL_CFG) -and (-not $Force)) {
-        Write-Warning "`n$CALIBR_LOCAL_CFG already exists. Use -Force to overwrite."
-        return
-    }
     $out | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_LOCAL_CFG
     Write-Host "`nWrote $CALIBR_LOCAL_CFG" -ForegroundColor Green
     Write-Host "Next: calibr discover" -ForegroundColor Cyan
@@ -405,12 +450,12 @@ function Invoke-All {
         # auto-init can't find anything do we throw - and at that point
         # the message tells them WHERE we looked.
         $cfgUp = Get-Config
-        if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
-            Write-Host "[all] llama_server_exe not configured - running 'init' first to auto-detect..." -ForegroundColor Cyan
+        if (Test-ConfigNeedsInit -cfg $cfgUp) {
+            Write-Host "[all] setup incomplete - running 'init' first..." -ForegroundColor Cyan
             $savedNI = $script:NonInteractive
             $savedForce = $script:Force
             $script:NonInteractive = $true   # don't prompt mid-pipeline
-            $script:Force          = $true   # if a partial config.json exists, overwrite the missing keys
+            $script:Force          = $false  # preserve partial config values from the CLI picker
             try {
                 Invoke-Init
             } catch {
@@ -477,7 +522,7 @@ function Invoke-All {
             $scanEmpty = (-not $cfgInit.scan_paths -or $cfgInit.scan_paths.Count -eq 0)
             $cliEmpty  = (-not $script:ScanPath  -or $script:ScanPath.Count  -eq 0)
             if ($scanEmpty -and $cliEmpty) {
-                $defaultDl = if ($Destination) { $Destination } else { Join-Path $CALIBR_ROOT "downloaded-models" }
+                $defaultDl = if ($Destination) { $Destination } else { $CALIBR_DOWNLOADED_MODELS_DIR }
                 $script:ScanPath = @($defaultDl)
                 Write-Host "[all] No scan_paths configured. Will scan $defaultDl." -ForegroundColor Cyan
             }

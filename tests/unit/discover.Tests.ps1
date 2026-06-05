@@ -84,4 +84,6 @@ Describe "Find-MmprojSharedAcrossModels" {
     }
 }
 
+Exit-WithResults
+
 

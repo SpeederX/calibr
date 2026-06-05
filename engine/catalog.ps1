@@ -133,10 +133,12 @@ function Format-HumanSize {
 
 function Get-DownloadDestination {
     param($sample, $cfg)
-    # Priority: -Destination flag > scan_paths[0] > ./downloaded-models
+    # Priority: -Destination flag > scan_paths[0] > data/downloaded-models.
+    # In an npm install $CALIBR_ROOT lives inside node_modules, so runtime
+    # downloads must fall back to CALIBR_DATA_DIR, not the package directory.
     $root = if ($Destination) { $Destination }
             elseif ($cfg.scan_paths -and $cfg.scan_paths.Count -gt 0) { $cfg.scan_paths[0] }
-            else { Join-Path $CALIBR_ROOT "downloaded-models" }
+            else { $CALIBR_DOWNLOADED_MODELS_DIR }
     return (Join-Path $root $sample.target_dir)
 }
 
@@ -315,7 +317,7 @@ function Invoke-FetchModels {
     $totalBytes = ($toDownload | Measure-Object -Property size_bytes -Sum).Sum
     $destRoot = if ($Destination) { $Destination }
                 elseif ($cfg.scan_paths -and $cfg.scan_paths.Count -gt 0) { $cfg.scan_paths[0] }
-                else { Join-Path $CALIBR_ROOT "downloaded-models" }
+                else { $CALIBR_DOWNLOADED_MODELS_DIR }
     Write-Host ("`nAbout to download {0} file(s), total ~{1}." -f $toDownload.Count, (Format-HumanSize $totalBytes)) -ForegroundColor Yellow
     Write-Host "Destination root: $destRoot"
 

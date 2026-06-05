@@ -26,4 +26,6 @@ Describe "Test-CtxAllowedForModel" {
     }
 }
 
+Exit-WithResults
+
 

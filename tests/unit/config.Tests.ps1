@@ -147,4 +147,6 @@ Describe "Format-ConfigValue" {
     }
 }
 
+Exit-WithResults
+
 

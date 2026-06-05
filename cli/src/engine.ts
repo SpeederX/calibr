@@ -574,7 +574,7 @@ export function readPresetCatalog(): Record<string, Preset> {
 export function downloadDestination(cfg?: Config): string {
   const c = cfg ?? loadConfig();
   if (Array.isArray(c.scan_paths) && c.scan_paths.length > 0) return c.scan_paths[0]!;
-  return join(ENGINE_ROOT, "downloaded-models");
+  return join(CALIBR_DATA_DIR, "downloaded-models");
 }
 
 // Walks up the path until it finds a directory that exists, then statfs's

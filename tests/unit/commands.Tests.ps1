@@ -84,4 +84,48 @@ Describe "Get-ResetTargets" {
     }
 }
 
+Describe "Fresh setup helpers" {
+    It "requires init for a file-picker-only config" {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-llama-valid-" + [guid]::NewGuid() + ".exe")
+        try {
+            New-Item -ItemType File -Path $tmp -Force | Out-Null
+            $cfg = @{
+                llama_server_exe = $tmp
+                scan_paths = @()
+                hardware = @{
+                    gpu_name = $null
+                    vram_total_mib = $null
+                    cpu_cores_physical = $null
+                }
+            }
+            Assert-True (Test-ConfigNeedsInit -cfg $cfg)
+        } finally {
+            if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+        }
+    }
 
+    It "does not recurse through node_modules for packaged engine roots" {
+        $oldRoot = $script:CALIBR_ROOT
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-packaged-root-" + [guid]::NewGuid())
+        try {
+            $pkgRoot = Join-Path $tmp "node_modules\calibr"
+            $engineRoot = Join-Path $pkgRoot "engine"
+            $distRoot = Join-Path $pkgRoot "dist"
+            New-Item -ItemType Directory -Path $engineRoot -Force | Out-Null
+            New-Item -ItemType Directory -Path $distRoot -Force | Out-Null
+            "{}" | Out-File -Encoding utf8 (Join-Path $pkgRoot "package.json")
+            $fakeModelDir = Join-Path $tmp "node_modules\some-package\models"
+            New-Item -ItemType Directory -Path $fakeModelDir -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $fakeModelDir "fake.gguf") -Force | Out-Null
+
+            $script:CALIBR_ROOT = $engineRoot
+            $roots = @(Find-ModelRoots)
+            Assert-Equal 0 $roots.Count
+        } finally {
+            $script:CALIBR_ROOT = $oldRoot
+            if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+}
+
+Exit-WithResults
