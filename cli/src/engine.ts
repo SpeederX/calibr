@@ -483,16 +483,48 @@ export interface DoctorReport {
 
 export const DOCTOR_ISSUE_URL = "https://github.com/SpeederX/calibr/issues/new";
 
+function hasCommand(cmd: string): boolean {
+  try {
+    return spawnSync(process.platform === "win32" ? "where" : "which", [cmd], { stdio: "ignore" }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pick a command that opens `target` (a local file path or a URL) in a web
+ * browser. On Linux we deliberately prefer real browser launchers
+ * (`$BROWSER`, x-www-browser, sensible-browser) over `xdg-open`: xdg-open
+ * dispatches a local .html by its text/html MIME association, which a
+ * non-browser app can hijack (seen in the wild: a password manager grabbing
+ * text/html, so the report opened there instead of Firefox). Browser
+ * launchers and Windows `start` / macOS `open` use the browser association.
+ */
+function browserOpener(target: string): [string, string[]] {
+  if (process.platform === "win32") return ["cmd", ["/c", "start", "", target]];
+  if (process.platform === "darwin") return ["open", [target]];
+  const envBrowser = process.env.BROWSER?.trim();
+  if (envBrowser) return [envBrowser, [target]];
+  for (const c of ["x-www-browser", "sensible-browser"]) {
+    if (hasCommand(c)) return [c, [target]];
+  }
+  return ["xdg-open", [target]];
+}
+
+function launchDetached(cmd: string, args: string[]): boolean {
+  try {
+    const child = spawn(cmd, args, { windowsHide: true, detached: true, stdio: "ignore" });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Open a URL in the OS default browser. */
 export function openUrl(url: string): void {
-  const [cmd, cmdArgs] =
-    process.platform === "win32" ? ["cmd", ["/c", "start", "", url]]
-    : process.platform === "darwin" ? ["open", [url]]
-    : ["xdg-open", [url]];
-  try {
-    const child = spawn(cmd as string, cmdArgs as string[], { windowsHide: true, detached: true, stdio: "ignore" });
-    child.unref();
-  } catch { /* best-effort */ }
+  const [cmd, args] = browserOpener(url);
+  launchDetached(cmd, args);
 }
 
 /** Run `doctor -Json` and parse the contract. Resolves with an error string on failure. */
@@ -533,20 +565,8 @@ export async function exportDoctor(extended: boolean): Promise<{ path?: string; 
  */
 export function openReport(): boolean {
   if (!existsSync(CALIBR_REPORT)) return false;
-  // Platform default-browser opener: cmd start (Windows), open (macOS),
-  // xdg-open (Linux).
-  const [cmd, cmdArgs] =
-    process.platform === "win32" ? ["cmd", ["/c", "start", "", CALIBR_REPORT]]
-    : process.platform === "darwin" ? ["open", [CALIBR_REPORT]]
-    : ["xdg-open", [CALIBR_REPORT]];
-  const child = spawn(cmd as string, cmdArgs as string[], {
-    cwd: ENGINE_ROOT,
-    windowsHide: true,
-    detached: true,
-    stdio: "ignore",
-  });
-  child.unref();
-  return true;
+  const [cmd, args] = browserOpener(CALIBR_REPORT);
+  return launchDetached(cmd, args);
 }
 
 export interface EngineCommand {
