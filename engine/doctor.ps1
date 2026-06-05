@@ -327,7 +327,13 @@ function Get-DoctorDeps {
     }
 
     # --- Vulkan runtime device (hardware vs llvmpipe) ---
-    if (-not $script:IsMac) {
+    # Not applicable on macOS (Metal path) or NVIDIA (CUDA + nvidia-smi path):
+    # on an NVIDIA box Vulkan simply isn't the backend we'd use, so a missing
+    # Vulkan runtime is irrelevant, not a problem -> SKIP rather than MISS.
+    if ($isNvidia) {
+        $deps.Add((New-DepResult -Name 'vulkan-runtime' -Kind 'gpu' -Required $false -Present $false `
+            -Check 'skipped' -Detail 'not used on NVIDIA - inference goes through CUDA + nvidia-smi, not Vulkan'))
+    } elseif (-not $script:IsMac) {
         $vk = Get-VulkanDevices
         if ($null -eq $vk) {
             $deps.Add((New-DepResult -Name 'vulkan-runtime' -Kind 'gpu' -Required $false -Present $false `
@@ -378,7 +384,10 @@ function Get-DoctorDeps {
     }
 
     # --- Vulkan build toolchain (only relevant if building a Vulkan llama.cpp) ---
-    if ($script:IsLin) {
+    if ($script:IsLin -and $isNvidia) {
+        $deps.Add((New-DepResult -Name 'vulkan-build-toolchain' -Kind 'vulkan-build' -Required $false -Present $false `
+            -Check 'skipped' -Detail 'not needed on NVIDIA - use a CUDA llama.cpp build, not a Vulkan one'))
+    } elseif ($script:IsLin) {
         $hasGlslc   = [bool](Get-Command glslc -ErrorAction SilentlyContinue)
         $hasVkHdr   = (Test-Path '/usr/include/vulkan/vulkan.h')
         $hasSpirvH  = [bool](Get-ChildItem '/usr/include/spirv*' -ErrorAction SilentlyContinue) -or (Test-Path '/usr/include/spirv-headers')
