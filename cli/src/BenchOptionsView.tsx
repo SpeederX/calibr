@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { existsSync, readFileSync } from "node:fs";
-import { CALIBR_CATALOG, loadConfig, cachedResultsCount } from "./engine.js";
+import { CALIBR_CATALOG, loadConfig, cachedResultsCount, readModelCatalog } from "./engine.js";
 
 interface Props {
   onRun: (args: string[], label: string) => void;
@@ -12,36 +12,58 @@ interface CatalogEntry {
   model?: string;
 }
 
-function readCatalogModels(): string[] {
-  if (!existsSync(CALIBR_CATALOG)) return [];
+// Models discovered on disk (data/catalog.json). These can be benched in place
+// (no download needed). Returned as a Set for "is this model on disk?" checks.
+function readDiscoveredModels(): Set<string> {
+  const out = new Set<string>();
+  if (!existsSync(CALIBR_CATALOG)) return out;
   try {
     let raw = readFileSync(CALIBR_CATALOG, "utf8");
     if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
     const arr = JSON.parse(raw) as CatalogEntry[];
-    if (!Array.isArray(arr)) return [];
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const m of arr) {
-      if (m?.model && !seen.has(m.model)) {
-        seen.add(m.model);
-        out.push(m.model);
-      }
-    }
-    return out.sort();
-  } catch {
-    return [];
-  }
+    if (Array.isArray(arr)) for (const m of arr) if (m?.model) out.add(m.model);
+  } catch { /* ignore */ }
+  return out;
 }
 
+const LEVELS = ["all", "low", "middle", "high", "ultra"] as const;
+type Level = (typeof LEVELS)[number];
 const RUNS_VALUES: number[] = [0, 1, 3, 5];
 
-function next<T>(values: T[], current: T): T {
+function next<T>(values: readonly T[], current: T): T {
   const i = values.indexOf(current);
   return values[(i + 1) % values.length];
 }
 
-function fmt(s: string | null, fallback: string): string {
-  return s === null || s === "" ? fallback : s;
+export interface BenchArgsOpts {
+  model: string | null;
+  modelOnDisk: boolean;
+  level: Level;
+  runs: number;
+  keepDownloads: boolean;
+  minimalPolling: boolean;
+  rerunAll: boolean;
+}
+
+// Pure arg builder (exported for tests). Scope resolution:
+//   - a specific model on disk       -> -Model X           (bench in place)
+//   - a specific model, curated only -> -Model X -Fetch    (download then bench)
+//   - all models, a level chosen     -> -Level L -Fetch    (download + bench level)
+//   - all models, level 'all'        -> (nothing)          (bench the existing plan)
+export function buildBenchArgs(o: BenchArgsOpts): { args: string[]; label: string } {
+  const args: string[] = ["bench"];
+  const parts: string[] = [];
+  if (o.model) {
+    args.push("-Model", o.model); parts.push(`-Model "${o.model}"`);
+    if (!o.modelOnDisk) { args.push("-Fetch"); parts.push("-Fetch"); }
+  } else if (o.level !== "all") {
+    args.push("-Level", o.level, "-Fetch"); parts.push(`-Level ${o.level}`, "-Fetch");
+  }
+  if (o.runs > 0) { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
+  if (o.rerunAll) { args.push("-Force"); parts.push("-Force"); }
+  if (o.keepDownloads) { args.push("-KeepDownloads"); parts.push("-KeepDownloads"); }
+  if (o.minimalPolling) { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
+  return { args, label: parts.length ? `bench ${parts.join(" ")}` : "bench" };
 }
 
 type Phase =
@@ -49,59 +71,70 @@ type Phase =
   | { kind: "cachePrompt" };
 
 export function BenchOptionsView({ onRun, onCancel }: Props) {
-  const models = useMemo(readCatalogModels, []);
+  // The model filter spans every model we know: discovered (on disk) ∪ curated
+  // (models_catalog.json, downloadable). On-disk models bench in place; curated-
+  // only models are fetched first (-Fetch). User-owned models live only in the
+  // discovered set, so picking one always benches the local file.
+  const discovered = useMemo(readDiscoveredModels, []);
+  const models = useMemo<string[]>(() => {
+    const names = new Set<string>(discovered);
+    for (const e of readModelCatalog()) if (e?.model) names.add(e.model);
+    return [...names].sort();
+  }, [discovered]);
   const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
   const cachedCount = useMemo(cachedResultsCount, []);
-  // Read the engine's default runs-per-config so the form shows the actual
-  // value (e.g. 3) instead of just saying 'default (config)'.
   const configRunsDefault = useMemo<number>(() => {
     const cfg = loadConfig();
     const v = cfg?.bench?.runs_per_config;
     return typeof v === "number" && v > 0 ? v : 3;
   }, []);
+
   const [model, setModel] = useState<string | null>(null);
+  const [level, setLevel] = useState<Level>("all");
   const [runs, setRuns] = useState<number>(0);
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
-  const runsLabel = runs === 0
-    ? `default (${configRunsDefault} from config)`
-    : String(runs);
+  const runsLabel = runs === 0 ? `default (${configRunsDefault} from config)` : String(runs);
+  const modelOnDisk = model !== null && discovered.has(model);
+  // A specific model fixes the scope, so the level selector is inherited from it.
+  const levelDisabled = model !== null;
+
+  const levelLabel = levelDisabled
+    ? `inherited from model`
+    : level === "all"
+      ? "all (bench what's on disk)"
+      : `${level} — download + bench this level`;
+
+  const modelLabel = model === null
+    ? "all models"
+    : modelOnDisk ? `${model}` : `${model} (will download)`;
 
   const rows = [
-    { kind: "model" as const,    label: `model filter:    ${fmt(model, "all models in catalog")}` },
-    { kind: "runs" as const,     label: `runs per config: ${runsLabel}` },
-    { kind: "rotate" as const,   label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its configs finish)"}` },
-    { kind: "polling" as const,  label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
-    { kind: "run" as const,      label: "> start bench" },
-    { kind: "cancel" as const,   label: "  cancel" },
+    { kind: "model" as const,   disabled: false,        label: `model filter:    ${modelLabel}` },
+    { kind: "level" as const,   disabled: levelDisabled, label: `which models:    ${levelLabel}` },
+    { kind: "runs" as const,    disabled: false,        label: `runs per config: ${runsLabel}` },
+    { kind: "rotate" as const,  disabled: false,        label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its configs finish)"}` },
+    { kind: "polling" as const, disabled: false,        label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
+    { kind: "run" as const,     disabled: false,        label: "> start bench" },
+    { kind: "cancel" as const,  disabled: false,        label: "  cancel" },
   ];
 
-  // Build the args for the engine. The cache choice (use cache vs re-run all)
-  // is made AFTER form submit, via the cachePrompt phase, and decides whether
-  // we tack on -Force or not.
-  const buildArgs = (rerunAll: boolean): { args: string[]; label: string } => {
-    const args: string[] = ["bench"];
-    const parts: string[] = [];
-    if (model) { args.push("-Model", model); parts.push(`-Model "${model}"`); }
-    if (runs > 0) { args.push("-Runs", String(runs)); parts.push(`-Runs ${runs}`); }
-    if (rerunAll) { args.push("-Force"); parts.push("-Force"); }
-    if (keepDownloads) { args.push("-KeepDownloads"); parts.push("-KeepDownloads"); }
-    if (minimalPolling) { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
-    return { args, label: parts.length ? `bench ${parts.join(" ")}` : "bench" };
-  };
+  const buildArgs = (rerunAll: boolean) =>
+    buildBenchArgs({ model, modelOnDisk, level, runs, keepDownloads, minimalPolling, rerunAll });
 
   const activate = (i: number) => {
     const row = rows[i];
+    if (row.disabled) return;
     switch (row.kind) {
-      case "model":  setModel(next(modelChoices, model)); break;
-      case "runs":   setRuns(next(RUNS_VALUES, runs)); break;
+      case "model":   setModel(next(modelChoices, model)); break;
+      case "level":   setLevel(next(LEVELS, level)); break;
+      case "runs":    setRuns(next(RUNS_VALUES, runs)); break;
       case "rotate":  setKeepDownloads(!keepDownloads); break;
       case "polling": setMinimalPolling(!minimalPolling); break;
       case "run": {
-        // No cache → launch immediately. Cache present → ask y/n.
         if (cachedCount > 0) {
           setPhase({ kind: "cachePrompt" });
         } else {
@@ -117,16 +150,8 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   useInput((input, key) => {
     if (phase.kind === "cachePrompt") {
       if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
-      if (input === "y" || input === "Y") {
-        const r = buildArgs(false);
-        onRun(r.args, r.label);
-        return;
-      }
-      if (input === "n" || input === "N") {
-        const r = buildArgs(true);
-        onRun(r.args, r.label);
-        return;
-      }
+      if (input === "y" || input === "Y") { const r = buildArgs(false); onRun(r.args, r.label); return; }
+      if (input === "n" || input === "N") { const r = buildArgs(true); onRun(r.args, r.label); return; }
       return;
     }
     if (key.upArrow || input === "k") setCursor(c => Math.max(0, c - 1));
@@ -157,10 +182,17 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   return (
     <Box flexDirection="column">
       <Text bold color="cyan">bench — configure</Text>
-      <Box marginTop={1}><Text dimColor>{models.length} models in catalog</Text></Box>
+      <Box marginTop={1}><Text dimColor>{models.length} models known ({discovered.size} on disk)</Text></Box>
       <Box marginTop={1} flexDirection="column">
         {rows.map((row, i) => {
           const selected = i === cursor;
+          if (row.disabled) {
+            return (
+              <Text key={row.kind} dimColor>
+                {selected ? "> " : "  "}{row.label}
+              </Text>
+            );
+          }
           return (
             <Text key={row.kind} color={selected ? "cyan" : undefined} inverse={selected}>
               {selected ? "> " : "  "}{row.label}
@@ -170,12 +202,12 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>
-          tip: close other apps before launching. results are not reliable when heavy workloads
-          (video rendering, builds, games, large downloads) run in parallel, and the bench
-          can freeze the system if VRAM is already tight.
+          a level (or a curated model not yet on disk) downloads first, then benches,
+          deleting each model when its configs finish (peak disk ≈ one model).
         </Text>
         <Text dimColor>
-          calibr uses ~150 MB RAM and 1–3% CPU on a polling thread, and does NOT touch the GPU.
+          tip: close other apps before launching — parallel heavy workloads make results
+          unreliable and can freeze the system if VRAM is already tight.
         </Text>
       </Box>
       <Box marginTop={1}><Text dimColor>↑/↓ move · enter cycles or runs · q/esc back</Text></Box>
