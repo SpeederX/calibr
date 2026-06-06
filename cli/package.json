@@ -46,8 +46,8 @@
     "prepack": "node scripts/bundle-engine.js && tsc",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
-    "test:components": "tsc && node --test \"tests/*.test.mjs\"",
-    "test": "npm run build && node scripts/all-options-keypress-smoke.mjs && node scripts/smoke-install.js && node --test \"tests/*.test.mjs\""
+    "test:components": "tsc && node scripts/run-component-tests.mjs",
+    "test": "npm run build && node scripts/all-options-keypress-smoke.mjs && node scripts/smoke-install.js && node scripts/run-component-tests.mjs"
   },
   "engines": {
     "node": ">=18"
