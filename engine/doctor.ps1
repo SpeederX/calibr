@@ -239,6 +239,7 @@ function Get-DoctorDeps {
     $gpuName = if ($cfg.hardware) { $cfg.hardware.gpu_name } else { $null }
     $isAmd    = [bool]($gpuName -and $gpuName -match 'AMD|Radeon')
     $isNvidia = [bool]($gpuName -and $gpuName -match 'NVIDIA|GeForce|RTX|GTX|Quadro|Tesla')
+    $isApple  = [bool]($script:IsMac -or ($gpuName -and $gpuName -match 'Apple'))
 
     # --- pwsh (we're running in it) ---
     $deps.Add((New-DepResult -Name 'powershell' -Kind 'runtime' -Required $true -Present $true `
@@ -355,11 +356,30 @@ function Get-DoctorDeps {
         }
     }
 
+    # --- Metal runtime (macOS) ---
+    if ($script:IsMac -or $isApple) {
+        $metal = Get-MacGpuInfo
+        if ($metal.metal_supported) {
+            $deps.Add((New-DepResult -Name 'metal-runtime' -Kind 'gpu' -Required $false -Present $true `
+                -Command 'system_profiler SPDisplaysDataType' -Check 'ok' `
+                -Detail "Metal-capable GPU: $($metal.gpu_name)"))
+        } else {
+            $deps.Add((New-DepResult -Name 'metal-runtime' -Kind 'gpu' -Required $false -Present $false `
+                -Command 'system_profiler SPDisplaysDataType' -Check 'warning' `
+                -Detail 'Metal GPU not detected; macOS GPU offload is not available' `
+                -Remediation 'Use an Apple Silicon / Metal-capable Mac and a llama.cpp build with ggml-metal'))
+        }
+    }
+
     # --- AMD live-metric tooling (Linux + AMD) ---
     if ($script:IsLin -and $isAmd) {
+        $deps.Add((New-DepResult -Name 'amd-smi' -Kind 'metrics' -Required $false -Present $script:HasAmdSmi `
+            -Check $(if ($script:HasAmdSmi) { 'ok' } else { 'skipped' }) `
+            -Detail $(if ($script:HasAmdSmi) { 'ROCm amd-smi metrics available (preferred for dedicated AMD GPUs)' } else { 'not found; using radeontop/sysfs fallback when available' }) `
+            -Remediation $(if ($script:HasAmdSmi) { $null } else { 'Install ROCm amd-smi on supported dedicated AMD GPUs if you want ROCm-class metrics' })))
         $deps.Add((New-DepResult -Name 'radeontop' -Kind 'metrics' -Required $false -Present $script:HasRadeontop `
             -Check $(if ($script:HasRadeontop) { 'ok' } else { 'warning' }) `
-            -Detail $(if ($script:HasRadeontop) { 'live VRAM-used / util / GTT available' } else { 'no live VRAM/util/GTT (bench records temperature only)' }) `
+            -Detail $(if ($script:HasRadeontop) { 'fallback live VRAM-used / util / GTT spill available' } else { 'no radeontop GTT spill signal; amd-smi/sysfs may still provide live metrics' }) `
             -Remediation $(if ($script:HasRadeontop) { $null } else { "$pkg radeontop" })))
         $deps.Add((New-DepResult -Name 'mesa-utils' -Kind 'metrics' -Required $false -Present $script:HasGlxinfo `
             -Check $(if ($script:HasGlxinfo) { 'ok' } else { 'warning' }) `
@@ -424,8 +444,8 @@ function Get-DoctorSystemInfo {
     $os = Get-DoctorOsInfo
     $hw = $cfg.hardware
     # CPU
-    $cpuModel = if ($script:IsLin) { Get-LinuxCpuModel } else { $hw.gpu_name }   # placeholder fixed below
-    if (-not $script:IsLin) {
+    $cpuModel = if ($script:IsLin) { Get-LinuxCpuModel } elseif ($script:IsMac) { Get-MacCpuModel } else { $null }
+    if ($script:IsWin) {
         try { $cpuModel = (Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1).Name } catch { $cpuModel = $null }
     }
     $arch = [string][System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
@@ -438,22 +458,30 @@ function Get-DoctorSystemInfo {
         flags          = $flags
     }
     # RAM
-    $ramTotal = if ($script:IsLin) { Get-LinuxMemTotalMib } else {
+    $ramTotal = if ($script:IsLin) { Get-LinuxMemTotalMib } elseif ($script:IsMac) { Get-MacMemTotalMib } else {
         try { [int]((Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).TotalPhysicalMemory / 1MB) } catch { $null }
     }
     $ram = [ordered]@{ totalMib = $ramTotal; availableMib = (Get-AvailableMemoryMib) }
     # GPU(s) - one entry for now; structured as an array for multi-GPU later.
     $gpus = @()
     if ($hw.gpu_name) {
+        $linSnap = if ($script:IsLin) { Get-GpuSnapshotLinux } else { $null }
+        $vendor = if ($hw.gpu_name -match 'AMD|Radeon') { 'AMD' } elseif ($hw.gpu_name -match 'NVIDIA|GeForce|RTX|GTX') { 'NVIDIA' } elseif ($hw.gpu_name -match 'Intel|Arc') { 'Intel' } elseif ($hw.gpu_name -match 'Apple') { 'Apple' } else { $null }
         $gpus += [ordered]@{
             name          = $hw.gpu_name
-            vendor        = $(if ($hw.gpu_name -match 'AMD|Radeon') { 'AMD' } elseif ($hw.gpu_name -match 'NVIDIA|GeForce|RTX|GTX') { 'NVIDIA' } elseif ($hw.gpu_name -match 'Intel|Arc') { 'Intel' } else { $null })
+            vendor        = $vendor
             vramTotalMib  = $hw.vram_total_mib
+            memoryUnified = [bool]$hw.memory_unified
+            unifiedMemoryTotalMib = $hw.unified_memory_total_mib
+            backendHint   = $hw.gpu_backend_hint
             kernelDriver  = $(if ($script:IsLin) { Get-LinuxKernelGpuDriver } else { $null })
-            powerW        = $(if ($script:IsLin) { $p = Get-LinuxGpuPowerW; if ($p -gt 0) { $p } else { $null } } else { $null })
+            powerW        = $(if ($linSnap -and $linSnap.power_w -gt 0) { $linSnap.power_w } elseif ($script:IsLin) { $p = Get-LinuxGpuPowerW; if ($p -gt 0) { $p } else { $null } } else { $null })
+            metalSupported = $(if ($script:IsMac) { (Get-MacGpuInfo).metal_supported } else { $null })
             vulkanDevice  = $(
-                $vk = Get-VulkanDevices
-                if ($vk) { $h = @($vk | Where-Object { $_.isHardware }); if ($h.Count -gt 0) { "$($h[0].name) (hardware)" } else { 'llvmpipe (software only)' } } else { $null }
+                if (-not $script:IsMac) {
+                    $vk = Get-VulkanDevices
+                    if ($vk) { $h = @($vk | Where-Object { $_.isHardware }); if ($h.Count -gt 0) { "$($h[0].name) (hardware)" } else { 'llvmpipe (software only)' } } else { $null }
+                } else { $null }
             )
         }
     }
@@ -536,7 +564,10 @@ function Write-DoctorHuman {
     Write-Host ("RAM  : {0} MiB total, {1} MiB available" -f $si.ram.totalMib, $si.ram.availableMib)
     if ($si.gpus.Count -gt 0) {
         foreach ($g in $si.gpus) {
-            Write-Host ("GPU  : {0}  ({1} MiB VRAM, driver {2}, vulkan: {3})" -f $g.name, $g.vramTotalMib, $g.kernelDriver, $g.vulkanDevice)
+            $memLabel = if ($g.memoryUnified) { "$($g.unifiedMemoryTotalMib) MiB unified" } else { "$($g.vramTotalMib) MiB VRAM" }
+            $backendLabel = if ($g.backendHint) { ", backend: $($g.backendHint)" } else { "" }
+            $apiLabel = if ($script:IsMac) { ", metal: $($g.metalSupported)" } else { ", vulkan: $($g.vulkanDevice)" }
+            Write-Host ("GPU  : {0}  ({1}, driver {2}{3}{4})" -f $g.name, $memLabel, $g.kernelDriver, $apiLabel, $backendLabel)
         }
     } else {
         Write-Host "GPU  : none detected"

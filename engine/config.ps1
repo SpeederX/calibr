@@ -74,6 +74,9 @@ function Get-Config {
             $result.hardware.vram_safety_budget_mib = [int]($detected.vram_total_mib * $pct)
             $result.hardware.gpu_name           = $detected.gpu_name
             $result.hardware.gpu_compute_cap    = $detected.gpu_compute_cap
+            $result.hardware.gpu_backend_hint   = $detected.gpu_backend_hint
+            $result.hardware.memory_unified     = $detected.memory_unified
+            $result.hardware.unified_memory_total_mib = $detected.unified_memory_total_mib
             $result.hardware.cpu_cores_physical = $detected.cpu_cores_physical
             $result.hardware.cpu_threads_logical= $detected.cpu_threads_logical
         }
@@ -275,9 +278,11 @@ function Invoke-ConfigDetect {
             Write-Host "Detecting hardware..." -ForegroundColor Cyan
             $hw = Get-DetectedHardware
             if ($hw.gpu_name) {
-                Write-Host "  GPU: $($hw.gpu_name), $($hw.vram_total_mib) MiB VRAM, compute $($hw.gpu_compute_cap)" -ForegroundColor Green
+                $memLabel = if ($hw.memory_unified) { "$($hw.unified_memory_total_mib) MiB unified memory" } else { "$($hw.vram_total_mib) MiB VRAM" }
+                $backendLabel = if ($hw.gpu_backend_hint) { ", backend $($hw.gpu_backend_hint)" } else { "" }
+                Write-Host "  GPU: $($hw.gpu_name), $memLabel, compute $($hw.gpu_compute_cap)$backendLabel" -ForegroundColor Green
             } else {
-                Write-Host "  nvidia-smi not available or no NVIDIA GPU detected. Set hardware.* keys manually." -ForegroundColor Yellow
+                Write-Host "  No GPU detected. Set hardware.* keys manually if needed." -ForegroundColor Yellow
                 return $false
             }
             if ($hw.cpu_cores_physical) {
@@ -294,6 +299,9 @@ function Invoke-ConfigDetect {
             }
             if ($hw.gpu_name)            { $h["gpu_name"]            = $hw.gpu_name }
             if ($hw.gpu_compute_cap)     { $h["gpu_compute_cap"]     = $hw.gpu_compute_cap }
+            if ($hw.gpu_backend_hint)    { $h["gpu_backend_hint"]    = $hw.gpu_backend_hint }
+            if ($null -ne $hw.memory_unified) { $h["memory_unified"] = [bool]$hw.memory_unified }
+            if ($hw.unified_memory_total_mib) { $h["unified_memory_total_mib"] = $hw.unified_memory_total_mib }
             if ($hw.cpu_cores_physical)  { $h["cpu_cores_physical"]  = $hw.cpu_cores_physical }
             if ($hw.cpu_threads_logical) { $h["cpu_threads_logical"] = $hw.cpu_threads_logical }
             return $true

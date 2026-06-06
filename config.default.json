@@ -26,6 +26,9 @@
     "_comment_budget": "Fraction of VRAM considered safe from WDDM paging (Windows-specific). Empirical: 0.95 on a desktop with browser open.",
     "gpu_name": null,
     "gpu_compute_cap": null,
+    "gpu_backend_hint": null,
+    "memory_unified": false,
+    "unified_memory_total_mib": null,
     "cpu_cores_physical": null,
     "cpu_threads_logical": null
   },
