@@ -32,14 +32,14 @@ README.
 
 ## Requirements
 
-- **Windows 10 / 11** or **Linux.** On Windows the engine uses Windows-only
+- **Windows 10 / 11**, **Linux**, or **experimental macOS / Metal.** On Windows the engine uses Windows-only
   perf counters (`Get-Counter \GPU Adapter Memory(*)\Shared Usage`) to detect
   silent WDDM paging. On AMD/Linux, `radeontop` exposes the equivalent GTT
   spill signal; on NVIDIA/Linux, OOMs are clean and there is no silent spill to
-  detect. macOS/Metal is not supported yet.
+  detect. On macOS, memory is unified and Metal support is experimental.
 - **PowerShell:** Windows PowerShell 5.1 (ships with Windows) on Windows, or
   [**PowerShell Core (`pwsh`)**](https://github.com/PowerShell/PowerShell) on
-  Linux — the CLI spawns `pwsh` there.
+  Linux/macOS — the CLI spawns `pwsh` there.
 - **Node.js 18 or newer.**
 - A working **llama.cpp** build with `llama-server` (`.exe` on Windows).
   `guided run` and `init` can auto-fetch an official llama.cpp release when it
@@ -48,7 +48,8 @@ README.
 - An **NVIDIA GPU** for the headline use case. CPU-only and other backends
   bench fine, but the WDDM-paging heuristic is NVIDIA + Windows shaped. On
   **AMD Linux**, install `radeontop` + `mesa-utils` for VRAM + utilization
-  metrics (else temperature-only); GPU power draw isn't exposed.
+  metrics (else temperature-only). On ROCm-class AMD GPUs, `amd-smi` is used
+  when present for richer live metrics.
 
 ### Linux dependencies
 
@@ -64,11 +65,19 @@ engine still runs through PowerShell Core.
 | `xdg-open` | optional | open the HTML report from the CLI | `xdg-utils` |
 | `lspci` | optional | GPU-name fallback | `pciutils` |
 | `nvidia-smi` | optional, NVIDIA | NVIDIA VRAM / power / temp / utilization metrics | NVIDIA driver |
+| `amd-smi` | optional, AMD dedicated | ROCm-class AMD VRAM / power / temp / utilization metrics | ROCm / amd-smi |
 | `radeontop` | optional, AMD | AMD VRAM-used / utilization / GTT spill metrics | `radeontop` |
 | `glxinfo` | optional, AMD | AMD VRAM-total detection | `mesa-utils` |
 
 For AMD/Vulkan troubleshooting, `vulkaninfo` from `vulkan-tools` is the quick
 way to check whether Vulkan sees real hardware or only `llvmpipe`.
+
+### macOS / Metal dependencies
+
+This path is experimental. Install Node.js 18+, npm, PowerShell Core (`pwsh`),
+and use a local llama.cpp build with `llama-server` plus the Metal backend.
+`doctor` detects Apple GPUs via `system_profiler`, CPU/RAM via
+`sysctl`/`vm_stat`, and reports unified memory separately from desktop VRAM.
 
 ## Quickstart
 
@@ -179,7 +188,8 @@ manual control:
 - **Spill detection depends on platform/tooling.** Windows/NVIDIA uses WDDM
   shared-memory counters. AMD/Linux uses GTT from `radeontop` when installed.
   NVIDIA/Linux usually fails cleanly at OOM, so there is no silent spill signal
-  to detect. macOS/Metal is not supported yet.
+  to detect. macOS/Metal is experimental and has unified memory, not a separate
+  WDDM/GTT-style spill counter.
 - **`discover` pairs mmproj by directory.** If two model variants live
   in the same folder and physically share one `mmproj-*.gguf` file but
   the projector is only valid for one of them (different vision

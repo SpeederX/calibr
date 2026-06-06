@@ -67,9 +67,11 @@ function Invoke-Init {
     Write-Host "Detecting hardware..."
     $hw = Get-DetectedHardware
     if ($hw.gpu_name) {
-        Write-Host "  GPU: $($hw.gpu_name), $($hw.vram_total_mib) MiB VRAM, compute $($hw.gpu_compute_cap)" -ForegroundColor Green
+        $memLabel = if ($hw.memory_unified) { "$($hw.unified_memory_total_mib) MiB unified memory" } else { "$($hw.vram_total_mib) MiB VRAM" }
+        $backendLabel = if ($hw.gpu_backend_hint) { ", backend $($hw.gpu_backend_hint)" } else { "" }
+        Write-Host "  GPU: $($hw.gpu_name), $memLabel, compute $($hw.gpu_compute_cap)$backendLabel" -ForegroundColor Green
     } else {
-        Write-Warning "  nvidia-smi not available or no NVIDIA GPU detected. You'll need to set vram_total_mib manually."
+        Write-Warning "  No GPU detected. Metrics may be CPU-only; set hardware.vram_total_mib manually if needed."
     }
     if ($hw.cpu_cores_physical) {
         Write-Host "  CPU: $($hw.cpu_cores_physical)C/$($hw.cpu_threads_logical)T" -ForegroundColor Green
@@ -85,6 +87,9 @@ function Invoke-Init {
         vram_safety_budget_mib = if ($hw.vram_total_mib) { [int]($hw.vram_total_mib * $cfg.hardware.vram_safety_budget_pct) } else { $null }
         gpu_name               = $hw.gpu_name
         gpu_compute_cap        = $hw.gpu_compute_cap
+        gpu_backend_hint       = $hw.gpu_backend_hint
+        memory_unified         = [bool]$hw.memory_unified
+        unified_memory_total_mib = $hw.unified_memory_total_mib
         cpu_cores_physical     = $hw.cpu_cores_physical
         cpu_threads_logical    = $hw.cpu_threads_logical
     }
@@ -186,6 +191,9 @@ function Invoke-Init {
         vram_safety_budget_mib = $override.hardware.vram_safety_budget_mib
         gpu_name               = $override.hardware.gpu_name
         gpu_compute_cap        = $override.hardware.gpu_compute_cap
+        gpu_backend_hint       = $override.hardware.gpu_backend_hint
+        memory_unified         = [bool]$override.hardware.memory_unified
+        unified_memory_total_mib = $override.hardware.unified_memory_total_mib
         cpu_cores_physical     = $override.hardware.cpu_cores_physical
         cpu_threads_logical    = $override.hardware.cpu_threads_logical
     }

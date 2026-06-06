@@ -72,6 +72,17 @@ function MenuMode({ cursor }: { cursor: number }) {
 function SystemHeader({ report }: { report: DoctorReport }) {
   const si = report.systemInfo;
   const gpu = si.gpus[0];
+  const gpuMemory = gpu
+    ? gpu.memoryUnified
+      ? `${gpu.unifiedMemoryTotalMib ?? gpu.vramTotalMib ?? "?"} MiB unified`
+      : `${gpu.vramTotalMib ?? "?"} MiB VRAM`
+    : "";
+  const gpuApi = gpu
+    ? gpu.metalSupported !== undefined && gpu.metalSupported !== null
+      ? `metal: ${gpu.metalSupported ? "yes" : "no"}`
+      : `vk: ${gpu.vulkanDevice ?? "n/a"}`
+    : "";
+  const gpuBackend = gpu?.backendHint ? `, backend: ${gpu.backendHint}` : "";
   return (
     <Box flexDirection="column">
       <Text>
@@ -85,7 +96,7 @@ function SystemHeader({ report }: { report: DoctorReport }) {
       </Text>
       <Text>
         <Text dimColor>GPU </Text>{" "}
-        {gpu ? `${gpu.name} (${gpu.vramTotalMib ?? "?"} MiB, ${gpu.kernelDriver ?? "?"}, vk: ${gpu.vulkanDevice ?? "n/a"})` : "none detected"}
+        {gpu ? `${gpu.name} (${gpuMemory}, ${gpu.kernelDriver ?? "?"}, ${gpuApi}${gpuBackend})` : "none detected"}
       </Text>
     </Box>
   );

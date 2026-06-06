@@ -10,9 +10,9 @@
 candidate models, sweeps launch configurations, watches real memory behavior,
 and tells you which model/config is the fastest safe choice on your hardware.
 Its sweet spot is NVIDIA CUDA on Windows — where it also detects the silent
-WDDM VRAM-to-RAM paging cliff — but it **runs on Linux too**. The output is an
-HTML dashboard plus per-model optimized launchers (`.bat` on Windows, `.sh` on
-Linux).
+WDDM VRAM-to-RAM paging cliff — but it **runs on Linux too**, with experimental
+macOS/Metal detection in progress. The output is an HTML dashboard plus
+per-model optimized launchers (`.bat` on Windows, `.sh` on Linux/macOS).
 
 It is not a model-quality judge yet. The recommendation is based on measured
 fit, speed, headroom, and spill behavior on your machine.
@@ -21,16 +21,17 @@ fit, speed, headroom, and spill behavior on your machine.
 
 ![calibr full report](docs/report-complete.png)
 
-> **Windows + Linux.** The silent VRAM→system-RAM spill calibr targets is read
+> **Windows, Linux, experimental macOS.** The silent VRAM→system-RAM spill calibr targets is read
 > from a Windows-specific perf counter (`\GPU Adapter Memory(*)\Shared Usage`)
 > on Windows, and from **GTT** (via `radeontop`) on AMD/Linux — the same
 > downstream spill-detection either way. NVIDIA-on-Linux OOMs cleanly, so there
 > is no silent spill to detect there. The Linux engine runs under
 > [PowerShell Core (`pwsh`)](https://github.com/PowerShell/PowerShell). GPU
-> metrics: `nvidia-smi` (NVIDIA); on AMD, `radeontop` (live VRAM-used + util +
-> GTT) and `glxinfo`/mesa-utils (VRAM total) when installed, else sysfs
-> temperature only. RAM/disk come from `/proc`. See [`AGENTS.md`](AGENTS.md) for
-> the phased direction.
+> metrics: `nvidia-smi` (NVIDIA); on AMD, `amd-smi` when ROCm is available,
+> plus `radeontop` (live VRAM-used + util + GTT) and `glxinfo`/mesa-utils
+> (VRAM total) as fallbacks. macOS detection uses `sysctl`, `vm_stat`, and
+> `system_profiler`; Metal support is experimental and needs real-machine
+> validation. See [`AGENTS.md`](AGENTS.md) for the phased direction.
 
 > **For an LLM (or contributor) reading this**: start with
 > [`AGENTS.md`](AGENTS.md) — it documents the current methodology,
@@ -157,12 +158,21 @@ one wins.
   Linux release archives; manual install is only needed for custom builds,
   offline setups, or unsupported platforms.
 - A GPU is optional. On **NVIDIA** with `nvidia-smi` on PATH you get VRAM /
-  power / temp / util metrics. On **AMD**, install `radeontop` + `mesa-utils`
-  (`apt install radeontop mesa-utils`) for VRAM total (`glxinfo`) and live
-  VRAM-used + GPU utilization (`radeontop`); GPU temperature always comes from
-  sysfs, power isn't exposed. Without those tools, metrics fall back to
-  temperature-only and VRAM-budget planning is opt-in (set
-  `hardware.vram_total_mib` yourself). CPU-only works too.
+  power / temp / util metrics. On **AMD**, `amd-smi` is preferred for ROCm-class
+  dedicated GPUs when present; `radeontop` + `mesa-utils`
+  (`apt install radeontop mesa-utils`) remain the fallback for VRAM total
+  (`glxinfo`), live VRAM-used + GPU utilization (`radeontop`), and GTT spill.
+  Without those tools, metrics fall back to sysfs temperature and
+  VRAM-budget planning is opt-in (set `hardware.vram_total_mib` yourself).
+  CPU-only works too.
+
+**macOS / Metal (experimental):**
+
+- **Node.js 18 or newer**, npm, and **PowerShell Core (`pwsh`)**.
+- A local **llama.cpp** build with `llama-server` and the Metal backend.
+- `init` / `doctor` can detect Apple GPUs through `system_profiler`, CPU/RAM
+  through `sysctl`/`vm_stat`, and mark memory as unified. This path is
+  experimental until it is validated on real Apple hardware.
 
 **Not sure what you have or what's missing?** Run `calibr doctor` (or the menu's
 `help` -> `doctor`). It detects your CPU/GPU/OS, probes every dependency above,
@@ -182,6 +192,7 @@ Linux dependency map:
 | `xdg-open` | optional | open `data/report.html` from the CLI | `xdg-utils` |
 | `lspci` | optional | Linux GPU-name fallback when `nvidia-smi` is absent | `pciutils` |
 | `nvidia-smi` | optional, NVIDIA | NVIDIA VRAM / power / temp / utilization metrics | NVIDIA driver |
+| `amd-smi` | optional, AMD dedicated | ROCm-class AMD VRAM / power / temp / utilization metrics | ROCm / amd-smi |
 | `radeontop` | optional, AMD | AMD live VRAM-used, GPU utilization, and GTT spill signal | `radeontop` |
 | `glxinfo` | optional, AMD | AMD VRAM-total detection | `mesa-utils` |
 
@@ -295,13 +306,13 @@ layout.
   Windows, but calibr detects the same VRAM→system-RAM spill on AMD/Linux via
   GTT (`radeontop`), feeding the same `shared_peak_mib`. NVIDIA-on-Linux OOMs
   cleanly (no silent spill). Without `radeontop`, spill detection is off and
-  winners go by throughput + fit. macOS/Metal is not supported yet.
-- **GPU power is unavailable on AMD Linux, and metrics need extra tools.**
-  The `radeon`/`amdgpu` drivers don't expose `mem_info_vram` to calibr, so VRAM
-  comes from `radeontop` (live used + util) and `glxinfo`/mesa-utils (total)
-  when installed; GPU temperature comes from sysfs `hwmon`; **GPU power draw is
-  not exposed** (reported 0). Without `radeontop`/`glxinfo` it's temperature-only
-  and `hardware.vram_total_mib` must be set manually for VRAM-budget planning.
+  winners go by throughput + fit. macOS/Metal has no WDDM/GTT-style spill
+  signal; unified memory is reported separately and treated as experimental.
+- **AMD metrics depend on the available toolchain.** `amd-smi` is preferred on
+  ROCm-class dedicated GPUs. `radeontop`/`glxinfo` remain useful fallbacks and
+  are still the source for GTT spill. Without those tools, metrics may degrade
+  to sysfs temperature only and `hardware.vram_total_mib` may need a manual
+  override.
 - **MoE detection is a regex on the filename.** `model =~ /A\d+B/` correctly
   matches `Qwen3.6-35B-A3B` and `Mixtral-8x7B`-style names but a model
   innocently named `something-A100B-special.gguf` would be false-flagged as
@@ -357,8 +368,9 @@ CLI → backend → web UI). Concrete near-term ideas being explored:
 - **Phase 3 — Angular UI** on top of the backend.
 - **Cross-platform support**: Windows/NVIDIA is the strongest path today;
   Linux/NVIDIA works with clean OOM behavior; AMD/Linux uses `radeontop` GTT
-  for spill detection when installed. Next on the cross-platform front: Metal,
-  richer AMD metrics, and Android as a Phase 2 API client.
+  for spill detection when installed, with experimental `amd-smi` metrics.
+  Metal detection is experimental and needs macOS validation; Android remains a
+  later direct-adapter/client track.
 
 ## Contributing
 

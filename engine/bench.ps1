@@ -188,6 +188,9 @@ function Get-AvailableMemoryMib {
     # MBytes'), and Get-Counter rejects the English name on a localized
     # system. Win32_OperatingSystem.FreePhysicalMemory is in kilobytes and
     # language-independent.
+    if ($script:IsMac) {
+        return Get-MacAvailableMemoryMib
+    }
     if (-not $script:IsWin) {
         try {
             $m = Select-String -Path /proc/meminfo -Pattern '^MemAvailable:\s+(\d+)\s*kB' -ErrorAction SilentlyContinue | Select-Object -First 1

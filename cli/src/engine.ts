@@ -119,6 +119,9 @@ export interface Config {
     vram_safety_budget_mib?: number;
     vram_safety_budget_pct?: number;
     gpu_name?: string;
+    gpu_backend_hint?: string;
+    memory_unified?: boolean;
+    unified_memory_total_mib?: number;
   };
   [k: string]: any;
 }
@@ -568,7 +571,18 @@ export interface DoctorReport {
     os: { platform: string; name: string; kernel?: string | null };
     cpu: { model?: string | null; arch?: string | null; coresPhysical?: number | null; threadsLogical?: number | null; flags?: Record<string, boolean> | null };
     ram: { totalMib?: number | null; availableMib?: number | null };
-    gpus: Array<{ name: string; vendor?: string | null; vramTotalMib?: number | null; kernelDriver?: string | null; powerW?: number | null; vulkanDevice?: string | null }>;
+    gpus: Array<{
+      name: string;
+      vendor?: string | null;
+      vramTotalMib?: number | null;
+      memoryUnified?: boolean | null;
+      unifiedMemoryTotalMib?: number | null;
+      backendHint?: string | null;
+      kernelDriver?: string | null;
+      powerW?: number | null;
+      metalSupported?: boolean | null;
+      vulkanDevice?: string | null;
+    }>;
   };
   deps: DoctorDep[];
 }

@@ -52,7 +52,7 @@ async function openGuidedLlamaPrompt(stdin) {
   // toggle it off so the disk gate is skipped, then move to `start all`.
   await press(stdin, "j");
   await press(stdin, " ");
-  for (let i = 0; i < 5; i++) await press(stdin, "j", 15);
+  for (let i = 0; i < 7; i++) await press(stdin, "j", 15);
   await press(stdin, "\r", 50);
 }
 

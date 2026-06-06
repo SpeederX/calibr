@@ -4,15 +4,15 @@
     calibr -- crawler/tester for GGUF models via llama.cpp
 
 .DESCRIPTION
-    Discovers GGUF models in configured paths, classifies each by tier based on
-    a VRAM safety budget, generates and runs a benchmark plan with WDDM-paging
-    detection on Windows, and emits an HTML report plus per-model .bat launchers.
+    Discovers GGUF models in configured paths, assigns curated hardware levels,
+    generates and runs a benchmark plan with WDDM-paging detection on Windows,
+    and emits an HTML report plus per-model .bat launchers.
 
 .EXAMPLE
     calibr init                     # first-time setup: detect HW, write config.json
     calibr discover                 # scan for .gguf files
     calibr plan                     # generate test plan
-    calibr bench -Tier A            # run only Tier A benchmarks
+    calibr bench -Level low         # run only low-level benchmarks
     calibr bench -Model Qwen3.5-9B  # run only this model
     calibr report                   # build HTML + .bat
     calibr all                      # full pipeline (works on whatever .gguf are on disk)

@@ -158,35 +158,44 @@ function Remove-PhantomEntries {
         if ($j.TrimStart() -notmatch '^\[') { $j = "[`n$j`n]" }
         return $j
     }
+    $readArr = {
+        param([string]$path)
+        $raw = Get-Content $path -Raw | ConvertFrom-Json
+        $items = @()
+        if ($null -ne $raw) {
+            foreach ($item in $raw) { $items += $item }
+        }
+        return $items
+    }
     $removedModels = 0
 
-    if (Test-Path $CALIBR_CATALOG) {
+    if (Test-Path $script:CALIBR_CATALOG) {
         try {
-            $cat  = @(Get-Content $CALIBR_CATALOG -Raw | ConvertFrom-Json)
+            $cat  = @(& $readArr $script:CALIBR_CATALOG)
             $keep = @($cat | Where-Object { & $exists $_.path })
             if ($keep.Count -ne $cat.Count) {
                 $removedModels = $cat.Count - $keep.Count
-                (& $toArr $keep) | Out-File -Encoding utf8 $CALIBR_CATALOG
+                (& $toArr $keep) | Out-File -Encoding utf8 $script:CALIBR_CATALOG
             }
         } catch { }
     }
 
-    if (Test-Path $CALIBR_PLAN) {
+    if (Test-Path $script:CALIBR_PLAN) {
         try {
-            $plan  = @(Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json)
+            $plan  = @(& $readArr $script:CALIBR_PLAN)
             $keepP = @($plan | Where-Object { & $exists $_.model_path })
             if ($keepP.Count -ne $plan.Count) {
-                (& $toArr $keepP) | Out-File -Encoding utf8 $CALIBR_PLAN
+                (& $toArr $keepP) | Out-File -Encoding utf8 $script:CALIBR_PLAN
             }
         } catch { }
     }
 
-    if (Test-Path $CALIBR_DOWNLOADS) {
+    if (Test-Path $script:CALIBR_DOWNLOADS) {
         try {
-            $dl    = @(Get-Content $CALIBR_DOWNLOADS -Raw | ConvertFrom-Json)
+            $dl    = @(& $readArr $script:CALIBR_DOWNLOADS)
             $keepD = @($dl | Where-Object { & $exists $_.model_path })
             if ($keepD.Count -ne $dl.Count) {
-                (& $toArr $keepD) | Out-File -Encoding utf8 $CALIBR_DOWNLOADS
+                (& $toArr $keepD) | Out-File -Encoding utf8 $script:CALIBR_DOWNLOADS
             }
         } catch { }
     }
