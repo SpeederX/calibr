@@ -38,7 +38,7 @@ fit, speed, headroom, and spill behavior on your machine.
 > is REFERENCE ONLY vs authoritative. The folders `architecture/`,
 > `spec/`, `plans/`, `memories/` are kept for history but do not
 > reflect current practice. Domain vocabulary (`model` / `series` /
-> `variant` / `tier` / `WDDM` / `headroom`) still lives in
+> `variant` / `level` / `sweep` / `WDDM` / `headroom`) still lives in
 > [`architecture/domain.md`](architecture/domain.md).
 
 ---
@@ -220,66 +220,66 @@ baseline.
 
 ### Low - GTX 1650 / RTX 3050 / iGPU + 16 GB system
 
-| Model | Variant | Tier | Source | Approx size |
+| Model | Variant | Sweep | Source | Approx size |
 |---|---|---:|---|---:|
-| SmolLM2-135M-Instruct | Q4_K_M | A | bartowski | 91 MB |
-| SmolLM2-360M-Instruct | Q4_K_M | A | bartowski | 219 MB |
-| Qwen2.5-0.5B-Instruct | Q4_K_M | A | Qwen | 381 MB |
-| Qwen3-0.6B | Q4_K_M | A | unsloth | 448 MB |
-| Qwen3.5-0.8B | UD-Q4_K_XL | A | unsloth | 533 MB |
-| TinyLlama-1.1B-Chat | Q4_K_M | A | TheBloke | 639 MB |
-| Llama-3.2-1B-Instruct | Q4_K_M | A | unsloth | 763 MB |
-| Gemma-3-1B-it | Q4_K_M | A | ggml-org | 763 MB |
-| Qwen3.5-0.8B | Q8_0 | A | unsloth | 774 MB |
-| Qwen2.5-1.5B-Instruct | Q4_K_M | A | Qwen | 954 MB |
-| StableLM-2-1.6B-Zephyr | Q4_K_M | A | second-state | 954 MB |
-| SmolLM2-1.7B-Instruct | Q4_K_M | A | HuggingFaceTB | 1.0 GB |
-| Qwen3.5-2B | UD-Q4_K_XL | A | unsloth | 1.2 GB |
-| Granite-3.0-2B-Instruct | Q4_K_M | A | bartowski | 1.4 GB |
-| Gemma-2-2B-it | Q4_K_M | A | bartowski | 1.6 GB |
-| Phi-2-2.7B | Q4_K_M | A | TheBloke | 1.6 GB |
-| Qwen2.5-3B-Instruct | Q4_K_M | A | Qwen | 1.8 GB |
-| Llama-3.2-3B-Instruct | Q4_K_M | A | unsloth | 1.9 GB |
-| Ministral-3-3B-Instruct | Q4_K_M | A | unsloth | 1.9 GB |
-| Gemma-4-E2B | Q4_K_M | A | unsloth | 2.3 GB |
+| SmolLM2-135M-Instruct | Q4_K_M | context | bartowski | 91 MB |
+| SmolLM2-360M-Instruct | Q4_K_M | context | bartowski | 219 MB |
+| Qwen2.5-0.5B-Instruct | Q4_K_M | context | Qwen | 381 MB |
+| Qwen3-0.6B | Q4_K_M | context | unsloth | 448 MB |
+| Qwen3.5-0.8B | UD-Q4_K_XL | context | unsloth | 533 MB |
+| TinyLlama-1.1B-Chat | Q4_K_M | context | TheBloke | 639 MB |
+| Llama-3.2-1B-Instruct | Q4_K_M | context | unsloth | 763 MB |
+| Gemma-3-1B-it | Q4_K_M | context | ggml-org | 763 MB |
+| Qwen3.5-0.8B | Q8_0 | context | unsloth | 774 MB |
+| Qwen2.5-1.5B-Instruct | Q4_K_M | context | Qwen | 954 MB |
+| StableLM-2-1.6B-Zephyr | Q4_K_M | context | second-state | 954 MB |
+| SmolLM2-1.7B-Instruct | Q4_K_M | context | HuggingFaceTB | 1.0 GB |
+| Qwen3.5-2B | UD-Q4_K_XL | context | unsloth | 1.2 GB |
+| Granite-3.0-2B-Instruct | Q4_K_M | context | bartowski | 1.4 GB |
+| Gemma-2-2B-it | Q4_K_M | context | bartowski | 1.6 GB |
+| Phi-2-2.7B | Q4_K_M | context | TheBloke | 1.6 GB |
+| Qwen2.5-3B-Instruct | Q4_K_M | context | Qwen | 1.8 GB |
+| Llama-3.2-3B-Instruct | Q4_K_M | context | unsloth | 1.9 GB |
+| Ministral-3-3B-Instruct | Q4_K_M | context | unsloth | 1.9 GB |
+| Gemma-4-E2B | Q4_K_M | context | unsloth | 2.3 GB |
 
 ### Middle - RTX 2070 / 3060 8 GB + 32 GB system
 
-| Model | Variant | Tier | Source | Approx size |
+| Model | Variant | Sweep | Source | Approx size |
 |---|---|---:|---|---:|
-| Phi-3.5-mini-Instruct | Q4_K_M | A | bartowski | 2.2 GB |
-| Phi-4-mini-reasoning | Q4_K_M | A | lmstudio-community | 2.3 GB |
-| Gemma-3-4B-it | Q4_K_M | A | ggml-org | 2.4 GB |
-| Qwen3.5-4B | Q4_K_M | A | unsloth | 2.6 GB |
-| Qwen3.5-2B | BF16 | A | unsloth | 3.5 GB |
-| Gemma-3n-E4B-it | Q4_K_M | A | unsloth | 4.2 GB |
-| Gemma-4-E4B | Q4_K_M | A | unsloth | 4.6 GB |
-| Qwen3.5-9B | Q4_K_M | A | unsloth | 5.2 GB |
-| Gemma-4-26B-A4B | UD-Q4_K_M | B | unsloth | 14.9 GB |
+| Phi-3.5-mini-Instruct | Q4_K_M | context | bartowski | 2.2 GB |
+| Phi-4-mini-reasoning | Q4_K_M | context | lmstudio-community | 2.3 GB |
+| Gemma-3-4B-it | Q4_K_M | context | ggml-org | 2.4 GB |
+| Qwen3.5-4B | Q4_K_M | context | unsloth | 2.6 GB |
+| Qwen3.5-2B | BF16 | context | unsloth | 3.5 GB |
+| Gemma-3n-E4B-it | Q4_K_M | context | unsloth | 4.2 GB |
+| Gemma-4-E4B | Q4_K_M | context | unsloth | 4.6 GB |
+| Qwen3.5-9B | Q4_K_M | context | unsloth | 5.2 GB |
+| Gemma-4-26B-A4B | UD-Q4_K_M | moe-cpu | unsloth | 14.9 GB |
 
 ### High - 12-24 GB VRAM + 32-96 GB RAM
 
-| Model | Variant | Tier | Source | Approx size |
+| Model | Variant | Sweep | Source | Approx size |
 |---|---|---:|---|---:|
-| Gemma-4-12B-it | Q4_K_M | C | unsloth | 6.6 GB |
-| Gemma-3-12B-it-QAT | Q4_0 | C | google | 7.5 GB |
-| Phi-4-reasoning-plus | Q4_K_M | C | unsloth | 8.4 GB |
-| DeepSeek-Coder-V2-Lite-Instruct | Q4_K_M | C | bartowski | 9.7 GB |
-| Qwen3.5-27B | Q4_K_S | C | unsloth | 14.7 GB |
-| Gemma-3-27B-it-QAT | Q4_0 | C | google | 16.0 GB |
+| Gemma-4-12B-it | Q4_K_M | offload | unsloth | 6.6 GB |
+| Gemma-3-12B-it-QAT | Q4_0 | offload | google | 7.5 GB |
+| Phi-4-reasoning-plus | Q4_K_M | offload | unsloth | 8.4 GB |
+| DeepSeek-Coder-V2-Lite-Instruct | Q4_K_M | offload | bartowski | 9.7 GB |
+| Qwen3.5-27B | Q4_K_S | offload | unsloth | 14.7 GB |
+| Gemma-3-27B-it-QAT | Q4_0 | offload | google | 16.0 GB |
 
 ### Ultra - 24-48 GB VRAM/UMA + 64-128 GB RAM
 
-| Model | Variant | Tier | Source | Approx size |
+| Model | Variant | Sweep | Source | Approx size |
 |---|---|---:|---|---:|
-| Qwen3-30B-A3B-Instruct-2507 | UD-Q4_K_XL | B | unsloth | 16.5 GB |
-| Qwen3-Coder-30B-A3B-Instruct | Q4_K_M | B | Intel | 16.1 GB |
-| Granite-4.1-30B | Q4_K_M | C | ibm-granite | 16.3 GB |
-| Qwen3-30B-A3B | Q4_K_M | B | Qwen | 17.3 GB |
-| Gemma-4-31B | Q4_K_M | C | unsloth | 17.1 GB |
-| Qwen3-32B | Q4_K_M | C | Qwen | 18.4 GB |
-| DeepSeek-R1-Distill-Qwen-32B | Q4_K_M | C | unsloth | 18.5 GB |
-| Qwen3.6-35B-A3B | UD-Q4_K_M | B | unsloth | 20.6 GB |
+| Qwen3-30B-A3B-Instruct-2507 | UD-Q4_K_XL | moe-cpu | unsloth | 16.5 GB |
+| Qwen3-Coder-30B-A3B-Instruct | Q4_K_M | moe-cpu | Intel | 16.1 GB |
+| Granite-4.1-30B | Q4_K_M | offload | ibm-granite | 16.3 GB |
+| Qwen3-30B-A3B | Q4_K_M | moe-cpu | Qwen | 17.3 GB |
+| Gemma-4-31B | Q4_K_M | offload | unsloth | 17.1 GB |
+| Qwen3-32B | Q4_K_M | offload | Qwen | 18.4 GB |
+| DeepSeek-R1-Distill-Qwen-32B | Q4_K_M | offload | unsloth | 18.5 GB |
+| Qwen3.6-35B-A3B | UD-Q4_K_M | moe-cpu | unsloth | 20.6 GB |
 
 ## Technical details
 
@@ -301,13 +301,13 @@ layout.
   comes from `radeontop` (live used + util) and `glxinfo`/mesa-utils (total)
   when installed; GPU temperature comes from sysfs `hwmon`; **GPU power draw is
   not exposed** (reported 0). Without `radeontop`/`glxinfo` it's temperature-only
-  and `hardware.vram_total_mib` must be set manually for tier planning.
+  and `hardware.vram_total_mib` must be set manually for VRAM-budget planning.
 - **MoE detection is a regex on the filename.** `model =~ /A\d+B/` correctly
   matches `Qwen3.6-35B-A3B` and `Mixtral-8x7B`-style names but a model
   innocently named `something-A100B-special.gguf` would be false-flagged as
   MoE and routed to a `--n-cpu-moe` sweep. Add the model to
   `config.dense_overrides` (case-sensitive, exact match) to opt it back out
-  of Tier B classification.
+  of the MoE `--n-cpu-moe` sweep.
 - **Single GPU only.** No `--tensor-split` planning or per-device VRAM
   tracking. Multi-GPU users have to point `-LlamaServer` at a build that
   defaults to the right device.
@@ -322,7 +322,7 @@ layout.
   `huggingface-cli` separately.
 - **Per-model `max_context` only honored for curated samples.** Entries in
   `models_catalog.json` carry `max_context` (scraped from the upstream model card),
-  and `plan` skips Tier A candidates above it. User-owned `.gguf` files
+  and `plan` skips context-sweep candidates above it. User-owned `.gguf` files
   outside `models_catalog.json` fall back to the global `max_context_cap` (default
   262 144) — a future GGUF metadata parser would derive the per-model cap
   from the file itself.
