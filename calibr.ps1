@@ -55,6 +55,10 @@ param(
     [switch]$Force,
     [switch]$NonInteractive,
 
+    # Used by bench: download the curated models of -Level (and/or -Model) that
+    # aren't on disk, then bench each (interleaved + rotated). No final report.
+    [switch]$Fetch,
+
     # CLI overrides for config fields. These take priority over config.json.
     # Used by: discover (ScanPath, ExcludePattern), bench/report (LlamaServer), all (all of them), init (pre-fills instead of auto-detecting).
     [string[]]$ScanPath = @(),
@@ -190,7 +194,7 @@ switch ($Command) {
     "init"               { Invoke-Init }
     "discover"           { Invoke-Discover }
     "plan"               { Invoke-Plan }
-    "bench"              { Invoke-Bench }
+    "bench"              { if ($Fetch) { Invoke-BenchByLevel } else { Invoke-Bench } }
     "report"             { Invoke-Report }
     "status"             { Invoke-Status }
     "config"             { Invoke-Config }
