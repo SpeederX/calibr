@@ -38,3 +38,10 @@ test("custom ids used when no model is fixed", () => {
   const a = buildAllArgs({ ...base, currentPreset: "custom", customIds: "a,b" }).args;
   assert.ok(a.includes("-CatalogId"));
 });
+
+test("context sizes pass through as -ContextSizes csv", () => {
+  const a = buildAllArgs({ ...base, currentPreset: "custom", customIds: "a", contextSizes: [16384, 32768] }).args;
+  const i = a.indexOf("-ContextSizes");
+  assert.ok(i >= 0, "should include -ContextSizes");
+  assert.equal(a[i + 1], "16384,32768");
+});

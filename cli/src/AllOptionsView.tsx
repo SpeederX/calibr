@@ -60,6 +60,7 @@ export interface AllArgsOpts {
   preferSpeed: boolean;
   minimalPolling: boolean;
   rerunAll: boolean;
+  contextSizes?: number[] | null;
 }
 
 // Pure arg builder for `all` (exported for tests). A fixed model overrides the
@@ -81,6 +82,10 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
     args.push("-CatalogId", o.customIds); parts.push(`-CatalogId "${o.customIds}"`);
   } else if (o.fetchCatalog && o.currentPreset !== "all" && o.currentPreset !== "custom") {
     args.push("-Preset", o.currentPreset); parts.push(`-Preset ${o.currentPreset}`);
+  }
+  if (o.contextSizes && o.contextSizes.length > 0) {
+    const csv = o.contextSizes.join(",");
+    args.push("-ContextSizes", csv); parts.push(`-ContextSizes ${csv}`);
   }
   if (o.runs > 0)        { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
   if (o.keepDownloads)   { args.push("-KeepDownloads");  parts.push("-KeepDownloads"); }
@@ -200,11 +205,12 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // buildArgs ignores the named preset and passes -CatalogId with the
   // comma-list of picked catalog ids.
   const [customIds, setCustomIds] = useState<string>("");
+  const [customCtxSizes, setCustomCtxSizes] = useState<number[] | null>(null);
 
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, fetchCatalog, model, customIds, currentPreset, runs, keepDownloads, preferSpeed, minimalPolling, rerunAll });
+    buildAllArgs({ decision, fetchCatalog, model, customIds, currentPreset, runs, keepDownloads, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
 
   // Decide which phase comes next after the user clears the current step.
   // Order: disk gate (if fetching) → cache prompt (if cache exists) →
@@ -522,8 +528,9 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   if (phase.kind === "custom") {
     return (
       <CustomBenchView
-        onSubmit={(idList) => {
+        onSubmit={(idList, ctxSizes) => {
           setCustomIds(idList);
+          setCustomCtxSizes(ctxSizes && ctxSizes.length > 0 ? ctxSizes : null);
           // After picking, go straight to the disk gate; the user already
           // accepted the form's other choices when they hit '> start all'.
           runGate(idList);

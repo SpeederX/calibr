@@ -2,88 +2,166 @@ import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import {
   readModelCatalog,
+  saveUserPreset,
   type CatalogEntry,
 } from "./engine.js";
 
 interface Props {
-  // Called with the args for the engine. The caller (App / AllOptionsView)
-  // is responsible for prepending the 'all' / 'bench' verb and any other
-  // top-level flags it already collected; this view only contributes the
-  // model selection.
-  onSubmit: (catalogIdList: string) => void;
+  // The caller (AllOptionsView) prepends the verb + top-level flags; this view
+  // contributes the model selection and, in v2, the context-size set.
+  onSubmit: (catalogIdList: string, contextSizes?: number[]) => void;
   onCancel: () => void;
 }
 
-// CustomBenchView v1: multi-pick model selection only.
-// Future iterations will add (a) typed search filter, (b) context-size
-// checkboxes, (c) save-as-user-preset. For now, the user picks which
-// models to bench; ctx sweep stays at the defaults from
-// context_candidates (filtered by per-model max_context and the global
-// max_context_cap as usual).
+// The default context sweep (mirrors config.context_candidates). The user
+// cross-products the checked ctx sizes with the checked models.
+const CTX_OPTIONS = [16384, 32768, 65536, 98304, 131072, 163840];
+const ctxLabel = (n: number) => `${Math.round(n / 1024)}k`;
+
+type Mode = "nav" | "search" | "savePrompt";
+
+// CustomBenchView v2: typed search filter + model checkboxes + context-size
+// checkboxes (cross-product = bench scope) + save-as-user-preset.
 export function CustomBenchView({ onSubmit, onCancel }: Props) {
   const catalog = useMemo<CatalogEntry[]>(readModelCatalog, []);
-  // Default: nothing checked. Forces the user to pick at least one.
-  const [checked, setChecked] = useState<boolean[]>(() => catalog.map(() => false));
-  // Cursor row 0..catalog.length-1 is a model row; row catalog.length is
-  // the '> bench selected' submit row.
+  const [checkedModels, setCheckedModels] = useState<Set<string>>(() => new Set());
+  const [checkedCtx, setCheckedCtx] = useState<Set<number>>(() => new Set(CTX_OPTIONS)); // all on = full sweep
+  const [query, setQuery] = useState("");
+  const [mode, setMode] = useState<Mode>("nav");
+  const [saveName, setSaveName] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
 
-  const selectedCount = checked.filter(Boolean).length;
-  const selectedEntries = catalog.filter((_, i) => checked[i]);
+  // Filtered model list (live narrowing by id/model/series/variant substring).
+  const filtered = useMemo<CatalogEntry[]>(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return catalog;
+    return catalog.filter(e =>
+      [e.id, e.model, e.series, e.variant].some(s => (s ?? "").toLowerCase().includes(q))
+    );
+  }, [catalog, query]);
 
-  const setAll = (v: boolean) => setChecked(catalog.map(() => v));
-  const toggle = (i: number) => setChecked(prev => prev.map((v, idx) => idx === i ? !v : v));
+  // Flat navigable list: [filtered models] [ctx options] [submit].
+  const ctxStart = filtered.length;
+  const submitIdx = filtered.length + CTX_OPTIONS.length;
+  const total = submitIdx + 1;
+  const clampedCursor = Math.min(cursor, total - 1);
+
+  const selectedIds = catalog.filter(e => checkedModels.has(e.id)).map(e => e.id);
+  const ctxAllOn = checkedCtx.size === CTX_OPTIONS.length;
+  // Only send an explicit ctx set when the user actually narrowed it.
+  const ctxForSubmit = ctxAllOn ? undefined : [...checkedCtx].sort((a, b) => a - b);
+  const totalGB = catalog.filter(e => checkedModels.has(e.id))
+    .reduce((acc, e) => acc + (e.size_bytes || 0), 0) / (1024 ** 3);
+
+  const toggleModel = (id: string) =>
+    setCheckedModels(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleCtx = (n: number) =>
+    setCheckedCtx(prev => { const s = new Set(prev); s.has(n) ? s.delete(n) : s.add(n); return s; });
+
+  const submit = () => {
+    if (selectedIds.length === 0 || checkedCtx.size === 0) return;
+    onSubmit(selectedIds.join(","), ctxForSubmit);
+  };
 
   useInput((input, key) => {
-    if (key.escape || input === "q") { onCancel(); return; }
-    if (key.upArrow)   { setCursor(c => Math.max(0, c - 1)); return; }
-    if (key.downArrow) { setCursor(c => Math.min(catalog.length, c + 1)); return; }
-    if (input === "a") { setAll(true); return; }
-    if (input === "n") { setAll(false); return; }
-    if (key.return || input === " ") {
-      if (cursor < catalog.length) {
-        toggle(cursor);
-      } else {
-        // submit row
-        if (selectedCount === 0) return;
-        const idList = selectedEntries.map(e => e.id).join(",");
-        onSubmit(idList);
+    setNotice(null);
+
+    if (mode === "search") {
+      if (key.return || key.escape) { setMode("nav"); return; }
+      if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); setCursor(0); return; }
+      if (input && /^[\w.\- ]$/.test(input)) { setQuery(q => q + input); setCursor(0); }
+      return;
+    }
+
+    if (mode === "savePrompt") {
+      if (key.escape) { setMode("nav"); setSaveName(""); return; }
+      if (key.return) {
+        const name = saveName.trim().toLowerCase().replace(/\s+/g, "-");
+        if (name && selectedIds.length > 0) {
+          try { saveUserPreset(name, selectedIds, ctxForSubmit); setNotice(`saved preset '${name}' (${selectedIds.length} models)`); }
+          catch (e) { setNotice(`save failed: ${String(e)}`); }
+        }
+        setMode("nav"); setSaveName("");
+        return;
       }
+      if (key.backspace || key.delete) { setSaveName(s => s.slice(0, -1)); return; }
+      if (input && /^[\w.\- ]$/.test(input)) setSaveName(s => s + input);
+      return;
+    }
+
+    // nav mode
+    if (key.escape || input === "q") { onCancel(); return; }
+    if (input === "/") { setMode("search"); return; }
+    if (input === "a") { setCheckedModels(new Set(filtered.map(e => e.id))); return; }
+    if (input === "x") { setCheckedModels(new Set()); return; }
+    if (input === "s") { if (selectedIds.length > 0) { setSaveName(""); setMode("savePrompt"); } return; }
+    if (key.upArrow) { setCursor(c => Math.max(0, Math.min(c, total - 1) - 1)); return; }
+    if (key.downArrow) { setCursor(c => Math.min(total - 1, c + 1)); return; }
+    if (key.return || input === " ") {
+      const c = clampedCursor;
+      if (c < ctxStart) { const e = filtered[c]; if (e) toggleModel(e.id); }
+      else if (c < submitIdx) { toggleCtx(CTX_OPTIONS[c - ctxStart]); }
+      else { submit(); }
     }
   });
 
-  // Total bytes of the current selection (informational, not a gate).
-  const totalGB = (selectedEntries.reduce((acc, e) => acc + (e.size_bytes || 0), 0)) / (1024 ** 3);
-
   return (
     <Box flexDirection="column">
-      <Text bold color="cyan">custom — pick which models to bench</Text>
-      <Box marginTop={1} flexDirection="column">
-        <Text dimColor>
-          Pick one or more entries from the catalog. Context sizes still
-          sweep the defaults (16k / 32k / 64k / 96k / 128k / 160k) filtered
-          by each model's max_context. Ctx-set picking arrives in a future
-          iteration.
+      <Text bold color="cyan">custom — pick models × context sizes</Text>
+
+      <Box marginTop={1}>
+        <Text>
+          <Text dimColor>search: </Text>
+          {mode === "search"
+            ? <Text color="cyan">{query}_</Text>
+            : <Text>{query ? query : <Text dimColor>(press / to filter)</Text>}</Text>}
+          {query && <Text dimColor>  · {filtered.length}/{catalog.length} match</Text>}
         </Text>
       </Box>
+
       <Box marginTop={1} flexDirection="column">
-        {catalog.map((e, i) => {
-          const selected = i === cursor;
-          const mark = checked[i] ? "[x]" : "[ ]";
-          const tag = e.sweep_hint ? `[${e.sweep_hint}]` : "[ ]";
+        {filtered.length === 0 && <Text dimColor>  (no models match the filter)</Text>}
+        {filtered.map((e, i) => {
+          const selected = clampedCursor === i;
+          const mark = checkedModels.has(e.id) ? "[x]" : "[ ]";
+          const tag = e.sweep_hint ? `[${e.sweep_hint}]` : "";
           const sz  = e.size_bytes ? ((e.size_bytes / (1024 ** 3)).toFixed(2) + " GB") : "?";
           return (
             <Text key={e.id} color={selected ? "cyan" : undefined} inverse={selected}>
-              {selected ? "> " : "  "}{mark} {tag} {e.id.padEnd(28)}{e.model.padEnd(30)}<Text dimColor>{sz.padStart(10)}  ctx ≤ {e.max_context ?? "?"}</Text>
+              {selected ? "> " : "  "}{mark} {e.id.padEnd(26)}<Text dimColor>{tag.padEnd(10)}{sz.padStart(9)}  ctx ≤ {e.max_context ?? "?"}</Text>
             </Text>
           );
         })}
-        <Text key="submit" color={cursor === catalog.length ? "cyan" : (selectedCount > 0 ? "green" : "gray")} inverse={cursor === catalog.length}>
-          {cursor === catalog.length ? "> " : "  "}{">"} bench selected ({selectedCount} model{selectedCount === 1 ? "" : "s"}, ~{totalGB.toFixed(1)} GB download)
+      </Box>
+
+      <Box marginTop={1} flexDirection="column">
+        <Text dimColor>context sizes (cross-product with selected models):</Text>
+        {CTX_OPTIONS.map((n, j) => {
+          const idx = ctxStart + j;
+          const selected = clampedCursor === idx;
+          const mark = checkedCtx.has(n) ? "[x]" : "[ ]";
+          return (
+            <Text key={n} color={selected ? "cyan" : undefined} inverse={selected}>
+              {selected ? "> " : "  "}{mark} {ctxLabel(n)}
+            </Text>
+          );
+        })}
+      </Box>
+
+      <Box marginTop={1}>
+        <Text color={clampedCursor === submitIdx ? "cyan" : (selectedIds.length > 0 ? "green" : "gray")} inverse={clampedCursor === submitIdx}>
+          {clampedCursor === submitIdx ? "> " : "  "}{">"} bench selected ({selectedIds.length} model{selectedIds.length === 1 ? "" : "s"} × {checkedCtx.size} ctx, ~{totalGB.toFixed(1)} GB)
         </Text>
       </Box>
-      <Box marginTop={1}>
-        <Text dimColor>↑/↓ move · space/enter toggle · a = all · n = none · enter on submit row · q/esc back</Text>
+
+      {notice && <Box marginTop={1}><Text color="green">{notice}</Text></Box>}
+      {mode === "savePrompt" && (
+        <Box marginTop={1}><Text>save as preset: <Text color="cyan">{saveName}_</Text> <Text dimColor>(enter to save · esc cancel)</Text></Text></Box>
+      )}
+
+      <Box marginTop={1} flexDirection="column">
+        <Text dimColor>↑/↓ move · space/enter toggle · / search · a all · x none · s save preset · enter on submit · q/esc back</Text>
       </Box>
     </Box>
   );

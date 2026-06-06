@@ -59,6 +59,11 @@ param(
     # aren't on disk, then bench each (interleaved + rotated). No final report.
     [switch]$Fetch,
 
+    # Used by plan/bench/all: restrict the context sweep to these ctx sizes
+    # (CSV, e.g. "16384,32768"). Overrides config.context_candidates. Drives
+    # CustomBenchView v2's ctx-checkbox selection.
+    [string]$ContextSizes = "",
+
     # CLI overrides for config fields. These take priority over config.json.
     # Used by: discover (ScanPath, ExcludePattern), bench/report (LlamaServer), all (all of them), init (pre-fills instead of auto-detecting).
     [string[]]$ScanPath = @(),

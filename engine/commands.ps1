@@ -524,6 +524,11 @@ function Invoke-All {
                     $presetMaxCtx = [int]$presetObj.max_ctx
                     $script:_presetMaxCtx = $presetMaxCtx
                 }
+                # A user-saved preset (CustomBenchView v2) may pin an exact ctx
+                # set, not just a ceiling - honor it for the context sweep.
+                if ($presetObj.context_sizes) {
+                    $script:_presetCtxSizes = @($presetObj.context_sizes)
+                }
                 Write-Host ("[all] preset '{0}': {1} entries, max_ctx={2}" -f $Preset, $samples.Count, $(if ($presetMaxCtx -gt 0) { $presetMaxCtx } else { '(no cap)' })) -ForegroundColor Cyan
             }
             if ($CatalogId) {

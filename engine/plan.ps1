@@ -139,6 +139,23 @@ function Invoke-Plan {
     $perModelCaps = Get-CatalogMaxContextMap
     $levelMap = Get-CatalogLevelMap
 
+    # Effective context candidates for the context sweep. -ContextSizes (CSV) or
+    # a preset's context_sizes override the config defaults; KV per size is taken
+    # from the matching config candidate, else q8_0. This is what CustomBenchView
+    # v2's ctx-checkbox set drives.
+    $ctxCandidates = $cfg.context_candidates
+    $ctxOverride = $null
+    if ($ContextSizes) {
+        $ctxOverride = @($ContextSizes -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
+    } elseif ($script:_presetCtxSizes) {
+        $ctxOverride = @($script:_presetCtxSizes | ForEach-Object { [int]$_ })
+    }
+    if ($ctxOverride -and $ctxOverride.Count -gt 0) {
+        $kvByCtx = @{}
+        foreach ($c in $cfg.context_candidates) { $kvByCtx[[int]$c.ctx] = $c.kv }
+        $ctxCandidates = @($ctxOverride | ForEach-Object { @{ ctx = $_; kv = $(if ($kvByCtx.ContainsKey($_)) { $kvByCtx[$_] } else { 'q8_0' }) } })
+    }
+
     $plan = @()
     $idx = 1
     foreach ($m in $catalog) {
@@ -160,7 +177,7 @@ function Invoke-Plan {
         switch ($sweep) {
             "context" {
                 $skipped = 0
-                foreach ($c in $cfg.context_candidates) {
+                foreach ($c in $ctxCandidates) {
                     if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $globalCtxCap -PerModelCap $perModelCap)) {
                         $skipped++
                         continue
