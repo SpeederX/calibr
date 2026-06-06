@@ -220,7 +220,9 @@ Worth doing because the GPU is at its hottest during eval, not load.
 Today's peak numbers are biased low.
 
 ### CustomBenchView v2
-*Estimate: 2h.*
+*DONE (`feat/bench-realign`). All three pieces shipped: typed search,
+context-size checkbox set (drives the new engine `-ContextSizes` / preset
+`context_sizes`), and save-as-user-preset (`saveUserPreset`). Kept for history.*
 
 v1 (already shipped) lets the user multi-pick models from the catalog.
 v2 adds the rest of what the user designed:
