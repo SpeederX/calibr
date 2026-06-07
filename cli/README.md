@@ -112,8 +112,10 @@ Once the starter run works, repeat `guided run` and switch `which models` to
 For sub-tasks (re-bench one model, change run count):
 
 4. From the menu pick **advanced tools** -> **bench** -> configure model filter,
-   tier, runs, force flag, rotation -> start. If you want to keep the downloaded
-   `.gguf` files on disk after the bench, toggle `rotate: no`.
+   which models (level), runs, force flag, rotation -> start. Choosing a level
+   downloads + benches that level's curated models; picking a single model
+   benches just that one (downloading it first if it isn't on disk). If you want
+   to keep the downloaded `.gguf` files after the bench, toggle `rotate: no`.
 
 ## Privacy and model licenses
 
@@ -163,7 +165,7 @@ manual control:
 |---|---|
 | `init` | Detect hardware, auto-fetch llama.cpp if requested, write `config.json` with sane defaults. |
 | `discover` | Scan `scan_paths` for `*.gguf`, build the model catalog. |
-| `plan` | Expand the catalog into a sweep of bench configurations per tier. |
+| `plan` | Expand the catalog into bench configurations, sweeping the right dimension per model (context / MoE-cpu / offload). |
 | `bench` | Run each pending plan entry, write a result JSON per config. When models came from `get-models`, each model's .gguf is deleted from disk after its configs all finish (use `-KeepDownloads` to opt out). |
 | `report` | Build the HTML dashboard and per-config `.bat` launchers. |
 | `all` | discover → plan → bench → report, end to end. With `catalog: on`, fetches the curated set first; with auto-fetch on, downloads llama.cpp when setup is incomplete. |

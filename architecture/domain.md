@@ -24,15 +24,26 @@ migrates them on first run.
 
 ## Bench domain
 
-### Tier
-A planning category that determines which sweep dimension applies to a model:
+### Sweep
+The planning dimension that applies to a model, computed from its own
+properties (`Get-SweepKind`). Replaces the former A/B/C "tier" — it names what
+varies, not a letter:
 
-- **Tier A** — dense model whose weights + mmproj + overhead fit inside the
-  VRAM safety budget. Sweep over `(ctx, KV-quant)` pairs.
-- **Tier B** — MoE (Mixture of Experts) model. Sweep over `--n-cpu-moe`
-  values to find the optimal CPU-vs-GPU expert split.
-- **Tier C** — dense model that exceeds the VRAM safety budget and is not
-  MoE. Sweep over `--gpu-layers` for partial offload.
+- **context** — dense model whose weights + mmproj + overhead fit inside the
+  VRAM safety budget. Sweep over `(ctx, KV-quant)` pairs. (was Tier A)
+- **moe-cpu** — MoE (Mixture of Experts) model. Sweep over `--n-cpu-moe`
+  values to find the optimal CPU-vs-GPU expert split. (was Tier B)
+- **offload** — dense model that exceeds the VRAM safety budget and is not
+  MoE. Sweep over `--gpu-layers` for partial offload. (was Tier C)
+
+### Level
+The hardware class a curated model belongs to: `low` / `middle` / `high` /
+`ultra`. The bench presets (`default_bench_presets.json`) partition the curated
+catalog disjointly, so each curated model maps to exactly one level; user-owned
+models not in any preset have no level (shown as `custom`). Level is what the
+CLI's "which models" selector and the report's level column/tabs use. It is
+orthogonal to **sweep**: level says *which hardware tier of models*, sweep says
+*how a given model is benchmarked*.
 
 ### VRAM safety budget
 `vram_total_mib × vram_safety_budget_pct` (default 0.95). The threshold

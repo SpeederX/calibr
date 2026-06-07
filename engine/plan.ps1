@@ -4,19 +4,49 @@
 # ============================================================================
 # SUBCOMMAND: plan
 # ============================================================================
-function Get-Tier {
+function Get-SweepKind {
+    # Which dimension the plan sweeps for a model, from its own properties:
+    #   moe-cpu : mixture-of-experts -> sweep --n-cpu-moe (how many expert
+    #             layers stay on CPU)
+    #   context : fits the VRAM budget -> sweep context size + KV-cache quant
+    #   offload : too big for one GPU -> sweep --gpu-layers (how much offloads)
+    # (Formerly the A/B/C "tier"; renamed to say what it MEANS, not a letter.)
     param($meta, $cfg)
-    if ($meta.is_moe) { return "B" }   # MoE always goes through --n-cpu-moe sweep
+    if ($meta.is_moe) { return "moe-cpu" }
     $budget = [int]$cfg.hardware.vram_safety_budget_mib
-    $overhead = [int]$cfg.tier_classification.overhead_mib
+    $overhead = [int]$cfg.planning.overhead_mib
     $mmprojMib = if ($meta.mmproj) { [int]((Get-Item $meta.mmproj).Length / 1MB) } else { 0 }
     $needed = $meta.size_mib + $mmprojMib + $overhead
-    if ($needed -lt $budget) { return "A" }
-    return "C"
+    if ($needed -lt $budget) { return "context" }
+    return "offload"
+}
+
+function Get-CatalogLevelMap {
+    # Builds {hf_file.ToLower() -> level} where level is the hardware preset
+    # (low / middle / high / ultra) a curated model belongs to. The presets
+    # partition the curated catalog disjointly, so each model maps to exactly
+    # one level. User-owned models (not in models_catalog.json) get no level
+    # (lookup miss -> $null), which is correct: 'level' is a curated concept.
+    $map = @{}
+    try {
+        $catalog = Get-ModelCatalog
+        $byId = @{}
+        foreach ($e in $catalog) { if ($e.id -and $e.hf_file) { $byId[$e.id] = $e.hf_file } }
+        $presets = Get-PresetCatalog
+        foreach ($lvl in @('low','middle','high','ultra')) {
+            $p = $presets[$lvl]
+            if (-not $p -or -not $p.models) { continue }
+            if ($p.models -is [string] -and $p.models -eq '*') { continue }
+            foreach ($id in @($p.models)) {
+                if ($byId.ContainsKey($id)) { $map[$byId[$id].ToLower()] = $lvl }
+            }
+        }
+    } catch { }
+    return $map
 }
 
 function New-PlanItem {
-    param($meta, $tier, $extraArgs, $label, $idx)
+    param($meta, $sweep, $level, $extraArgs, $label, $idx)
     # IDs used to be 'T{idx:D3}_{model_variant}_{label}'. The idx prefix made
     # them NON-deterministic across plan regenerations: re-running discover
     # with a different catalog (or the per-sample loop in 'all -FetchCatalog'
@@ -43,7 +73,8 @@ function New-PlanItem {
         model       = $meta.model
         variant     = $meta.variant
         series      = $meta.series
-        tier        = $tier
+        sweep       = $sweep
+        level       = $level
         label       = "$($meta.model) $($meta.variant) @ $label"
         extra_args  = $extraArgs
     }
@@ -51,7 +82,7 @@ function New-PlanItem {
 
 function Get-CatalogMaxContextMap {
     # Builds a hashtable {hf_file.ToLower() -> max_context (int)} from
-    # models_catalog.json. Used by Invoke-Plan to skip Tier A candidates above
+    # models_catalog.json. Used by Invoke-Plan to skip context candidates above
     # the model's officially-supported ctx. User-owned models (not in
     # models_catalog.json by basename) fall through to the global max_context_cap
     # only - a per-model cap for those would require reading GGUF metadata,
@@ -97,7 +128,7 @@ function Invoke-Plan {
     $globalCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
     # If 'all -Preset' set a preset-level ctx ceiling, apply the MORE
     # restrictive of (preset, config) as the effective global cap. This
-    # is how presets like 'low' (max_ctx 32k) actually narrow the Tier A
+    # is how presets like 'low' (max_ctx 32k) actually narrow the context
     # sweep without needing a per-call -MaxCtx flag.
     if ($script:_presetMaxCtx -and [int]$script:_presetMaxCtx -gt 0) {
         $presetCap = [int]$script:_presetMaxCtx
@@ -106,13 +137,33 @@ function Invoke-Plan {
         }
     }
     $perModelCaps = Get-CatalogMaxContextMap
+    $levelMap = Get-CatalogLevelMap
+
+    # Effective context candidates for the context sweep. -ContextSizes (CSV) or
+    # a preset's context_sizes override the config defaults; KV per size is taken
+    # from the matching config candidate, else q8_0. This is what CustomBenchView
+    # v2's ctx-checkbox set drives.
+    $ctxCandidates = $cfg.context_candidates
+    $ctxOverride = $null
+    if ($ContextSizes) {
+        $ctxOverride = @($ContextSizes -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
+    } elseif ($script:_presetCtxSizes) {
+        $ctxOverride = @($script:_presetCtxSizes | ForEach-Object { [int]$_ })
+    }
+    if ($ctxOverride -and $ctxOverride.Count -gt 0) {
+        $kvByCtx = @{}
+        foreach ($c in $cfg.context_candidates) { $kvByCtx[[int]$c.ctx] = $c.kv }
+        $ctxCandidates = @($ctxOverride | ForEach-Object { @{ ctx = $_; kv = $(if ($kvByCtx.ContainsKey($_)) { $kvByCtx[$_] } else { 'q8_0' }) } })
+    }
 
     $plan = @()
     $idx = 1
     foreach ($m in $catalog) {
         if ($Model -and $m.model -notmatch $Model) { continue }
-        $tier = Get-Tier -meta $m -cfg $cfg
-        if ($Tier -and $tier -ne $Tier) { continue }
+        $sweep = Get-SweepKind -meta $m -cfg $cfg
+        $bnameLvl = [System.IO.Path]::GetFileName($m.path)
+        $level = if ($bnameLvl -and $levelMap.ContainsKey($bnameLvl.ToLower())) { $levelMap[$bnameLvl.ToLower()] } else { $null }
+        if ($Level -and $level -ne $Level) { continue }
 
         # Per-model ctx cap if the .gguf basename matches a curated sample.
         # User-owned files won't match -> $perModelCap stays 0 -> only the
@@ -123,31 +174,31 @@ function Invoke-Plan {
             $perModelCap = $perModelCaps[$bname.ToLower()]
         }
 
-        switch ($tier) {
-            "A" {
+        switch ($sweep) {
+            "context" {
                 $skipped = 0
-                foreach ($c in $cfg.tier_a_candidates) {
+                foreach ($c in $ctxCandidates) {
                     if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $globalCtxCap -PerModelCap $perModelCap)) {
                         $skipped++
                         continue
                     }
                     $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base"
-                    $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
+                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
                 }
                 if ($skipped -gt 0 -and $perModelCap -gt 0) {
-                    Write-Host ("  skipped {0} tier-A candidates above {1}'s max_context ({2})" -f $skipped, $m.model, $perModelCap) -ForegroundColor DarkGray
+                    Write-Host ("  skipped {0} context candidates above {1}'s max_context ({2})" -f $skipped, $m.model, $perModelCap) -ForegroundColor DarkGray
                 }
             }
-            "B" {
-                foreach ($n in $cfg.tier_classification.moe_ncpumoe_sweep) {
+            "moe-cpu" {
+                foreach ($n in $cfg.planning.moecpu_sweep) {
                     $argStr = "--ctx-size 16384 --gpu-layers 99 --n-cpu-moe $n --cache-type-k q8_0 --cache-type-v q8_0 $base"
-                    $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ncpumoe_$n" -idx $idx); $idx++
+                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ncpumoe_$n" -idx $idx); $idx++
                 }
             }
-            "C" {
-                foreach ($n in $cfg.tier_classification.c_ngl_sweep) {
+            "offload" {
+                foreach ($n in $cfg.planning.offload_sweep) {
                     $argStr = "--ctx-size 16384 --gpu-layers $n --cache-type-k q8_0 --cache-type-v q8_0 $base"
-                    $plan += (New-PlanItem -meta $m -tier $tier -extraArgs $argStr -label "ngl_$n" -idx $idx); $idx++
+                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ngl_$n" -idx $idx); $idx++
                 }
             }
         }
@@ -156,7 +207,7 @@ function Invoke-Plan {
     $plan | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_PLAN
     Write-Host ("Plan: {0} test configs -> {1}" -f $plan.Count, $CALIBR_PLAN) -ForegroundColor Green
     if ($DryRun) {
-        $plan | ForEach-Object { Write-Host ("  [{0}] {1}" -f $_.tier, $_.label) }
+        $plan | ForEach-Object { Write-Host ("  [{0}] {1}" -f $(if ($_.level) { $_.level } else { 'custom' }), $_.label) }
     }
 }
 

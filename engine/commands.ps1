@@ -516,7 +516,7 @@ function Invoke-All {
             # actually deliver the 'peak ~ largest single file' promise the
             # CLI's pre-flight gate shows.
             $samples = Get-ModelCatalog
-            # Preset narrows the catalog to a hardware-tier-curated subset
+            # Preset narrows the catalog to a hardware-level-curated subset
             # (low / middle / high / user-saved). Applied BEFORE the
             # other filters so -CatalogId / -Model can further narrow
             # inside the preset.
@@ -531,6 +531,11 @@ function Invoke-All {
                 if ($null -ne $presetObj.max_ctx) {
                     $presetMaxCtx = [int]$presetObj.max_ctx
                     $script:_presetMaxCtx = $presetMaxCtx
+                }
+                # A user-saved preset (CustomBenchView v2) may pin an exact ctx
+                # set, not just a ceiling - honor it for the context sweep.
+                if ($presetObj.context_sizes) {
+                    $script:_presetCtxSizes = @($presetObj.context_sizes)
                 }
                 Write-Host ("[all] preset '{0}': {1} entries, max_ctx={2}" -f $Preset, $samples.Count, $(if ($presetMaxCtx -gt 0) { $presetMaxCtx } else { '(no cap)' })) -ForegroundColor Cyan
             }
@@ -581,36 +586,7 @@ function Invoke-All {
             }
 
             # Phase 1+: per-sample download + bench + rotate.
-            $savedCatalogId = $script:CatalogId
-            $savedModel    = $script:Model
-            $idx = 0
-            foreach ($s in $samples) {
-                $idx++
-                Write-Host ""
-                # Two prefixes: the bracketed [sample X/N] is CLI-parseable
-                # (RunView surfaces it as the outer progress strip); the
-                # second line is human-readable.
-                Write-Host ("[sample {0}/{1}] {2}" -f $idx, $samples.Count, $s.id)
-                Write-Host ("--- sample {0}/{1} : {2} ({3}) ---" -f $idx, $samples.Count, $s.id, $s.model) -ForegroundColor Cyan
-
-                $script:CatalogId = $s.id
-                $script:Model    = ""   # CatalogId narrows enough on its own
-                Invoke-FetchModels
-
-                # Re-discover so the freshly-downloaded file enters the catalog;
-                # re-plan because the catalog grew.
-                $script:CatalogId = $savedCatalogId
-                Invoke-Discover
-                Invoke-Plan
-
-                # Bench narrows to this sample's model - Invoke-RotationCheck
-                # then has a chance to delete the .gguf the moment its last
-                # config finishes successfully.
-                $script:Model = $s.model
-                Invoke-Bench
-            }
-            $script:CatalogId = $savedCatalogId
-            $script:Model    = $savedModel
+            Invoke-SampleFetchBench -Samples $samples
 
             Write-Host ""
             Write-Host "--- final report ---" -ForegroundColor DarkCyan
@@ -618,6 +594,85 @@ function Invoke-All {
         } else {
             Invoke-Discover; Invoke-Plan; Invoke-Bench; Invoke-Report
         }
+}
+
+# ============================================================================
+# SHARED: interleaved download + bench + rotate over a set of curated samples
+# ============================================================================
+function Invoke-SampleFetchBench {
+    # Walk curated samples one at a time: download -> discover -> plan -> bench
+    # just that model -> rotation deletes it. Keeps peak disk bounded to one
+    # model. Shared by 'all -FetchCatalog' and 'bench -Fetch'.
+    param([object[]]$Samples)
+    $savedCatalogId = $script:CatalogId
+    $savedModel     = $script:Model
+    $idx = 0
+    foreach ($s in $Samples) {
+        $idx++
+        Write-Host ""
+        # Two prefixes: the bracketed [sample X/N] is CLI-parseable (RunView
+        # surfaces it as the outer progress strip); the second is human-readable.
+        Write-Host ("[sample {0}/{1}] {2}" -f $idx, $Samples.Count, $s.id)
+        Write-Host ("--- sample {0}/{1} : {2} ({3}) ---" -f $idx, $Samples.Count, $s.id, $s.model) -ForegroundColor Cyan
+
+        $script:CatalogId = $s.id
+        $script:Model     = ""   # CatalogId narrows enough on its own
+        Invoke-FetchModels
+
+        # Re-discover so the freshly-downloaded file enters the catalog;
+        # re-plan because the catalog grew.
+        $script:CatalogId = $savedCatalogId
+        Invoke-Discover
+        Invoke-Plan
+
+        # Bench narrows to this sample's model - Invoke-RotationCheck then has a
+        # chance to delete the .gguf the moment its last config finishes.
+        $script:Model = $s.model
+        Invoke-Bench
+    }
+    $script:CatalogId = $savedCatalogId
+    $script:Model     = $savedModel
+}
+
+# ============================================================================
+# SUBCOMMAND: bench -Fetch (download + bench a curated level, no report)
+# ============================================================================
+function Invoke-BenchByLevel {
+    # 'bench -Fetch [-Level X] [-Model Y]': download the curated models of the
+    # level (and/or matching -Model) that aren't on disk, then bench each
+    # (interleaved + rotated, so peak disk stays ~one model). Unlike guided run
+    # it does NOT build the final report - that's guided run's job.
+    $samples = Get-ModelCatalog
+    if ($Level) {
+        $presetObj = Get-Preset -Name $Level
+        if ($null -eq $presetObj) {
+            $known = ((Get-PresetCatalog).Keys | Sort-Object) -join ', '
+            throw "Level/preset '$Level' not found. Known: $known"
+        }
+        $samples = Select-CatalogByPreset -catalog $samples -preset $presetObj
+        if ($null -ne $presetObj.max_ctx) { $script:_presetMaxCtx = [int]$presetObj.max_ctx }
+    }
+    if ($Model) { $samples = $samples | Where-Object { $_.model -match $Model } }
+    $samples = @($samples)
+    if ($samples.Count -eq 0) {
+        Write-Host "No curated models match the current -Level / -Model. Nothing to fetch + bench." -ForegroundColor Yellow
+        return
+    }
+
+    # Point scan_paths at the download destination if the user hasn't set one,
+    # else the per-sample discover would throw 'scan_paths is empty'.
+    $cfgInit = Get-Config
+    $scanEmpty = (-not $cfgInit.scan_paths -or $cfgInit.scan_paths.Count -eq 0)
+    $cliEmpty  = (-not $script:ScanPath  -or $script:ScanPath.Count  -eq 0)
+    if ($scanEmpty -and $cliEmpty) {
+        $defaultDl = if ($Destination) { $Destination } else { $CALIBR_DOWNLOADED_MODELS_DIR }
+        $script:ScanPath = @($defaultDl)
+        Write-Host "[bench] No scan_paths configured. Will scan $defaultDl." -ForegroundColor Cyan
+    }
+
+    Write-Host ""
+    Write-Host ("=== bench -Fetch : {0} curated model(s), download + bench, rotated ===" -f $samples.Count) -ForegroundColor Cyan
+    Invoke-SampleFetchBench -Samples $samples
 }
 
 # ============================================================================
@@ -663,19 +718,23 @@ function Invoke-Help {
             Examples = @( "calibr discover", "calibr discover -ScanPath D:\models" )
         }
         "plan" = @{
-            Usage    = "calibr plan [-Model <regex>] [-Tier {A,B,C}] [-DryRun]"
+            Usage    = "calibr plan [-Model <regex>] [-Level {low,middle,high,ultra}] [-DryRun]"
             Flags    = @(
                 "-Model <regex>    Only plan models whose name matches"
-                "-Tier {A|B|C}     Only plan tests for the selected tier"
+                "-Level <level>    Only plan models in that hardware level (low|middle|high|ultra)"
                 "-DryRun           Print what would be planned, don't write plan.json"
             )
             Examples = @( "calibr plan", "calibr plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "calibr bench [-Model <regex>] [-Tier {A,B,C}] [-Id <wildcard>] [-Force] [-DryRun] [-KeepDownloads]"
+            Usage    = "calibr bench [-Model <regex>] [-Level {low,middle,high,ultra}] [-Fetch] [-Id <wildcard>] [-Force] [-DryRun] [-KeepDownloads]"
             Flags    = @(
                 "-Model <regex>    Only run configs whose model name matches"
-                "-Tier {A|B|C}     Only run configs for this tier"
+                "-Level <level>    Only run configs for that hardware level (low|middle|high|ultra)"
+                "-Fetch            Download the curated models of -Level (and/or -Model) that"
+                "                  aren't on disk, then bench each (interleaved + rotated, so"
+                "                  peak disk stays ~one model). No final report (use 'all' or"
+                "                  'report' for that)."
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
                 "-DryRun           List configs that would run, don't execute"
@@ -688,7 +747,8 @@ function Invoke-Help {
             Examples = @(
                 "calibr bench"
                 "calibr bench -Model Qwen3.5-9B"
-                "calibr bench -Tier A -Force"
+                "calibr bench -Level low -Force"
+                "calibr bench -Level low -Fetch"
                 "calibr bench -KeepDownloads"
             )
         }

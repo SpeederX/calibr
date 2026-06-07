@@ -1,6 +1,6 @@
 // Generate report_ui/demo-report.html from synthetic data so the redesign
 // can be eyeballed in a browser without running a real bench. 7 models,
-// 21 configs, varied tiers / WDDM flags / power data so every section of
+// 21 configs, varied levels / WDDM flags / power data so every section of
 // the UI has something to render.
 //
 // Run: node tests/smoke/generate-demo-report.mjs
@@ -23,13 +23,13 @@ const tpl = await readFile(TPL_PATH, "utf8");
 // efficiency scorer has data to work with, but two rows leave them null
 // to exercise the speed-fallback branch.
 const MODELS = [
-  { m:"Qwen3.5-2B-Q8",  s:"Qwen3.5",  v:"Q8_0",  tier:"A", vramBase:2400, tps:55  },
-  { m:"Gemma-4-E4B-Q4", s:"Gemma",    v:"Q4_K_M",tier:"A", vramBase:3100, tps:48  },
-  { m:"Phi-3.5-mini",   s:"Phi",      v:"Q5_K_M",tier:"A", vramBase:2700, tps:62  },
-  { m:"Qwen3.5-9B-Q4",  s:"Qwen3.5",  v:"Q4_K_M",tier:"B", vramBase:6200, tps:28  },
-  { m:"Gemma-4-E12B-Q4",s:"Gemma",    v:"Q4_K_M",tier:"B", vramBase:7300, tps:22  },
-  { m:"Llama-3.2-3B",   s:"Llama",    v:"Q4_K_M",tier:"A", vramBase:2200, tps:71  },
-  { m:"Phi-2-2.7B",     s:"Phi",      v:"Q4_K_M",tier:"A", vramBase:2000, tps:81  },
+  { m:"Qwen3.5-2B-Q8",  s:"Qwen3.5",  v:"Q8_0",  level:"middle", sweep:"context", vramBase:2400, tps:55  },
+  { m:"Gemma-4-E4B-Q4", s:"Gemma",    v:"Q4_K_M",level:"middle", sweep:"context", vramBase:3100, tps:48  },
+  { m:"Phi-3.5-mini",   s:"Phi",      v:"Q5_K_M",level:"low",    sweep:"context", vramBase:2700, tps:62  },
+  { m:"Qwen3.5-9B-Q4",  s:"Qwen3.5",  v:"Q4_K_M",level:"high",   sweep:"moe-cpu", vramBase:6200, tps:28  },
+  { m:"Gemma-4-E12B-Q4",s:"Gemma",    v:"Q4_K_M",level:"high",   sweep:"moe-cpu", vramBase:7300, tps:22  },
+  { m:"Llama-3.2-3B",   s:"Llama",    v:"Q4_K_M",level:"low",    sweep:"context", vramBase:2200, tps:71  },
+  { m:"Phi-2-2.7B",     s:"Phi",      v:"Q4_K_M",level:"low",    sweep:"context", vramBase:2000, tps:81  },
 ];
 const CTXES = [16384, 32768, 65536];
 
@@ -41,8 +41,8 @@ for (const md of MODELS) {
     const ctxRatio = ctx / 16384;
     const vram = Math.round(md.vramBase + 250 * Math.log2(ctxRatio + 1));
     const tps  = +(md.tps * (1 - 0.07 * Math.log2(ctxRatio + 1))).toFixed(2);
-    // Last config of B-tier models tips into WDDM paging for variety.
-    const pages = (md.tier === "B" && ctx === 65536);
+    // Last config of high-level models tips into WDDM paging for variety.
+    const pages = (md.level === "high" && ctx === 65536);
     const shared = pages ? 1200 : 0;
     const fit = pages ? "failed_but_running" : (vram > 7000 ? "unknown" : "success");
     // Skip extended metrics on two rows to exercise the speed-fallback.
@@ -52,7 +52,7 @@ for (const md of MODELS) {
     DATA.push({
       id: `T${String(i).padStart(3,"0")}_${md.m.replace(/[^\w]/g,"_")}_${label}`,
       label,
-      model: md.m, series: md.s, variant: md.v, tier: md.tier,
+      model: md.m, series: md.s, variant: md.v, level: md.level, sweep: md.sweep,
       prompt_tps: tps * 6,
       eval_tps: tps,
       vram_peak_mib: vram,

@@ -4,15 +4,15 @@
     calibr -- crawler/tester for GGUF models via llama.cpp
 
 .DESCRIPTION
-    Discovers GGUF models in configured paths, classifies each by tier based on
-    a VRAM safety budget, generates and runs a benchmark plan with WDDM-paging
-    detection on Windows, and emits an HTML report plus per-model .bat launchers.
+    Discovers GGUF models in configured paths, assigns curated hardware levels,
+    generates and runs a benchmark plan with WDDM-paging detection on Windows,
+    and emits an HTML report plus per-model .bat launchers.
 
 .EXAMPLE
     calibr init                     # first-time setup: detect HW, write config.json
     calibr discover                 # scan for .gguf files
     calibr plan                     # generate test plan
-    calibr bench -Tier A            # run only Tier A benchmarks
+    calibr bench -Level low         # run only low-level benchmarks
     calibr bench -Model Qwen3.5-9B  # run only this model
     calibr report                   # build HTML + .bat
     calibr all                      # full pipeline (works on whatever .gguf are on disk)
@@ -49,11 +49,20 @@ param(
 
     [string]$Config = "",
     [string]$Model = "",
-    [ValidateSet("", "A", "B", "C")][string]$Tier = "",
+    [ValidateSet("", "low", "middle", "high", "ultra")][string]$Level = "",
     [string]$Id = "",
     [switch]$DryRun,
     [switch]$Force,
     [switch]$NonInteractive,
+
+    # Used by bench: download the curated models of -Level (and/or -Model) that
+    # aren't on disk, then bench each (interleaved + rotated). No final report.
+    [switch]$Fetch,
+
+    # Used by plan/bench/all: restrict the context sweep to these ctx sizes
+    # (CSV, e.g. "16384,32768"). Overrides config.context_candidates. Drives
+    # CustomBenchView v2's ctx-checkbox selection.
+    [string]$ContextSizes = "",
 
     # CLI overrides for config fields. These take priority over config.json.
     # Used by: discover (ScanPath, ExcludePattern), bench/report (LlamaServer), all (all of them), init (pre-fills instead of auto-detecting).
@@ -190,7 +199,7 @@ switch ($Command) {
     "init"               { Invoke-Init }
     "discover"           { Invoke-Discover }
     "plan"               { Invoke-Plan }
-    "bench"              { Invoke-Bench }
+    "bench"              { if ($Fetch) { Invoke-BenchByLevel } else { Invoke-Bench } }
     "report"             { Invoke-Report }
     "status"             { Invoke-Status }
     "config"             { Invoke-Config }

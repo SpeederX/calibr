@@ -5,7 +5,7 @@ only open work, no shipped feature archaeology.
 
 Current baseline:
 
-- npm package line: `0.1.4`.
+- npm package line: `0.1.6`.
 - `dev` contains the Phase-1 CLI, engine split, mirrored tests, expanded
   presets, report redesign, guided llama.cpp auto-fetch, Linux support,
   `doctor`, the guided-run / advanced-tools menu split, and readiness badges.
@@ -52,14 +52,6 @@ The happy path is shipped. Remaining useful hardening:
 The results screen can show winners, but cannot re-run a selected config yet.
 Add an action that launches `bench -Force` with the model/config already
 selected from the result row.
-
-### CustomBenchView v2
-
-v1 supports multi-picking models. v2 should add:
-
-- typed model search
-- context-size checkbox set: `16k`, `32k`, `64k`, `96k`, `128k`, `160k`
-- "save as user preset" into `data/user_bench_presets.json`
 
 ### Per-sample elapsed timer
 
@@ -214,14 +206,14 @@ spill      : WDDM shared counter -> GTT/radeontop -> 0
 
 ### AMD dedicated GPUs via amd-smi
 
-Experimental provider is wired on `feat/experimental-rocm-metal`: `amd-smi`
-is preferred for ROCm-class metrics when present, with `radeontop` / sysfs
-fallbacks preserved. Remaining work is real-machine validation on a dedicated
-AMD GPU and any parser tuning needed for the exact `amd-smi --json` shape.
+Experimental provider wiring is in the current line: `amd-smi` is preferred
+for ROCm-class metrics when present, with `radeontop` / sysfs fallbacks
+preserved. Remaining work is real-machine validation on a dedicated AMD GPU
+and any parser tuning needed for the exact `amd-smi --json` shape.
 
 ### Experimental macOS / Metal validation
 
-Experimental detection is wired on `feat/experimental-rocm-metal`:
+Experimental detection is wired in the current line:
 
 - `sysctl` / `vm_stat` for CPU + memory
 - `system_profiler` for GPU + Metal capability

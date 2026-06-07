@@ -1,10 +1,10 @@
 {
   "$schema_version": 1,
   "_notes": [
-    "Pre-defined model groupings for the 'all' command. Each preset is a list of catalog_id entries from models_catalog.json plus an optional max_ctx ceiling that further narrows the Tier A context sweep.",
+    "Pre-defined model groupings for the 'all' command. Each preset is a list of catalog_id entries from models_catalog.json plus an optional max_ctx ceiling that further narrows the context sweep.",
     "The 'custom' name is reserved at the CLI level: it triggers CustomBenchView for fine-grained model + context picking and is not defined here.",
     "User-saved presets live in data/user_bench_presets.json and override defaults with the same name (deep-replace, not merge — pick a different name if you want to keep both).",
-    "Tier assignment rule: a model goes into a preset whose VRAM target roughly matches the model's GGUF footprint plus headroom for KV cache and compute buffers (typically ~30-40% on top of the file size). A model can appear in only one preset; if you want to bench a mid-size model on low hardware via CPU offload, use 'custom'.",
+    "Level assignment rule: a model goes into a preset whose VRAM target roughly matches the model's GGUF footprint plus headroom for KV cache and compute buffers (typically ~30-40% on top of the file size). A model can appear in only one preset; if you want to bench a mid-size model on low hardware via CPU offload, use 'custom'.",
     "low      = files up to ~2.5 GB    (2-4 GB VRAM target)",
     "middle   = files ~2.5-6 GB        (8 GB VRAM target; compact MoE entries may be larger on disk when active params stay small)",
     "high     = files ~7-17 GB         (12-24 GB VRAM target; 12B-27B dense or coder/reasoning models)",

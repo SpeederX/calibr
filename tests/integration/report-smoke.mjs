@@ -26,7 +26,7 @@ let body = m[1];
 // so we exercise both branches of the scorers (efficiency falls back to
 // speed for the minimal record).
 const DATA = [
-  { id:"a", label:"ctx16k_kv_q8", model:"M1", series:"M", variant:"Q8", tier:"A",
+  { id:"a", label:"ctx16k_kv_q8", model:"M1", series:"M", variant:"Q8", level:"low", sweep:"context",
     prompt_tps:100, eval_tps:50, vram_peak_mib:2000, shared_peak_mib:0, load_sec:2,
     layers_offloaded:"32/32", fit_status:"success", wddm_vram_saturation:0.2,
     wddm_flag_high_vram:false, wddm_flag_shared_pos:false, extra_args:"--ctx-size 16384",
@@ -34,7 +34,7 @@ const DATA = [
     ttft_sec:0.4, gpu_power_peak_w:120, gpu_temp_peak_c:65, gpu_util_avg_pct:92,
     ram_used_peak_mib:1024, ram_baseline_mib:512,
     model_path:"C:\\fake\\m1.gguf", mmproj_path:null },
-  { id:"b", label:"ctx32k_kv_q8", model:"M2", series:"M", variant:"Q4", tier:"B",
+  { id:"b", label:"ctx32k_kv_q8", model:"M2", series:"M", variant:"Q4", level:"high", sweep:"moe-cpu",
     prompt_tps:80, eval_tps:40, vram_peak_mib:4096, shared_peak_mib:600, load_sec:3,
     layers_offloaded:"32/32", fit_status:"failed_but_running", wddm_vram_saturation:0.6,
     wddm_flag_high_vram:false, wddm_flag_shared_pos:true, extra_args:"--ctx-size 32768",
@@ -44,7 +44,7 @@ const DATA = [
     model_path:"C:\\fake\\m2.gguf", mmproj_path:null },
   // ok=false with an unsupported architecture — exercises the no-winner /
   // failure-label rendering path that the user hit on Gemma-4-E4B / Granite.
-  { id:"c", label:"ctx16k_kv_q8", model:"M3", series:"M", variant:"Q4", tier:"A",
+  { id:"c", label:"ctx16k_kv_q8", model:"M3", series:"M", variant:"Q4", level:"low", sweep:"context",
     prompt_tps:0, eval_tps:0, vram_peak_mib:808, shared_peak_mib:0, load_sec:6,
     layers_offloaded:null, fit_status:"unknown", wddm_vram_saturation:0.1,
     wddm_flag_high_vram:false, wddm_flag_shared_pos:false, extra_args:"--ctx-size 16384",

@@ -328,7 +328,8 @@ export function readStatus(): Status {
 export interface Result {
   id: string;
   label: string;
-  tier: "A" | "B" | "C" | string;
+  level?: "low" | "middle" | "high" | "ultra" | string | null;
+  sweep?: "context" | "moe-cpu" | "offload" | string | null;
   model: string;
   variant: string;
   series?: string;
@@ -704,7 +705,7 @@ export interface CatalogEntry {
   model: string;
   series?: string;
   variant?: string;
-  tier_hint?: "A" | "B" | "C" | string;
+  sweep_hint?: "context" | "moe-cpu" | "offload" | string;
   hf_repo: string;
   hf_file: string;
   target_dir: string;
@@ -767,6 +768,40 @@ export interface Preset {
   hardware_target?: string;
   models: "*" | string[];
   max_ctx?: number | null;
+  context_sizes?: number[];
+}
+
+export const CALIBR_USER_PRESETS = join(CALIBR_DATA_DIR, "user_bench_presets.json");
+
+/**
+ * Save (or replace) a named preset in data/user_bench_presets.json. Used by
+ * CustomBenchView v2 to persist a model selection (+ optional ctx-size set) for
+ * reuse via `all -Preset <name>`. Returns the destination path.
+ */
+export function saveUserPreset(name: string, ids: string[], contextSizes?: number[]): string {
+  let doc: { $schema_version?: number; presets?: Record<string, Preset> } = {};
+  if (existsSync(CALIBR_USER_PRESETS)) {
+    try {
+      let raw = readFileSync(CALIBR_USER_PRESETS, "utf8");
+      if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") doc = parsed;
+    } catch { /* corrupt file: overwrite with a fresh doc */ }
+  }
+  if (!doc.presets || typeof doc.presets !== "object") doc.presets = {};
+  if (doc.$schema_version == null) doc.$schema_version = 1;
+  const preset: Preset = {
+    label: `${name} — user-saved (${ids.length} model${ids.length === 1 ? "" : "s"})`,
+    models: ids,
+  };
+  if (contextSizes && contextSizes.length > 0) {
+    preset.context_sizes = [...contextSizes].sort((a, b) => a - b);
+    preset.max_ctx = Math.max(...contextSizes);
+  }
+  doc.presets[name] = preset;
+  mkdirSync(CALIBR_DATA_DIR, { recursive: true });
+  writeFileSync(CALIBR_USER_PRESETS, JSON.stringify(doc, null, 2), "utf8");
+  return CALIBR_USER_PRESETS;
 }
 
 export function readPresetCatalog(): Record<string, Preset> {

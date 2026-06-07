@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
+  CALIBR_CATALOG,
   readModelCatalog,
   filterCatalog,
   downloadFootprintBytes,
@@ -20,6 +21,78 @@ import { CustomBenchView } from "./CustomBenchView.js";
 interface Props {
   onRun: (args: string[], label: string) => void;
   onCancel: () => void;
+}
+
+// Model names discovered on disk (data/catalog.json), unioned with the curated
+// catalog to give the guided-run model filter every model we know.
+function readDiscoveredModelNames(): string[] {
+  if (!existsSync(CALIBR_CATALOG)) return [];
+  try {
+    let raw = readFileSync(CALIBR_CATALOG, "utf8");
+    if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+    const arr = JSON.parse(raw) as Array<{ model?: string }>;
+    return Array.isArray(arr) ? arr.map(m => m?.model).filter((m): m is string => !!m) : [];
+  } catch {
+    return [];
+  }
+}
+
+const ALL_RUNS_VALUES: number[] = [0, 1, 3, 5];
+
+function next<T>(values: readonly T[], current: T): T {
+  const i = values.indexOf(current);
+  return values[(i + 1) % values.length];
+}
+
+export type LlamaDecisionLike =
+  | { kind: "download"; build: string }
+  | { kind: "local"; path: string }
+  | null;
+
+export interface AllArgsOpts {
+  decision: LlamaDecisionLike;
+  fetchCatalog: boolean;
+  model: string | null;
+  customIds: string;
+  currentPreset: string;
+  runs: number;
+  keepDownloads: boolean;
+  preferSpeed: boolean;
+  minimalPolling: boolean;
+  rerunAll: boolean;
+  contextSizes?: number[] | null;
+}
+
+// Pure arg builder for `all` (exported for tests). A fixed model overrides the
+// preset/custom pool (-Model narrows to it); otherwise custom picks or the named
+// preset apply. -Runs passes the per-config run count through.
+export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } {
+  const args: string[] = ["all"];
+  const parts: string[] = [];
+  if (o.decision?.kind === "download") {
+    args.push("-AutoFetchLlama"); parts.push("-AutoFetchLlama");
+    if (o.decision.build) { args.push("-LlamaCppBuild", o.decision.build); parts.push(`-LlamaCppBuild ${o.decision.build}`); }
+  } else if (o.decision?.kind === "local") {
+    args.push("-LlamaServer", o.decision.path); parts.push(`-LlamaServer "${o.decision.path}"`);
+  }
+  if (o.fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
+  if (o.model) {
+    args.push("-Model", o.model); parts.push(`-Model "${o.model}"`);
+  } else if (o.fetchCatalog && o.customIds) {
+    args.push("-CatalogId", o.customIds); parts.push(`-CatalogId "${o.customIds}"`);
+  } else if (o.fetchCatalog && o.currentPreset !== "all" && o.currentPreset !== "custom") {
+    args.push("-Preset", o.currentPreset); parts.push(`-Preset ${o.currentPreset}`);
+  }
+  if (o.contextSizes && o.contextSizes.length > 0) {
+    const csv = o.contextSizes.join(",");
+    args.push("-ContextSizes", csv); parts.push(`-ContextSizes ${csv}`);
+  }
+  if (o.runs > 0)        { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
+  if (o.keepDownloads)   { args.push("-KeepDownloads");  parts.push("-KeepDownloads"); }
+  if (o.rerunAll)        { args.push("-Force");          parts.push("-Force"); }
+  if (o.preferSpeed)     { args.push("-PreferSpeed");    parts.push("-PreferSpeed"); }
+  if (o.minimalPolling)  { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
+  return { args, label: parts.length ? `all ${parts.join(" ")}` : "all" };
 }
 
 // Three phases:
@@ -51,6 +124,8 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
   const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
+  const [model, setModel] = useState<string | null>(null);
+  const [runs, setRuns] = useState<number>(0);
   const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(null);
   const [llamaVersionInput, setLlamaVersionInput] = useState<string>("");
   const [llamaCandidates, setLlamaCandidates] = useState<LlamaServerCandidate[]>([]);
@@ -61,6 +136,17 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
 
   const catalog = useMemo(readModelCatalog, []);
   const cfg = useMemo(loadConfig, []);
+  // Model filter spans every known model: discovered (on disk) ∪ curated.
+  const models = useMemo<string[]>(() => {
+    const names = new Set<string>(readDiscoveredModelNames());
+    for (const e of catalog) if (e?.model) names.add(e.model);
+    return [...names].sort();
+  }, [catalog]);
+  const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
+  const runsDefault = useMemo<number>(() => {
+    const v = cfg?.bench?.runs_per_config;
+    return typeof v === "number" && v > 0 ? v : 3;
+  }, [cfg]);
   const llamaConfigured = Boolean(cfg.llama_server_exe && existsSync(cfg.llama_server_exe));
   const llamaLabel = (() => {
     if (llamaConfigured) return `configured (${cfg.llama_server_exe})`;
@@ -105,7 +191,9 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const rows = [
     { kind: "llama"    as const, label: `llama.cpp:       ${llamaLabel}` },
     { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — only bench what's already in scan_paths"}` },
-    { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog },
+    { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog || model !== null },
+    { kind: "model"    as const, label: `model filter:    ${model === null ? "all (use 'which models')" : model}` },
+    { kind: "runs"     as const, label: `runs per config: ${runs === 0 ? `default (${runsDefault} from config)` : String(runs)}` },
     { kind: "rotate"   as const, label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its bench finishes)"}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
     { kind: "polling"  as const, label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
@@ -117,38 +205,12 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // buildArgs ignores the named preset and passes -CatalogId with the
   // comma-list of picked catalog ids.
   const [customIds, setCustomIds] = useState<string>("");
+  const [customCtxSizes, setCustomCtxSizes] = useState<number[] | null>(null);
 
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
-  const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): { args: string[]; label: string } => {
-    const args: string[] = ["all"];
-    const parts: string[] = [];
-    if (decision?.kind === "download") {
-      args.push("-AutoFetchLlama");
-      parts.push("-AutoFetchLlama");
-      if (decision.build) {
-        args.push("-LlamaCppBuild", decision.build);
-        parts.push(`-LlamaCppBuild ${decision.build}`);
-      }
-    } else if (decision?.kind === "local") {
-      args.push("-LlamaServer", decision.path);
-      parts.push(`-LlamaServer "${decision.path}"`);
-    }
-    if (fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
-    // Custom selection overrides the named preset path entirely.
-    if (fetchCatalog && customIds) {
-      args.push("-CatalogId", customIds);
-      parts.push(`-CatalogId "${customIds}"`);
-    } else if (fetchCatalog && currentPreset !== "all" && currentPreset !== "custom") {
-      args.push("-Preset", currentPreset);
-      parts.push(`-Preset ${currentPreset}`);
-    }
-    if (keepDownloads)   { args.push("-KeepDownloads");   parts.push("-KeepDownloads"); }
-    if (rerunAll)        { args.push("-Force");           parts.push("-Force"); }
-    if (preferSpeed)     { args.push("-PreferSpeed");     parts.push("-PreferSpeed"); }
-    if (minimalPolling)  { args.push("-MinimalPolling");  parts.push("-MinimalPolling"); }
-    return { args, label: parts.length ? `all ${parts.join(" ")}` : "all" };
-  };
+  const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
+    buildAllArgs({ decision, fetchCatalog, model, customIds, currentPreset, runs, keepDownloads, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
 
   // Decide which phase comes next after the user clears the current step.
   // Order: disk gate (if fetching) → cache prompt (if cache exists) →
@@ -163,6 +225,9 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   };
 
   const catalogScopeForGate = (pickedIds?: string): typeof catalog => {
+    // A fixed model narrows the footprint to that one model.
+    if (model) return filterCatalog(catalog, { model });
+
     const ids = pickedIds ?? customIds;
     if (ids) return filterCatalog(catalog, { catalogId: ids });
 
@@ -190,7 +255,8 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   };
 
   const startAfterLlamaSetup = (decision: LlamaDecision | null = llamaDecision) => {
-    if (fetchCatalog && currentPreset === "custom" && !customIds) {
+    // A fixed model overrides the custom-picker route.
+    if (fetchCatalog && !model && currentPreset === "custom" && !customIds) {
       setPhase({ kind: "custom" });
       return;
     }
@@ -248,7 +314,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       case "llama":    setLlamaSourceCursor(0); setPhase({ kind: "llamaSource" }); break;
       case "fetch":    setFetchCatalog(!fetchCatalog); break;
       case "preset": {
-        if (!fetchCatalog) break;
+        if (!fetchCatalog || model !== null) break;   // disabled when a model is fixed
         const nextIdx = (presetIdx + 1) % presetNames.length;
         setPresetIdx(nextIdx);
         // Stepping off 'custom' clears any prior custom selection so
@@ -257,6 +323,8 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         if (presetNames[nextIdx] !== "custom" && customIds) setCustomIds("");
         break;
       }
+      case "model":    setModel(next(modelChoices, model)); break;
+      case "runs":     setRuns(next(ALL_RUNS_VALUES, runs)); break;
       case "rotate":   setKeepDownloads(!keepDownloads); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
       case "polling":  setMinimalPolling(!minimalPolling); break;
@@ -460,8 +528,9 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   if (phase.kind === "custom") {
     return (
       <CustomBenchView
-        onSubmit={(idList) => {
+        onSubmit={(idList, ctxSizes) => {
           setCustomIds(idList);
+          setCustomCtxSizes(ctxSizes && ctxSizes.length > 0 ? ctxSizes : null);
           // After picking, go straight to the disk gate; the user already
           // accepted the form's other choices when they hit '> start all'.
           runGate(idList);
