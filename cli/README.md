@@ -95,7 +95,9 @@ A typical first session:
    Otherwise skip it: if `llama_server_exe` is missing, **guided run** asks
    whether to download official llama.cpp (latest, or a typed `bNNNN` build) or
    scan existing local `llama-server` binaries. One local binary is selected
-   automatically; multiple binaries open a picker.
+   automatically; multiple binaries open a picker. Typed build tags are saved
+   as the preferred auto-fetch build, and **configure llama path** can reuse or
+   delete cached auto-fetched builds.
 2. **guided run** -> configure: leave `model catalog: yes`, start with the default
    starter `low` preset, choose the llama.cpp setup when prompted, and leave
    `auto-cleanup: yes`. The CLI shows the peak disk
@@ -104,7 +106,8 @@ A typical first session:
    to the next.
 3. **results** - browse the fastest safe winners per model. Press
    `enter` to drill into per-config detail, `o` to open the full HTML
-   report in your browser, `q` to go back.
+   report in your browser, `r` to re-run the selected config with `-Force`, or
+   `q` to go back.
 
 Once the starter run works, repeat `guided run` and switch `which models` to
 `middle`, `high`, `ultra`, or `all` for a broader recommendation set.

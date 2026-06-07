@@ -85,8 +85,9 @@ On a fresh machine, `guided run` asks how to set up llama.cpp if
 `llama_server_exe` is missing: download an official release (latest by default,
 or type a `bNNNN` build tag), or scan for existing local `llama-server`
 binaries. One local binary is selected automatically; multiple binaries open a
-picker. Use `configure llama path` when you already know the exact custom build
-you want to keep.
+picker. A typed build tag is saved as the preferred auto-fetch build for later
+runs. Use `configure llama path` when you already know the exact custom build
+you want to keep, or to reuse/delete cached auto-fetched llama.cpp builds.
 
 Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
 to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)

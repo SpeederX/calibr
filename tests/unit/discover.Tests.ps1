@@ -137,6 +137,46 @@ Describe "Remove-PhantomEntries" {
     }
 }
 
-Exit-WithResults
+Describe "Get-GgufHeaderMetadata" {
+    function Write-GgufString($Writer, [string]$Value) {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($Value)
+        $Writer.Write([uint64]$bytes.Length)
+        $Writer.Write($bytes)
+    }
 
+    It "reads architecture and context length from a minimal GGUF header" {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-gguf-" + [guid]::NewGuid().ToString('N') + ".gguf")
+        $fs = $null
+        $bw = $null
+        try {
+            $fs = [System.IO.File]::Open($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+            $bw = [System.IO.BinaryWriter]::new($fs)
+            $bw.Write([System.Text.Encoding]::ASCII.GetBytes("GGUF"))
+            $bw.Write([uint32]3) # version
+            $bw.Write([uint64]0) # tensor_count
+            $bw.Write([uint64]2) # kv_count
+
+            Write-GgufString $bw "general.architecture"
+            $bw.Write([uint32]8) # string
+            Write-GgufString $bw "llama"
+
+            Write-GgufString $bw "llama.context_length"
+            $bw.Write([uint32]4) # uint32
+            $bw.Write([uint32]32768)
+
+            $bw.Dispose(); $bw = $null
+            $fs.Dispose(); $fs = $null
+
+            $meta = Get-GgufHeaderMetadata -Path $tmp
+            Assert-Equal "llama" $meta.architecture
+            Assert-Equal 32768 $meta.context_length
+        } finally {
+            if ($bw) { $bw.Dispose() }
+            if ($fs) { $fs.Dispose() }
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Exit-WithResults
 

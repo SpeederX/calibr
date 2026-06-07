@@ -1,0 +1,53 @@
+name: Doctor report / startup failure
+description: calibr cannot start, cannot find dependencies, or doctor reports a failure.
+title: "[doctor] "
+labels: ["doctor", "support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `calibr doctor -Export -Extended` and attach the generated `doctor-report.json`.
+        The export redacts your home directory and hostname.
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Windows 11 / Ubuntu 24.04 / macOS 15"
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / CPU
+      placeholder: "RTX 2070, RX 7800 XT, Apple M-series, CPU-only..."
+    validations:
+      required: true
+  - type: dropdown
+    id: llama-setup
+    attributes:
+      label: llama.cpp setup
+      options:
+        - Auto-fetched by calibr
+        - Custom llama-server path
+        - Not configured yet
+        - Unsure
+    validations:
+      required: true
+  - type: input
+    id: llama-build
+    attributes:
+      label: llama.cpp build
+      placeholder: "b9360 cuda-13.1 / b9482 vulkan / custom source build"
+  - type: textarea
+    id: doctor-report
+    attributes:
+      label: Doctor export
+      description: Attach the JSON file, or paste the relevant failing checks here.
+      placeholder: "Attach doctor-report.json or paste failing checks..."
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: What happened?
+      placeholder: "What command/menu item did you run, and what did you expect?"

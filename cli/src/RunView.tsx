@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import { spawnSync } from "node:child_process";
 import { runEngine, openReport } from "./engine.js";
@@ -45,6 +45,7 @@ const PROGRESS_RE = /^\s*\[(\d+)\/(\d+)\]\s+(.+?)\s*$/;
 // progress so the inner [config X/Y] doesn't look like it 'reset' every
 // time a new sample's bench begins.
 const SAMPLE_RE = /^\s*\[sample\s+(\d+)\/(\d+)\]\s+(.+?)\s*$/;
+const SAMPLE_DONE_RE = /^\s*\[sample-done\s+(\d+)\/(\d+)\]\s+(.+?)\s+elapsed_ms=(\d+)\s*$/;
 
 // Rotation events emitted by Invoke-RotationCheck in the engine.
 // Examples:
@@ -86,6 +87,7 @@ const FAIL_RE = /^\s*\[FAIL\]/;
 // Lenient on the "(out of T...)" tail so engine wording changes don't break
 // the color rule. Colored based on whether M (fail count) is non-zero.
 const SUMMARY_RE = /^\s*(\d+)\s+ok\s+\.\s+(\d+)\s+fail\s+\.\s+\d+\s+skipped\s+\(out of \d+.*\)\s*$/;
+const SUMMARY_CONFIGS_RE = /^\s*configs:\s+(\d+)\s+ok\s+\(\d+%\)\s+-\s+(\d+)\s+fail\s+-\s+\d+\s+skipped\s+\/\s+\d+.*$/;
 // "Report: C:\...\report.html" emitted by Invoke-Report on completion.
 // Presence of this line is a guarantee that a FRESH report was just
 // written by this run (not a stale leftover); the CLI uses it to gate
@@ -103,6 +105,13 @@ interface SampleProgress {
   current: number;
   total: number;
   sampleId: string;
+}
+
+interface SampleDone {
+  current: number;
+  total: number;
+  sampleId: string;
+  elapsedMs: number;
 }
 
 interface RotationStats {
@@ -233,9 +242,12 @@ function fmtElapsed(ms: number): string {
 }
 
 export function RunView({ args, label, onExit }: Props) {
+  const { stdout } = useStdout();
   const [lines, setLines] = useState<string[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [sampleProgress, setSampleProgress] = useState<SampleProgress | null>(null);
+  const [sampleStartedAtMs, setSampleStartedAtMs] = useState<number | null>(null);
+  const [lastSampleDone, setLastSampleDone] = useState<SampleDone | null>(null);
   const [rotation, setRotation] = useState<RotationStats>({ deleted: 0, kept: 0, failed: 0, lastEvent: null });
   const [live, setLive] = useState<LiveMetrics | null>(null);
   const [download, setDownload] = useState<DownloadState | null>(null);
@@ -273,6 +285,9 @@ export function RunView({ args, label, onExit }: Props) {
   // and its suffix leak into the visible log as garbage / blank lines.
   const partialRef = useRef<string>("");
   const isBench = useMemo(() => args[0] === "bench" || args[0] === "all", [args]);
+  const terminalRows = stdout?.rows ?? 40;
+  const logViewport = Math.max(6, Math.min(VIEWPORT, terminalRows - 18));
+  const compact = terminalRows < 28;
 
   useEffect(() => {
     const run = runEngine(args);
@@ -335,6 +350,7 @@ export function RunView({ args, label, onExit }: Props) {
           const s = complete[i].match(SAMPLE_RE);
           if (s) {
             setSampleProgress({ current: Number(s[1]), total: Number(s[2]), sampleId: s[3] });
+            setSampleStartedAtMs(Date.now());
             // When a new sample starts, the inner [X/Y] from a previous
             // sample is stale; clear it so the display doesn't show
             // last-sample's config strip while the new sample is downloading.
@@ -355,6 +371,7 @@ export function RunView({ args, label, onExit }: Props) {
       let lastPhase: Phase | null = null;
       let lastRun: RunCount | null = null;
       let lastReport: string | null = null;
+      let parsedSampleDone: SampleDone | null = null;
       for (const line of complete) {
         if (ROTATE_DELETE_RE.test(line))     { dDelta++; lastRot = line.trim(); continue; }
         if (ROTATE_KEEP_RE.test(line))       { kDelta++; lastRot = line.trim(); continue; }
@@ -365,6 +382,16 @@ export function RunView({ args, label, onExit }: Props) {
         const phm = PHASE_RE.exec(line);   if (phm) { lastPhase = phm[1] as Phase; continue; }
         const rm = RUN_RE.exec(line);      if (rm) { lastRun = { current: Number(rm[1]), total: Number(rm[2]) }; continue; }
         const rpm = REPORT_RE.exec(line);  if (rpm) { lastReport = rpm[1]; continue; }
+        const sdm = SAMPLE_DONE_RE.exec(line);
+        if (sdm) {
+          parsedSampleDone = {
+            current: Number(sdm[1]),
+            total: Number(sdm[2]),
+            sampleId: sdm[3],
+            elapsedMs: Number(sdm[4]),
+          };
+          continue;
+        }
       }
       if (dDelta || kDelta || fDelta) {
         setRotation(prev => ({
@@ -407,6 +434,7 @@ export function RunView({ args, label, onExit }: Props) {
       }
       if (lastRun) setRunCount(lastRun);
       if (lastReport) setReportPath(lastReport);
+      if (parsedSampleDone) setLastSampleDone(parsedSampleDone);
     };
 
     run.proc.stdout?.on("data", append);
@@ -435,14 +463,14 @@ export function RunView({ args, label, onExit }: Props) {
 
   useInput((input, key) => {
     // Scroll bindings work whether the run is live or finished.
-    if (key.upArrow)   { setScrollOffset(o => Math.min(Math.max(0, lines.length - VIEWPORT), o + 1)); return; }
+    if (key.upArrow)   { setScrollOffset(o => Math.min(Math.max(0, lines.length - logViewport), o + 1)); return; }
     if (key.downArrow) { setScrollOffset(o => Math.max(0, o - 1)); return; }
-    if (key.pageUp)    { setScrollOffset(o => Math.min(Math.max(0, lines.length - VIEWPORT), o + VIEWPORT)); return; }
-    if (key.pageDown)  { setScrollOffset(o => Math.max(0, o - VIEWPORT)); return; }
+    if (key.pageUp)    { setScrollOffset(o => Math.min(Math.max(0, lines.length - logViewport), o + logViewport)); return; }
+    if (key.pageDown)  { setScrollOffset(o => Math.max(0, o - logViewport)); return; }
     // Lowercase mnemonics for top/bottom (uppercase G felt awkward in a
     // PowerShell terminal where Shift+letter is muscle-memory for caps).
     // Home/End are kept as the universal escape hatch.
-    if (input === "g" || key.meta && key.upArrow)   { setScrollOffset(Math.max(0, lines.length - VIEWPORT)); return; }  // top
+    if (input === "g" || key.meta && key.upArrow)   { setScrollOffset(Math.max(0, lines.length - logViewport)); return; }  // top
     if (input === "h" || key.meta && key.downArrow) { setScrollOffset(0); return; }                                       // bottom (resume tail)
 
     // q / esc: cancel a live run, exit the screen after the run is done.
@@ -485,8 +513,8 @@ export function RunView({ args, label, onExit }: Props) {
 
   // Slice the visible window. When scrollOffset is 0, end == lines.length
   // (live tail). When scrolled up by N, the window slides up by N lines.
-  const end = Math.max(VIEWPORT, lines.length - scrollOffset);
-  const start = Math.max(0, end - VIEWPORT);
+  const end = Math.max(logViewport, lines.length - scrollOffset);
+  const start = Math.max(0, end - logViewport);
   const tail = lines.slice(start, end);
   const isTailing = scrollOffset === 0;
 
@@ -495,6 +523,9 @@ export function RunView({ args, label, onExit }: Props) {
   const samplePct = sampleProgress !== null
     ? Math.round((sampleProgress.current / Math.max(1, sampleProgress.total)) * 100)
     : 0;
+  const sampleElapsedMs = sampleStartedAtMs !== null && exitCode === null
+    ? Date.now() - sampleStartedAtMs
+    : null;
 
   // ETA: configs_remaining * mean(configTimesRef) + download remainder.
   // Rough estimate, deliberately not surfaced to the user as authoritative.
@@ -531,6 +562,8 @@ export function RunView({ args, label, onExit }: Props) {
     if (FAIL_RE.test(line))    return 'red';
     const sm = SUMMARY_RE.exec(line);
     if (sm) return Number(sm[2]) > 0 ? 'yellow' : 'green';
+    const cm = SUMMARY_CONFIGS_RE.exec(line);
+    if (cm) return Number(cm[2]) > 0 ? 'yellow' : 'green';
     return undefined;
   };
 
@@ -560,10 +593,14 @@ export function RunView({ args, label, onExit }: Props) {
         )}
       </Box>
       {sampleProgress !== null && (
-        <Box marginTop={1}>
+        <Box marginTop={1} flexDirection="column">
           <Text color="cyan" bold>
             sample {sampleProgress.current}/{sampleProgress.total} · {samplePct}% · {sampleProgress.sampleId}
+            {sampleElapsedMs !== null ? <Text dimColor> · running {fmtElapsed(sampleElapsedMs)}</Text> : null}
           </Text>
+          {!compact && lastSampleDone && (
+            <Text dimColor>last: {lastSampleDone.sampleId} · {fmtElapsed(lastSampleDone.elapsedMs)}</Text>
+          )}
         </Box>
       )}
       {showDownload && (
@@ -624,9 +661,15 @@ export function RunView({ args, label, onExit }: Props) {
       )}
       {live && (
         <Box marginTop={1}>
-          <Text color="cyan">
-            live · GPU {live.gpu_mem} MiB / {live.gpu_pow.toFixed(0)} W / {live.gpu_temp}°C / {live.gpu_util}%  ·  RAM Δ {live.ram_used} MiB  ·  disk r {live.disk_r.toFixed(0)} MB/s
-          </Text>
+          {compact ? (
+            <Text color="cyan">
+              live · GPU {live.gpu_mem} MiB / {live.gpu_util}% · RAM Δ {live.ram_used} MiB
+            </Text>
+          ) : (
+            <Text color="cyan">
+              live · GPU {live.gpu_mem} MiB / {live.gpu_pow.toFixed(0)} W / {live.gpu_temp}°C / {live.gpu_util}%  ·  RAM Δ {live.ram_used} MiB  ·  disk r {live.disk_r.toFixed(0)} MB/s
+            </Text>
+          )}
         </Box>
       )}
       <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>

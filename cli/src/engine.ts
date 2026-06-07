@@ -1,5 +1,5 @@
 import { spawn, spawnSync, ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -213,6 +213,40 @@ export function findLlamaServerCandidates(): LlamaServerCandidate[] {
       return true;
     })
     .map(path => ({ path, ...candidateLabel(path) }));
+}
+
+export interface CachedLlamaBuild {
+  tag: string;
+  flavor: string;
+  path: string;
+  label: string;
+}
+
+export function listCachedLlamaBuilds(): CachedLlamaBuild[] {
+  const root = join(CALIBR_DATA_DIR, "llama-bin");
+  if (!existsSync(root)) return [];
+  const out: CachedLlamaBuild[] = [];
+  const binName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
+  for (const tagEntry of readdirSync(root, { withFileTypes: true })) {
+    if (!tagEntry.isDirectory() || tagEntry.name === "archives") continue;
+    const tagDir = join(root, tagEntry.name);
+    for (const flavorEntry of readdirSync(tagDir, { withFileTypes: true })) {
+      if (!flavorEntry.isDirectory()) continue;
+      const flavorDir = join(tagDir, flavorEntry.name);
+      const servers = findFileUnder(flavorDir, binName, 4);
+      for (const server of servers) {
+        const label = `${tagEntry.name} ${flavorEntry.name} - ${server}`;
+        out.push({ tag: tagEntry.name, flavor: flavorEntry.name, path: server, label });
+      }
+    }
+  }
+  return out.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+export function deleteCachedLlamaBuild(build: CachedLlamaBuild): void {
+  const root = join(CALIBR_DATA_DIR, "llama-bin");
+  const dir = join(root, build.tag, build.flavor);
+  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
 }
 
 /**

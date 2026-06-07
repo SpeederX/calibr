@@ -21,63 +21,30 @@ Recently shipped and removed from the TODO queue:
 - Linux port, dependency checks, GPU-readiness doctor path, and diagnostic
   export.
 - npm trusted-publishing release path.
+- Doctor issue template.
+- config-level llama.cpp build pin from typed `bNNNN` downloads.
+- llama.cpp cache listing / cleanup from `configure llama path`.
+- per-sample elapsed markers and compact RunView sizing.
+- friendlier bench summary wording.
+- results-screen re-run for a selected config.
+- base GGUF header metadata parsing for architecture/context cap.
 
 ---
 
 ## Near-term polish
-
-### Doctor issue template
-
-Add `.github/ISSUE_TEMPLATE/` for "doctor report / startup failure" issues.
-The template should ask for:
-
-- `calibr doctor -Export`
-- `calibr doctor -Export -Extended` when logs are needed
-- OS, GPU, llama.cpp build, and whether the user used auto-fetch or a custom
-  `llama-server`
-
-This closes the loop between the diagnostic bundle and useful user reports.
 
 ### Auto-fetch hardening
 
 The happy path is shipped. Remaining useful hardening:
 
 - checksum or size validation for downloaded llama.cpp archives
-- config-level build pinning, not only `CALIBR_LLAMA_CPP_TAG`
-- clearer cache listing / cleanup for `llama-bin`
 - Metal/macOS auto-fetch once macOS support is actually in scope
 
-### Results action: re-run selected config
+### Linux browser opener validation
 
-The results screen can show winners, but cannot re-run a selected config yet.
-Add an action that launches `bench -Force` with the model/config already
-selected from the result row.
-
-### Per-sample elapsed timer
-
-The catalog bench loop already emits per-sample start markers. Add a matching
-completion marker:
-
-```text
-[sample-done X/N] sampleId elapsed=MM:SS
-```
-
-RunView can then show useful timing during long guided runs.
-
-### Bench summary wording
-
-Rewrite the final bench summary into a more user-facing shape:
-
-```text
-===============================================================
- calibr - bench for {model name} - completed in 1m57s
-   configs: 2 ok (100%) - 0 fail - 0 skipped / 3 runs per config
-   files: 1 downloaded and deleted - 0 kept
-===============================================================
-```
-
-For multi-model runs, keep a generic title or list model names separately.
-Update RunView parsing with the engine change.
+There is a reported Linux bug around opening the HTML report from the CLI.
+Validate on a Linux machine because the Windows workspace cannot reproduce the
+`xdg-open` / desktop-session edge cases.
 
 ---
 
@@ -104,30 +71,25 @@ are captured while inference is actually running.
 
 ### reasoning_mode wiring
 
-Catalog entries can mark `reasoning_mode`, but the bench path does not yet
-thread that into llama.cpp. Verify the current llama.cpp switch/API shape, then
-pass the catalog setting into either server startup args or the chat request
-body.
+Catalog entries can mark `reasoning_mode`, and the bench path now sends
+`enable_thinking=false` in the chat request when `reasoning_mode = off`.
+Remaining work: verify the current llama.cpp behavior against Qwen reasoning
+models and decide whether any server-startup flag is also needed.
 
 This is especially important for Qwen reasoning models, where default thinking
 can distort speed measurements.
 
 ### Gemma chat-template verification
 
-Verify which chat template llama.cpp chooses for Gemma 2 / 3 / 4 entries. If
-defaults are wrong, add catalog-driven template wiring in the same path used for
-`reasoning_mode`.
+Catalog/template notes are now propagated into plan/results/report. Remaining
+work: verify which chat template llama.cpp chooses for Gemma 2 / 3 / 4 entries.
+If defaults are wrong, add explicit catalog-driven template wiring.
 
 ### KV-fill benchmark mode
 
 Add an opt-in mode that fills KV cache to known levels before timing
 generation. This reveals attention-scaling cost at high context sizes, which
 the current mostly-empty-cache benchmark hides.
-
-### GGUF metadata parser
-
-Add a small GGUF header reader for user-owned models so calibr can extract the
-model context cap instead of falling back to the global `max_context_cap`.
 
 ---
 
