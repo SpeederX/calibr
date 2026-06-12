@@ -57,6 +57,7 @@ fit, speed, headroom, and spill behavior on your machine.
 - [Included model catalog](#included-model-catalog)
 - [Technical details](#technical-details)
 - [Known limitations](#known-limitations)
+- [Troubleshooting](TROUBLESHOOTING.md)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
 - [License](#license)
