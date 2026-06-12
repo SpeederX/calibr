@@ -100,6 +100,10 @@ function New-AggregatedBenchResult {
         series          = $item.series
         level           = $item.level
         sweep           = $item.sweep
+        reasoning_mode  = $item.reasoning_mode
+        template_note   = $item.template_note
+        gguf_context_length = $item.gguf_context_length
+        gguf_architecture = $item.gguf_architecture
         timestamp       = $first.timestamp
         model_path      = $item.model_path
         mmproj_path     = $item.mmproj_path
@@ -419,24 +423,28 @@ function Invoke-OneBenchRun {
         # pipeline below is untouched.
         if ($cfg.bench.warmup) {
             try {
-                $wBody = @{
+                $warmupReq = @{
                     messages    = @(@{ role = 'user'; content = $prompt })
                     max_tokens  = 8
                     temperature = 0.0
                     stream      = $false
                     cache_prompt = $true
-                } | ConvertTo-Json -Compress -Depth 5
+                }
+                if ($item.reasoning_mode -eq "off") { $warmupReq["enable_thinking"] = $false }
+                $wBody = $warmupReq | ConvertTo-Json -Compress -Depth 5
                 Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
             } catch { }
         }
 
-        $body = @{
+        $reqBody = @{
             messages    = @(@{ role = 'user'; content = $prompt })
             max_tokens  = $nPred
             temperature = 0.0
             stream      = $false
             cache_prompt = $false
-        } | ConvertTo-Json -Compress -Depth 5
+        }
+        if ($item.reasoning_mode -eq "off") { $reqBody["enable_thinking"] = $false }
+        $body = $reqBody | ConvertTo-Json -Compress -Depth 5
         Write-Host "[phase] sending_prompt"
         try {
             $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
@@ -572,6 +580,8 @@ function Invoke-OneBench {
         $failResult = [ordered]@{
             id = $item.id; label = $item.label; model = $item.model; variant = $item.variant
             series = $item.series; level = $item.level; sweep = $item.sweep
+            reasoning_mode = $item.reasoning_mode; template_note = $item.template_note
+            gguf_context_length = $item.gguf_context_length; gguf_architecture = $item.gguf_architecture
             timestamp = (Get-Date).ToUniversalTime().ToString('o')
             model_path = $item.model_path; mmproj_path = $item.mmproj_path
             extra_args = $item.extra_args
@@ -651,6 +661,10 @@ function Invoke-OneBench {
                 series          = $item.series
                 level           = $item.level
                 sweep           = $item.sweep
+                reasoning_mode  = $item.reasoning_mode
+                template_note   = $item.template_note
+                gguf_context_length = $item.gguf_context_length
+                gguf_architecture = $item.gguf_architecture
                 timestamp       = $r.timestamp
                 model_path      = $item.model_path
                 mmproj_path     = $item.mmproj_path
@@ -1081,17 +1095,18 @@ function Invoke-Bench {
             elseif ($null -ne $cfg.bench.runs_per_config) { [int]$cfg.bench.runs_per_config }
             else { 3 }
     $runsHint = if ($rppc -gt 1) { " configs ({0} runs each)" -f $rppc } else { " configs" }
+    $okPct = if ($total -gt 0) { [math]::Round(($okCount / [double]$total) * 100, 0) } else { 0 }
     Write-Host ""
     Write-Host $bar -ForegroundColor Cyan
-    Write-Host (" calibr bench - done in $durStr") -ForegroundColor Cyan
-    Write-Host ("   {0} ok . {1} fail . {2} skipped (out of {3}{4})" -f $okCount, $failCount, $skipCount, $total, $runsHint)
+    Write-Host (" calibr - bench completed in $durStr") -ForegroundColor Cyan
+    Write-Host ("   configs: {0} ok ({1}%) - {2} fail - {3} skipped / {4}{5}" -f $okCount, $okPct, $failCount, $skipCount, $total, $runsHint)
     if ($abandoned.Count -gt 0) {
         Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
         $reasons = @($abandoned.Values | Sort-Object -Unique)
         Write-Host ("   reason: {0}" -f ($reasons -join '; ')) -ForegroundColor DarkYellow
     }
     if ($rotatedCount -gt 0 -or ($keptCount -gt 0 -and -not $KeepDownloads)) {
-        Write-Host ("   rotated: {0} deleted . {1} kept" -f $rotatedCount, $keptCount) -ForegroundColor DarkCyan
+        Write-Host ("   files: {0} downloaded and deleted - {1} kept" -f $rotatedCount, $keptCount) -ForegroundColor DarkCyan
     }
     Write-Host $bar -ForegroundColor Cyan
 }

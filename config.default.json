@@ -5,6 +5,11 @@
   "llama_server_exe": null,
   "_comment_exe": "Absolute path to the llama-server binary ('llama-server.exe' on Windows, 'llama-server' on Linux; a CUDA build is recommended on NVIDIA). If null, the tool tries to auto-detect it on PATH and in sibling folders of scan_paths.",
 
+  "llama_cpp": {
+    "preferred_build": null,
+    "_comment_preferred_build": "Optional llama.cpp release tag used by auto-fetch when no build is typed for the current run. Format: bNNNN. If a guided download uses an explicit build, calibr saves it here."
+  },
+
   "scan_paths": [],
   "_comment_scan": "List of absolute paths to recursively scan for .gguf files. Example: Windows ['C:/models', 'D:/llm'], Linux ['/mnt/models', '/home/you/models']. Configured via 'init' or manually.",
 

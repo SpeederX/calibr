@@ -205,6 +205,14 @@ function Select-LlamaDownloadPlan {
 function Get-LlamaCppRelease {
     param([string]$BuildTag = "")
     $tagOverride = if ($BuildTag) { $BuildTag } else { $env:CALIBR_LLAMA_CPP_TAG }
+    if (-not $tagOverride) {
+        try {
+            $cfg = Get-Config
+            if ($cfg.llama_cpp -and $cfg.llama_cpp.preferred_build) {
+                $tagOverride = [string]$cfg.llama_cpp.preferred_build
+            }
+        } catch { }
+    }
     if ($tagOverride) {
         if ($tagOverride -match '^\d{1,4}$') { $tagOverride = "b$tagOverride" }
         elseif ($tagOverride -notmatch '^b\d{1,4}$') { throw "LlamaCppBuild must be bNNNN (or NNNN), got '$tagOverride'." }
@@ -221,6 +229,28 @@ function Get-LlamaCppRelease {
     } catch {
         throw "Could not resolve llama.cpp release metadata from GitHub. $($_.Exception.Message)"
     }
+}
+
+function Save-LlamaPreferredBuild {
+    param([string]$BuildTag)
+    if (-not $BuildTag) { return }
+    $tag = $BuildTag
+    if ($tag -match '^\d{1,4}$') { $tag = "b$tag" }
+    if ($tag -notmatch '^b\d{1,4}$') { return }
+
+    $localCfg = @{}
+    if (Test-Path -LiteralPath $CALIBR_LOCAL_CFG) {
+        try {
+            $raw = Get-Content -LiteralPath $CALIBR_LOCAL_CFG -Raw | ConvertFrom-Json
+            $localCfg = ConvertTo-Hashtable -obj $raw
+        } catch {
+            $localCfg = @{}
+        }
+    }
+    if (-not ($localCfg["llama_cpp"] -is [hashtable])) { $localCfg["llama_cpp"] = @{} }
+    $localCfg["llama_cpp"]["preferred_build"] = $tag
+    $localCfg | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $CALIBR_LOCAL_CFG
+    Write-Host ("  Saved llama.cpp preferred build: {0}" -f $tag) -ForegroundColor Green
 }
 
 function Invoke-CalibrUrlDownload {
@@ -341,11 +371,32 @@ function Invoke-AutoFetchLlama {
     $root = Get-LlamaAutoFetchRoot
     if (-not (Test-Path -LiteralPath $root)) { New-Item -ItemType Directory -Path $root -Force | Out-Null }
 
+    $requestedBuild = $LlamaCppBuild
+    if (-not $requestedBuild) {
+        try {
+            $cfg = Get-Config
+            if ($cfg.llama_cpp -and $cfg.llama_cpp.preferred_build) {
+                $requestedBuild = [string]$cfg.llama_cpp.preferred_build
+            }
+        } catch { }
+    }
+    if ($requestedBuild -match '^\d{1,4}$') { $requestedBuild = "b$requestedBuild" }
+
     if (-not $Force) {
-        $existing = @(Find-LlamaServerUnder -Root $root)
-        if ($existing.Count -gt 0) {
-            Write-Host "  Found previously fetched llama-server: $($existing[0])" -ForegroundColor Green
-            return $existing[0]
+        if ($requestedBuild -and $requestedBuild -match '^b\d{1,4}$') {
+            $pinnedRoot = Join-Path $root $requestedBuild
+            $existingPinned = @(Find-LlamaServerUnder -Root $pinnedRoot)
+            if ($existingPinned.Count -gt 0) {
+                Write-Host "  Found pinned llama.cpp ${requestedBuild}: $($existingPinned[0])" -ForegroundColor Green
+                if ($LlamaCppBuild) { Save-LlamaPreferredBuild -BuildTag $LlamaCppBuild }
+                return $existingPinned[0]
+            }
+        } else {
+            $existing = @(Find-LlamaServerUnder -Root $root)
+            if ($existing.Count -gt 0) {
+                Write-Host "  Found previously fetched llama-server: $($existing[0])" -ForegroundColor Green
+                return $existing[0]
+            }
         }
     }
 
@@ -382,6 +433,7 @@ function Invoke-AutoFetchLlama {
 
     $server = @(Find-LlamaServerUnder -Root $installDir | Select-Object -First 1)
     if ($server.Count -eq 0) { throw "Downloaded llama.cpp, but llama-server$script:ExeExt was not found in $installDir." }
+    if ($LlamaCppBuild) { Save-LlamaPreferredBuild -BuildTag $LlamaCppBuild }
     return $server[0]
 }
 

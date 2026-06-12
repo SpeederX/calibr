@@ -50,6 +50,9 @@ function Get-ModelMetadata {
         $mmproj = $pref.FullName
     }
 
+    $gguf = Get-GgufHeaderMetadata -Path $file.FullName
+    $curated = Get-CuratedMetadataForFile -FileName $file.Name
+
     return @{
         role       = "model"
         path       = $file.FullName
@@ -63,7 +66,84 @@ function Get-ModelMetadata {
         is_moe     = $is_moe
         mmproj     = $mmproj
         dir        = $file.Directory.FullName
+        gguf_architecture = $gguf.architecture
+        gguf_context_length = $gguf.context_length
+        reasoning_mode = $curated.reasoning_mode
+        template_note = $curated.template_note
     }
+}
+
+function Read-GgufValue {
+    param($Reader, [int]$Type)
+    switch ($Type) {
+        0  { return [uint64]$Reader.ReadByte() }
+        1  { return [int64]$Reader.ReadSByte() }
+        2  { return [uint64]$Reader.ReadUInt16() }
+        3  { return [int64]$Reader.ReadInt16() }
+        4  { return [uint64]$Reader.ReadUInt32() }
+        5  { return [int64]$Reader.ReadInt32() }
+        6  { return [double]$Reader.ReadSingle() }
+        7  { return [bool]$Reader.ReadByte() }
+        8  {
+            $len = [int]$Reader.ReadUInt64()
+            $bytes = $Reader.ReadBytes($len)
+            return [System.Text.Encoding]::UTF8.GetString($bytes)
+        }
+        9  {
+            $itemType = [int]$Reader.ReadUInt32()
+            $count = [int]$Reader.ReadUInt64()
+            for ($i = 0; $i -lt $count; $i++) { [void](Read-GgufValue -Reader $Reader -Type $itemType) }
+            return $null
+        }
+        10 { return $Reader.ReadUInt64() }
+        11 { return $Reader.ReadInt64() }
+        12 { return $Reader.ReadDouble() }
+        default { throw "unknown GGUF value type $Type" }
+    }
+}
+
+function Get-GgufHeaderMetadata {
+    param([string]$Path)
+    $out = @{ architecture = $null; context_length = $null }
+    $fs = $null
+    $br = $null
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $br = [System.IO.BinaryReader]::new($fs)
+        $magic = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(4))
+        if ($magic -ne "GGUF") { return $out }
+        [void]$br.ReadUInt32() # version
+        [void]$br.ReadUInt64() # tensor_count
+        $kvCount = [int]$br.ReadUInt64()
+        for ($i = 0; $i -lt $kvCount; $i++) {
+            $keyLen = [int]$br.ReadUInt64()
+            $key = [System.Text.Encoding]::UTF8.GetString($br.ReadBytes($keyLen))
+            $type = [int]$br.ReadUInt32()
+            $value = Read-GgufValue -Reader $br -Type $type
+            if ($key -eq "general.architecture" -and $value) { $out.architecture = [string]$value }
+            if ($key -match '\.context_length$' -and $null -ne $value) { $out.context_length = [int64]$value }
+            if ($out.architecture -and $out.context_length) { break }
+        }
+    } catch {
+        return $out
+    } finally {
+        if ($br) { $br.Dispose() }
+        if ($fs) { $fs.Dispose() }
+    }
+    return $out
+}
+
+function Get-CuratedMetadataForFile {
+    param([string]$FileName)
+    $out = @{ reasoning_mode = $null; template_note = $null }
+    try {
+        $entry = @(Get-ModelCatalog | Where-Object { $_.hf_file -ieq $FileName } | Select-Object -First 1)
+        if ($entry.Count -gt 0) {
+            $out.reasoning_mode = $entry[0].reasoning_mode
+            $out.template_note = $entry[0].template_note
+        }
+    } catch { }
+    return $out
 }
 
 function Invoke-DenseOverrideFilter {

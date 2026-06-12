@@ -13,6 +13,7 @@ import {
 
 interface Props {
   onExit: () => void;
+  onRun?: (args: string[], label: string) => void;
 }
 
 function fmtTps(n?: number): string {
@@ -56,7 +57,7 @@ function kvFromArgs(args?: string): string {
   return m ? m[1] : "—";
 }
 
-export function ResultsView({ onExit }: Props) {
+export function ResultsView({ onExit, onRun }: Props) {
   const threshold = useMemo(() => getSharedThreshold(), []);
   const groups = useMemo<ModelGroup[]>(() => groupByModel(readResults()), []);
   const [cursor, setCursor] = useState(0);
@@ -75,6 +76,12 @@ export function ResultsView({ onExit }: Props) {
       return;
     }
     if (drill) {
+      const ordered = sortDrillConfigs(drill.configs, threshold);
+      const selected = ordered[detailCursor];
+      if ((input === "r" || input === "R") && selected && onRun) {
+        onRun(["bench", "-Id", selected.id, "-Force"], `bench -Id ${selected.id} -Force`);
+        return;
+      }
       if (key.upArrow || input === "k") setDetailCursor(c => Math.max(0, c - 1));
       else if (key.downArrow || input === "j") setDetailCursor(c => Math.min(drill.configs.length - 1, c + 1));
       else if (key.leftArrow || key.escape || input === "h" || input === "q") {
@@ -106,7 +113,7 @@ export function ResultsView({ onExit }: Props) {
   }
 
   if (drill) {
-    return <DetailView group={drill} cursor={detailCursor} threshold={threshold} notice={notice} />;
+    return <DetailView group={drill} cursor={detailCursor} threshold={threshold} notice={notice} canRun={Boolean(onRun)} />;
   }
 
   return (
@@ -143,9 +150,9 @@ export function ResultsView({ onExit }: Props) {
 }
 
 function DetailView({
-  group, cursor, threshold, notice,
+  group, cursor, threshold, notice, canRun,
 }: {
-  group: ModelGroup; cursor: number; threshold: number; notice: string | null;
+  group: ModelGroup; cursor: number; threshold: number; notice: string | null; canRun: boolean;
 }) {
   const ordered = sortDrillConfigs(group.configs, threshold);
   const sel = ordered[cursor];
@@ -196,6 +203,7 @@ function DetailView({
         </Box>
       )}
       {notice && <Box marginTop={1}><Text color="cyan">{notice}</Text></Box>}
+      {canRun && <Box marginTop={1}><Text color="cyan">r re-run selected config with -Force</Text></Box>}
       <Box marginTop={1}>
         <Text dimColor>↑/↓ move · o open report · ←/esc/q back to leaderboard</Text>
       </Box>

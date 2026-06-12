@@ -2,10 +2,13 @@ import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { basename, dirname } from "node:path";
 import {
+  deleteCachedLlamaBuild,
+  listCachedLlamaBuilds,
   loadConfig,
   pickFileSync,
   updateLocalConfigField,
   CALIBR_LOCAL_CFG,
+  type CachedLlamaBuild,
 } from "./engine.js";
 
 interface Props {
@@ -15,7 +18,9 @@ interface Props {
 type Phase =
   | { kind: "form" }
   | { kind: "manual"; value: string }
+  | { kind: "cachedPick"; action: "use" | "delete"; cursor: number }
   | { kind: "confirm"; newPath: string }
+  | { kind: "deleted"; build: CachedLlamaBuild }
   | { kind: "saved"; newPath: string };
 
 /**
@@ -36,12 +41,17 @@ export function LlamaPathView({ onCancel }: Props) {
     const cfg = loadConfig();
     return cfg.llama_server_exe || null;
   }, []);
+  const cachedBuilds = useMemo(() => listCachedLlamaBuilds(), []);
 
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
   const [cursor, setCursor] = useState(0);
 
   const rows = [
     { kind: "path" as const, label: isWindows ? `browse for ${expectedBinaryName}...` : `type path to ${expectedBinaryName}...` },
+    ...(cachedBuilds.length > 0 ? [
+      { kind: "useCached" as const, label: `use cached llama.cpp build... (${cachedBuilds.length})` },
+      { kind: "deleteCached" as const, label: "delete cached llama.cpp build..." },
+    ] : []),
     { kind: "cancel" as const, label: "  cancel" },
   ];
 
@@ -71,6 +81,26 @@ export function LlamaPathView({ onCancel }: Props) {
   };
 
   useInput((input, key) => {
+    if (phase.kind === "cachedPick") {
+      if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
+      if (key.upArrow || input === "k") { setPhase({ ...phase, cursor: Math.max(0, phase.cursor - 1) }); return; }
+      if (key.downArrow || input === "j") { setPhase({ ...phase, cursor: Math.min(cachedBuilds.length - 1, phase.cursor + 1) }); return; }
+      if (key.return || input === " ") {
+        const picked = cachedBuilds[phase.cursor];
+        if (!picked) return;
+        if (phase.action === "use") {
+          setPhase({ kind: "confirm", newPath: picked.path });
+        } else {
+          deleteCachedLlamaBuild(picked);
+          setPhase({ kind: "deleted", build: picked });
+        }
+      }
+      return;
+    }
+    if (phase.kind === "deleted") {
+      onCancel();
+      return;
+    }
     if (phase.kind === "manual") {
       const typedKey = key as typeof key & { backspace?: boolean; delete?: boolean; ctrl?: boolean; meta?: boolean };
       if (key.escape) { setPhase({ kind: "form" }); return; }
@@ -106,9 +136,43 @@ export function LlamaPathView({ onCancel }: Props) {
     if (key.return || input === " ") {
       const row = rows[cursor];
       if (row.kind === "path") pickPath();
+      else if (row.kind === "useCached") setPhase({ kind: "cachedPick", action: "use", cursor: 0 });
+      else if (row.kind === "deleteCached") setPhase({ kind: "cachedPick", action: "delete", cursor: 0 });
       else onCancel();
     }
   });
+
+  if (phase.kind === "cachedPick") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="cyan">{phase.action === "use" ? "use cached llama.cpp build" : "delete cached llama.cpp build"}</Text>
+        <Box marginTop={1} flexDirection="column">
+          {cachedBuilds.map((build, i) => {
+            const selected = i === phase.cursor;
+            return (
+              <Text key={build.path} color={selected ? "cyan" : undefined} inverse={selected}>
+                {selected ? "> " : "  "}{build.label}
+              </Text>
+            );
+          })}
+        </Box>
+        <Box marginTop={1}><Text dimColor>up/down move · enter select · q/esc back</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "deleted") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="green">cached llama.cpp build deleted.</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text>{phase.build.tag} {phase.build.flavor}</Text>
+          <Text dimColor>{phase.build.path}</Text>
+        </Box>
+        <Box marginTop={1}><Text dimColor>press any key to return to the menu</Text></Box>
+      </Box>
+    );
+  }
 
   if (phase.kind === "saved") {
     return (
@@ -171,6 +235,7 @@ export function LlamaPathView({ onCancel }: Props) {
       <Box marginTop={1} flexDirection="column">
         <Text>current: <Text color={currentPath ? "cyan" : "yellow"}>{currentPath || "(not set)"}</Text></Text>
         <Text dimColor>config: {CALIBR_LOCAL_CFG}</Text>
+        {cachedBuilds.length > 0 && <Text dimColor>cached builds: {cachedBuilds.length}</Text>}
       </Box>
       <Box marginTop={1} flexDirection="column">
         {rows.map((row, i) => {

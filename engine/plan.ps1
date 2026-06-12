@@ -75,6 +75,10 @@ function New-PlanItem {
         series      = $meta.series
         sweep       = $sweep
         level       = $level
+        reasoning_mode = $meta.reasoning_mode
+        template_note = $meta.template_note
+        gguf_context_length = $meta.gguf_context_length
+        gguf_architecture = $meta.gguf_architecture
         label       = "$($meta.model) $($meta.variant) @ $label"
         extra_args  = $extraArgs
     }
@@ -172,6 +176,8 @@ function Invoke-Plan {
         $bname = [System.IO.Path]::GetFileName($m.path)
         if ($bname -and $perModelCaps.ContainsKey($bname.ToLower())) {
             $perModelCap = $perModelCaps[$bname.ToLower()]
+        } elseif ($m.gguf_context_length) {
+            $perModelCap = [int]$m.gguf_context_length
         }
 
         switch ($sweep) {

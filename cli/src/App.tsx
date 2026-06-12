@@ -222,7 +222,10 @@ export function App() {
   if (screen.kind === "results") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <ResultsView onExit={() => setScreen({ kind: "menu" })} />
+        <ResultsView
+          onExit={() => setScreen({ kind: "menu" })}
+          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+        />
       </Box>
     );
   }

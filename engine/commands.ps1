@@ -609,6 +609,7 @@ function Invoke-SampleFetchBench {
     $idx = 0
     foreach ($s in $Samples) {
         $idx++
+        $sampleTimer = [System.Diagnostics.Stopwatch]::StartNew()
         Write-Host ""
         # Two prefixes: the bracketed [sample X/N] is CLI-parseable (RunView
         # surfaces it as the outer progress strip); the second is human-readable.
@@ -629,6 +630,9 @@ function Invoke-SampleFetchBench {
         # chance to delete the .gguf the moment its last config finishes.
         $script:Model = $s.model
         Invoke-Bench
+
+        $sampleTimer.Stop()
+        Write-Host ("[sample-done {0}/{1}] {2} elapsed_ms={3}" -f $idx, $Samples.Count, $s.id, $sampleTimer.ElapsedMilliseconds)
     }
     $script:CatalogId = $savedCatalogId
     $script:Model     = $savedModel
