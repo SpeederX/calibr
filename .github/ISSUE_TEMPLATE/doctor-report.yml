@@ -7,6 +7,8 @@ body:
     attributes:
       value: |
         Run `calibr doctor -Export -Extended` and attach the generated `doctor-report.json`.
+        If the app hangs during setup/download, also attach `logs/action-trace.jsonl`
+        from your calibr data directory.
         The export redacts your home directory and hostname.
   - type: input
     id: os

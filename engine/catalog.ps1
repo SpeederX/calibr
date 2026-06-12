@@ -163,10 +163,16 @@ function Invoke-HFDownload {
         $actual = (Get-Item $DestPath).Length
         if ($ExpectedBytes -gt 0 -and $actual -eq $ExpectedBytes) {
             Write-Host ("  [skip] already present: $DestPath ({0})" -f (Format-HumanSize $actual)) -ForegroundColor DarkGray
+            Write-TraceEvent -Action "start > download model" -Status "skipped" `
+                -Message "start > download model skipped: file already present" `
+                -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $actual }
             return $true
         }
         if ($ExpectedBytes -eq 0) {
             Write-Host ("  [skip] already present: $DestPath ({0})" -f (Format-HumanSize $actual)) -ForegroundColor DarkGray
+            Write-TraceEvent -Action "start > download model" -Status "skipped" `
+                -Message "start > download model skipped: file already present" `
+                -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $actual }
             return $true
         }
         Write-Host ("  [resume] partial file at $DestPath ({0}/{1}); -Force to restart" -f (Format-HumanSize $actual), (Format-HumanSize $ExpectedBytes)) -ForegroundColor Yellow
@@ -177,6 +183,9 @@ function Invoke-HFDownload {
     # Phase marker so the CLI switches the per-config flow widget to the
     # download bar. Match in RunView.tsx PHASE_RE.
     Write-Host "[phase] downloading"
+    Write-TraceEvent -Action "start > download model" -Status "started" `
+        -Message "start > download model started" `
+        -Details @{ repo = $Repo; file = $File; url = $url; path = $DestPath; expectedBytes = $ExpectedBytes }
 
     $req = $null
     $resp = $null
@@ -240,9 +249,15 @@ function Invoke-HFDownload {
         Write-Host ("[dldone] bytes={0} elapsed_ms={1} avg_mibps={2}" -f $totalBytes, $start.ElapsedMilliseconds, $avgStr)
 
         Write-Host ("  [done]  {0} in {1}s ({2} MiB/s avg)" -f (Format-HumanSize $totalBytes), [math]::Round($start.ElapsedMilliseconds / 1000.0, 1), $avgStr) -ForegroundColor Green
+        Write-TraceEvent -Action "start > download model" -Status "completed" `
+            -Message "start > download model completed" `
+            -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $totalBytes; elapsedMs = $start.ElapsedMilliseconds; avgMibps = $avgStr }
         return $true
     } catch {
         Write-Host ("  [FAIL]  {0}" -f $_.Exception.Message) -ForegroundColor Red
+        Write-TraceEvent -Action "start > download model" -Status "failed" `
+            -Message "start > download model failed" `
+            -Details @{ repo = $Repo; file = $File; url = $url; path = $DestPath; error = $_.Exception.Message }
         # Best-effort cleanup of a partial file that the caller can't recover.
         if ($fileStream) { try { $fileStream.Close() } catch {} }
         if ((Test-Path $DestPath) -and (Get-Item $DestPath).Length -eq 0) {
