@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
-import { ENGINE_COMMANDS, readStatus, traceAction, type EngineCommand, type Status, type TraceContext } from "./engine.js";
+import { ENGINE_COMMANDS, readStatus, traceAction, traceSessionEnd, traceSessionStart, type EngineCommand, type Status, type TraceContext } from "./engine.js";
 import { StatusView } from "./StatusView.js";
 import { RunView } from "./RunView.js";
 import { ResultsView } from "./ResultsView.js";
@@ -79,6 +79,10 @@ export function App() {
   const [menuCursor, setMenuCursor] = useState(0);
   const [advancedCursor, setAdvancedCursor] = useState(0);
   const [helpCursor, setHelpCursor] = useState(0);
+
+  useEffect(() => {
+    traceSessionStart();
+  }, []);
 
   // Refresh status whenever we return to a menu with readiness indicators.
   useEffect(() => {
@@ -173,6 +177,7 @@ export function App() {
           status: "completed",
           message: "app > quit",
         });
+        traceSessionEnd("user quit from main menu");
         exit();
         return;
       }

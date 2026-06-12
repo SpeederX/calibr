@@ -34,13 +34,14 @@ test("list/delete cached llama.cpp builds under CALIBR_DATA_DIR", () => {
   assert.equal(existsSync(flavorDir), false);
 });
 
-test("traceAction writes readable JSONL under logs", () => {
+test("traceAction writes JSONL and human log with redacted paths", () => {
+  engine.traceSessionStart();
   engine.traceAction({
     flow: "guided run",
     action: "llama.cpp download",
     status: "selected",
     message: "guided run > llama.cpp > download selected (latest)",
-    details: { build: "latest" },
+    details: { build: "latest", path: join(dataDir, "llama-bin", "b9360") },
   });
 
   assert.equal(existsSync(engine.CALIBR_ACTION_TRACE), true);
@@ -51,4 +52,14 @@ test("traceAction writes readable JSONL under logs", () => {
   assert.equal(entry.action, "llama.cpp download");
   assert.equal(entry.status, "selected");
   assert.equal(entry.details.build, "latest");
+  assert.equal(entry.details.path, join("<CALIBR_DATA_DIR>", "llama-bin", "b9360"));
+
+  assert.equal(existsSync(engine.CALIBR_ACTION_TRACE_LOG), true);
+  const human = readFileSync(engine.CALIBR_ACTION_TRACE_LOG, "utf8");
+  assert.match(human, /SESSION /);
+  assert.match(human, /TIME\s+\| SOURCE\s+\| FLOW/);
+  assert.match(human, /guided run/);
+  assert.match(human, /llama\.cpp download/);
+  assert.match(human, /<CALIBR_DATA_DIR>/);
+  assert.doesNotMatch(human, new RegExp(dataDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });

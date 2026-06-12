@@ -13,9 +13,9 @@ Its sweet spot is NVIDIA CUDA on Windows — where it also detects the silent
 WDDM VRAM-to-RAM paging cliff — but it **runs on Linux too**, with experimental
 macOS/Metal detection in progress. The output is an HTML dashboard plus
 per-model optimized launchers (`.bat` on Windows, `.sh` on Linux/macOS).
-Action-level diagnostics are written to `logs/action-trace.jsonl` under the
-calibr data directory, so startup/download hangs can be inspected after the
-fact.
+Action-level diagnostics are written to `logs/action-trace.log` under the
+calibr data directory, with `logs/action-trace.jsonl` kept for machine parsing,
+so startup/download hangs can be inspected after the fact.
 
 It is not a model-quality judge yet. The recommendation is based on measured
 fit, speed, headroom, and spill behavior on your machine.

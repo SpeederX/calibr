@@ -141,7 +141,8 @@ calibr-data/
 ├── llama-bin/           auto-fetched llama.cpp builds
 ├── results/*.json       one file per bench config
 ├── logs/*.log           full llama-server stderr per config
-├── logs/action-trace.jsonl user/engine action trace for startup/download debugging
+├── logs/action-trace.log human-readable user/engine action trace
+├── logs/action-trace.jsonl machine-readable action trace
 ├── bats/*.bat           per-config launch scripts (*.sh on Linux)
 └── report.html          aggregated dashboard
 ```
