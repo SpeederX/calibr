@@ -14,12 +14,14 @@ import {
   readPresetCatalog,
   findLlamaServerCandidates,
   normalizeLlamaBuildInput,
+  traceAction,
   type LlamaServerCandidate,
+  type TraceContext,
 } from "./engine.js";
 import { CustomBenchView } from "./CustomBenchView.js";
 
 interface Props {
-  onRun: (args: string[], label: string) => void;
+  onRun: (args: string[], label: string, trace?: TraceContext) => void;
   onCancel: () => void;
 }
 
@@ -212,6 +214,40 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
     buildAllArgs({ decision, fetchCatalog, model, customIds, currentPreset, runs, keepDownloads, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
 
+  const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
+    const setup = llamaConfigured
+      ? "configured llama.cpp"
+      : decision?.kind === "download"
+        ? "llama.cpp download"
+        : decision?.kind === "local"
+          ? "local llama.cpp"
+          : "llama.cpp unresolved";
+    const modelScope = model
+      ? `model ${model}`
+      : currentPreset === "custom"
+        ? `custom picks ${customIds || "(pending)"}`
+        : `preset ${currentPreset}`;
+    return {
+      flow: "guided run",
+      action: "start",
+      message: `guided run > start (${setup}, ${fetchCatalog ? "catalog download enabled" : "local models only"}, ${modelScope})`,
+      details: {
+        setup,
+        llamaDecision: decision,
+        fetchCatalog,
+        preset: currentPreset,
+        model,
+        customIds,
+        contextSizes: customCtxSizes,
+        runs,
+        keepDownloads,
+        preferSpeed,
+        minimalPolling,
+        rerunAll,
+      },
+    };
+  };
+
   // Decide which phase comes next after the user clears the current step.
   // Order: disk gate (if fetching) → cache prompt (if cache exists) →
   // launch.
@@ -220,7 +256,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       setPhase({ kind: "cachePrompt" });
     } else {
       const { args, label } = buildArgs(false);
-      onRun(args, label);
+      onRun(args, label, traceForRun(false));
     }
   };
 
@@ -266,7 +302,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       setPhase({ kind: "cachePrompt" });
     } else {
       const { args, label } = buildArgs(false, decision);
-      onRun(args, label);
+      onRun(args, label, traceForRun(false, decision));
     }
   };
 
@@ -282,10 +318,24 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const submitDownloadVersion = () => {
     const build = normalizeLlamaBuildInput(llamaVersionInput);
     if (build === null) {
+      traceAction({
+        flow: "guided run",
+        action: "llama.cpp download",
+        status: "failed",
+        message: "guided run > llama.cpp > download rejected: invalid build tag",
+        details: { input: llamaVersionInput },
+      });
       setPhase({ kind: "llamaDownloadVersion", error: "Use bNNNN or NNNN (1-4 digits), or leave empty for latest." });
       return;
     }
     const decision: LlamaDecision = { kind: "download", build };
+    traceAction({
+      flow: "guided run",
+      action: "llama.cpp download",
+      status: "selected",
+      message: `guided run > llama.cpp > download selected (${build || "latest"})`,
+      details: { build: build || "latest" },
+    });
     setLlamaDecision(decision);
     startAfterLlamaSetup(decision);
   };
@@ -293,16 +343,36 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const chooseLocalLlama = () => {
     const candidates = findLlamaServerCandidates();
     if (candidates.length === 0) {
+      traceAction({
+        flow: "guided run",
+        action: "llama.cpp scan local",
+        status: "failed",
+        message: "guided run > llama.cpp > scan local found no llama-server",
+      });
       setLlamaCandidates([]);
       setPhase({ kind: "llamaNoLocal" });
       return;
     }
     if (candidates.length === 1) {
       const decision: LlamaDecision = { kind: "local", path: candidates[0]!.path };
+      traceAction({
+        flow: "guided run",
+        action: "llama.cpp scan local",
+        status: "selected",
+        message: "guided run > llama.cpp > scan local selected the only candidate",
+        details: { path: decision.path, candidateCount: 1 },
+      });
       setLlamaDecision(decision);
       startAfterLlamaSetup(decision);
       return;
     }
+    traceAction({
+      flow: "guided run",
+      action: "llama.cpp scan local",
+      status: "completed",
+      message: `guided run > llama.cpp > scan local found ${candidates.length} candidates`,
+      details: { candidateCount: candidates.length },
+    });
     setLlamaCandidates(candidates);
     setLlamaCursor(0);
     setPhase({ kind: "llamaLocalPick" });
@@ -376,6 +446,13 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         const picked = llamaCandidates[llamaCursor];
         if (picked) {
           const decision: LlamaDecision = { kind: "local", path: picked.path };
+          traceAction({
+            flow: "guided run",
+            action: "llama.cpp pick local",
+            status: "selected",
+            message: "guided run > llama.cpp > pick local selected candidate",
+            details: { path: picked.path, label: picked.label },
+          });
           setLlamaDecision(decision);
           startAfterLlamaSetup(decision);
         }
@@ -404,12 +481,12 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
       if (input === "y" || input === "Y") {
         const r = buildArgs(false);
-        onRun(r.args, r.label);
+        onRun(r.args, r.label, traceForRun(false));
         return;
       }
       if (input === "n" || input === "N") {
         const r = buildArgs(true);
-        onRun(r.args, r.label);
+        onRun(r.args, r.label, traceForRun(true));
         return;
       }
       return;

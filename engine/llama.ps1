@@ -266,6 +266,9 @@ function Invoke-CalibrUrlDownload {
         $actual = (Get-Item -LiteralPath $DestPath).Length
         if ($ExpectedBytes -le 0 -or $actual -eq $ExpectedBytes) {
             Write-Host ("  [skip] already present: $DestPath ({0:N1} MB)" -f ($actual / 1MB)) -ForegroundColor DarkGray
+            Write-TraceEvent -Action "llama.cpp > download archive" -Status "skipped" `
+                -Message "llama.cpp > download archive skipped: archive already present" `
+                -Details @{ url = $Url; path = $DestPath; bytes = $actual }
             return $true
         }
     }
@@ -273,6 +276,9 @@ function Invoke-CalibrUrlDownload {
     Write-Host "  [download] $Url" -ForegroundColor Cyan
     Write-Host "             -> $DestPath"
     Write-Host "[phase] downloading"
+    Write-TraceEvent -Action "llama.cpp > download archive" -Status "started" `
+        -Message "llama.cpp > download archive started" `
+        -Details @{ url = $Url; path = $DestPath; expectedBytes = $ExpectedBytes }
 
     $req = $null
     $resp = $null
@@ -329,9 +335,15 @@ function Invoke-CalibrUrlDownload {
         Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $totalBytes, $avgStr, $start.ElapsedMilliseconds)
         Write-Host ("[dldone] bytes={0} elapsed_ms={1} avg_mibps={2}" -f $totalBytes, $start.ElapsedMilliseconds, $avgStr)
         Write-Host ("  [done]  {0:N1} MB in {1}s ({2} MiB/s avg)" -f ($totalBytes / 1MB), [math]::Round($start.ElapsedMilliseconds / 1000.0, 1), $avgStr) -ForegroundColor Green
+        Write-TraceEvent -Action "llama.cpp > download archive" -Status "completed" `
+            -Message "llama.cpp > download archive completed" `
+            -Details @{ url = $Url; path = $DestPath; bytes = $totalBytes; elapsedMs = $start.ElapsedMilliseconds; avgMibps = $avgStr }
         return $true
     } catch {
         Write-Host ("  [FAIL]  {0}" -f $_.Exception.Message) -ForegroundColor Red
+        Write-TraceEvent -Action "llama.cpp > download archive" -Status "failed" `
+            -Message "llama.cpp > download archive failed" `
+            -Details @{ url = $Url; path = $DestPath; error = $_.Exception.Message }
         if ($fileStream) { try { $fileStream.Close() } catch {} }
         if ((Test-Path -LiteralPath $DestPath) -and (Get-Item -LiteralPath $DestPath).Length -eq 0) {
             Remove-Item -LiteralPath $DestPath -Force -ErrorAction SilentlyContinue
@@ -401,7 +413,20 @@ function Invoke-AutoFetchLlama {
     }
 
     Write-Host "  Resolving latest llama.cpp release from GitHub..." -ForegroundColor Cyan
-    $release = Get-LlamaCppRelease -BuildTag $LlamaCppBuild
+    Write-TraceEvent -Action "llama.cpp > resolve release" -Status "started" `
+        -Message "llama.cpp > resolve release started" `
+        -Details @{ requestedBuild = $LlamaCppBuild }
+    try {
+        $release = Get-LlamaCppRelease -BuildTag $LlamaCppBuild
+        Write-TraceEvent -Action "llama.cpp > resolve release" -Status "completed" `
+            -Message "llama.cpp > resolve release completed" `
+            -Details @{ requestedBuild = $LlamaCppBuild; resolvedTag = $release.tag_name }
+    } catch {
+        Write-TraceEvent -Action "llama.cpp > resolve release" -Status "failed" `
+            -Message "llama.cpp > resolve release failed" `
+            -Details @{ requestedBuild = $LlamaCppBuild; error = $_.Exception.Message }
+        throw
+    }
     $driver = Get-NvidiaDriverVersion
     $plan = Select-LlamaDownloadPlan -Release $release -Hardware $Hardware -DriverVersion $driver
 
@@ -416,6 +441,9 @@ function Invoke-AutoFetchLlama {
 
     $label = if ($plan.cuda_version) { "$($plan.flavor) $($plan.cuda_version)" } else { $plan.flavor }
     Write-Host ("  Selected llama.cpp {0} ({1})" -f $plan.tag, $label) -ForegroundColor Green
+    Write-TraceEvent -Action "llama.cpp > select build" -Status "completed" `
+        -Message ("llama.cpp > select build completed: {0} ({1})" -f $plan.tag, $label) `
+        -Details @{ tag = $plan.tag; flavor = $plan.flavor; cudaVersion = $plan.cuda_version; installName = $plan.install_name }
 
     $archivesDir = Join-Path $root "archives"
     foreach ($assetGroup in @($plan.assets)) {
@@ -427,7 +455,20 @@ function Invoke-AutoFetchLlama {
             $archivePath = Join-Path $archivesDir $name
             $ok = Invoke-CalibrUrlDownload -Url $url -DestPath $archivePath -ExpectedBytes $size
             if (-not $ok) { throw "Download failed for $name." }
+        Write-TraceEvent -Action "llama.cpp > extract archive" -Status "started" `
+            -Message "llama.cpp > extract archive started" `
+            -Details @{ archive = $archivePath; destination = $installDir }
+        try {
             Expand-LlamaArchive -ArchivePath $archivePath -Destination $installDir
+            Write-TraceEvent -Action "llama.cpp > extract archive" -Status "completed" `
+                -Message "llama.cpp > extract archive completed" `
+                -Details @{ archive = $archivePath; destination = $installDir }
+        } catch {
+            Write-TraceEvent -Action "llama.cpp > extract archive" -Status "failed" `
+                -Message "llama.cpp > extract archive failed" `
+                -Details @{ archive = $archivePath; destination = $installDir; error = $_.Exception.Message }
+            throw
+        }
         }
     }
 

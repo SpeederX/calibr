@@ -168,6 +168,7 @@ foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIB
 # ============================================================================
 $script:CALIBR_ENGINE_DIR = Join-Path $CALIBR_ROOT "engine"
 $script:CALIBR_ENGINE_MODULES = @(
+    'trace.ps1'
     'platform.ps1'
     'config.ps1'
     'llama.ps1'

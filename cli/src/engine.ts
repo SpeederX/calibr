@@ -1,5 +1,5 @@
 import { spawn, spawnSync, ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -75,10 +75,45 @@ function defaultConfigPath(): string {
 export const CALIBR_CATALOG = join(CALIBR_DATA_DIR, "catalog.json");
 export const CALIBR_PLAN = join(CALIBR_DATA_DIR, "plan.json");
 export const CALIBR_RESULTS_DIR = join(CALIBR_DATA_DIR, "results");
+export const CALIBR_LOGS_DIR = join(CALIBR_DATA_DIR, "logs");
+export const CALIBR_ACTION_TRACE = join(CALIBR_LOGS_DIR, "action-trace.jsonl");
 export const CALIBR_REPORT = join(CALIBR_DATA_DIR, "report.html");
 export const CALIBR_DEFAULT_CFG = join(ENGINE_ROOT, "config.default.json");
 export const CALIBR_LOCAL_CFG = defaultConfigPath();
 export const CALIBR_PS1 = join(ENGINE_ROOT, "calibr.ps1");
+
+export type TraceStatus = "started" | "selected" | "completed" | "failed" | "cancelled" | "skipped";
+
+export interface TraceContext {
+  flow: string;
+  action: string;
+  message?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface TraceEvent extends TraceContext {
+  status: TraceStatus;
+  source?: "cli" | "engine";
+  details?: Record<string, unknown>;
+}
+
+export function traceAction(event: TraceEvent): void {
+  try {
+    mkdirSync(CALIBR_LOGS_DIR, { recursive: true });
+    const line = {
+      ts: new Date().toISOString(),
+      source: event.source ?? "cli",
+      flow: event.flow,
+      action: event.action,
+      status: event.status,
+      message: event.message ?? `${event.flow} > ${event.action} ${event.status}`,
+      details: event.details ?? {},
+    };
+    appendFileSync(CALIBR_ACTION_TRACE, JSON.stringify(line) + "\n", "utf8");
+  } catch {
+    // Trace logging must never break the app path it is trying to observe.
+  }
+}
 
 function readJsonSafe<T>(path: string, fallback: T): T {
   try {
@@ -496,11 +531,12 @@ export interface EngineRun {
 // place the CLI reads from. Without these, a bundled install would read
 // from %LOCALAPPDATA%\calibr but the PowerShell engine would still write
 // next to its own script (inside node_modules).
-function buildEngineEnv(): NodeJS.ProcessEnv {
+function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
   return {
     ...process.env,
     NO_COLOR: "1",
     CALIBR_DATA_DIR: CALIBR_DATA_DIR,
+    ...(trace ? { CALIBR_TRACE_PARENT: JSON.stringify(trace) } : {}),
   };
 }
 
@@ -526,7 +562,17 @@ function injectNonInteractive(args: string[]): string[] {
  * Shell out to calibr.ps1 with the given engine arguments.
  * stdout/stderr are streamed to the caller via the child process.
  */
-export function runEngine(args: string[]): EngineRun {
+function inferTraceContext(args: string[]): TraceContext {
+  const verb = args[0] ?? "unknown";
+  return {
+    flow: "advanced tools",
+    action: verb,
+    message: `advanced tools > ${verb}`,
+    details: { args },
+  };
+}
+
+export function runEngine(args: string[], trace?: TraceContext): EngineRun {
   const isWin = process.platform === "win32";
   // Windows PowerShell needs -ExecutionPolicy Bypass to run an unsigned .ps1;
   // pwsh on Linux has no execution policy, so we omit it there.
@@ -537,17 +583,39 @@ export function runEngine(args: string[]): EngineRun {
     "-File", CALIBR_PS1,
     ...injectNonInteractive(injectConfigArg(args)),
   ];
+  const traceContext = trace ?? inferTraceContext(args);
+  traceAction({
+    ...traceContext,
+    status: "started",
+    details: { ...(traceContext.details ?? {}), args },
+  });
   const proc = spawn(shell, psArgs, {
     cwd: ENGINE_ROOT,
     windowsHide: true,
     // On POSIX, give the engine its own process group so killTree can reap
     // the whole tree (pwsh + the llama-server it spawns) with kill(-pgid).
     detached: !isWin,
-    env: buildEngineEnv(),
+    env: buildEngineEnv(traceContext),
   });
   const done = new Promise<number>((res) => {
-    proc.on("close", (code) => res(code ?? -1));
-    proc.on("error", () => res(-1));
+    proc.on("close", (code) => {
+      const exitCode = code ?? -1;
+      traceAction({
+        ...traceContext,
+        status: exitCode === 0 ? "completed" : "failed",
+        details: { ...(traceContext.details ?? {}), args, exitCode },
+      });
+      res(exitCode);
+    });
+    proc.on("error", (error) => {
+      traceAction({
+        ...traceContext,
+        status: "failed",
+        message: `${traceContext.flow} > ${traceContext.action} failed to launch engine`,
+        details: { ...(traceContext.details ?? {}), args, error: error.message },
+      });
+      res(-1);
+    });
   });
   return { proc, done };
 }
@@ -664,7 +732,14 @@ function launchDetached(cmd: string, args: string[]): boolean {
 /** Open a URL in the OS default browser. */
 export function openUrl(url: string): void {
   const [cmd, args] = browserOpener(url);
-  launchDetached(cmd, args);
+  const ok = launchDetached(cmd, args);
+  traceAction({
+    flow: "help",
+    action: "open url",
+    status: ok ? "completed" : "failed",
+    message: `help > open url ${ok ? "launched" : "failed"}`,
+    details: { url, command: cmd },
+  });
 }
 
 /** Run `doctor -Json` and parse the contract. Resolves with an error string on failure. */
@@ -704,9 +779,26 @@ export async function exportDoctor(extended: boolean): Promise<{ path?: string; 
  * false if the report has not been generated yet.
  */
 export function openReport(): boolean {
-  if (!existsSync(CALIBR_REPORT)) return false;
+  if (!existsSync(CALIBR_REPORT)) {
+    traceAction({
+      flow: "results",
+      action: "open report",
+      status: "failed",
+      message: "results > open report failed: report.html is missing",
+      details: { report: CALIBR_REPORT },
+    });
+    return false;
+  }
   const [cmd, args] = browserOpener(CALIBR_REPORT);
-  return launchDetached(cmd, args);
+  const ok = launchDetached(cmd, args);
+  traceAction({
+    flow: "results",
+    action: "open report",
+    status: ok ? "completed" : "failed",
+    message: `results > open report ${ok ? "launched" : "failed"}`,
+    details: { report: CALIBR_REPORT, command: cmd, args },
+  });
+  return ok;
 }
 
 export interface EngineCommand {

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
-import { ENGINE_COMMANDS, readStatus, type EngineCommand, type Status } from "./engine.js";
+import { ENGINE_COMMANDS, readStatus, traceAction, type EngineCommand, type Status, type TraceContext } from "./engine.js";
 import { StatusView } from "./StatusView.js";
 import { RunView } from "./RunView.js";
 import { ResultsView } from "./ResultsView.js";
@@ -22,7 +22,7 @@ type Screen =
   | { kind: "allOptions" }
   | { kind: "resetOptions" }
   | { kind: "llamaPath" }
-  | { kind: "run"; args: string[]; label: string }
+  | { kind: "run"; args: string[]; label: string; trace?: TraceContext }
   | { kind: "results" };
 
 type Badge = {
@@ -98,7 +98,17 @@ export function App() {
       setScreen({ kind: "resetOptions" });
       return;
     }
-    setScreen({ kind: "run", args: cmd.args, label: cmd.label });
+    setScreen({
+      kind: "run",
+      args: cmd.args,
+      label: cmd.label,
+      trace: {
+        flow: "advanced tools",
+        action: cmd.id,
+        message: `advanced tools > ${cmd.id}`,
+        details: { label: cmd.label },
+      },
+    });
   };
 
   const mainItems: MenuItem[] = [
@@ -157,6 +167,12 @@ export function App() {
   useInput((input, key) => {
     if (screen.kind === "menu") {
       if (input === "q" || key.escape) {
+        traceAction({
+          flow: "app",
+          action: "quit",
+          status: "completed",
+          message: "app > quit",
+        });
         exit();
         return;
       }
@@ -214,7 +230,7 @@ export function App() {
   if (screen.kind === "run") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <RunView args={screen.args} label={screen.label} onExit={() => setScreen({ kind: "menu" })} />
+        <RunView args={screen.args} label={screen.label} trace={screen.trace} onExit={() => setScreen({ kind: "menu" })} />
       </Box>
     );
   }
@@ -224,7 +240,17 @@ export function App() {
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <ResultsView
           onExit={() => setScreen({ kind: "menu" })}
-          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+          onRun={(args, label) => setScreen({
+            kind: "run",
+            args,
+            label,
+            trace: {
+              flow: "results",
+              action: "re-run selected config",
+              message: "results > re-run selected config",
+              details: { label },
+            },
+          })}
         />
       </Box>
     );
@@ -234,7 +260,17 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <BenchOptionsView
-          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+          onRun={(args, label) => setScreen({
+            kind: "run",
+            args,
+            label,
+            trace: {
+              flow: "advanced tools",
+              action: "bench",
+              message: "advanced tools > bench",
+              details: { label },
+            },
+          })}
           onCancel={() => setScreen({ kind: "menu" })}
         />
       </Box>
@@ -245,7 +281,7 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <AllOptionsView
-          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+          onRun={(args, label, trace) => setScreen({ kind: "run", args, label, trace })}
           onCancel={() => setScreen({ kind: "menu" })}
         />
       </Box>
@@ -256,7 +292,17 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <InitOptionsView
-          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+          onRun={(args, label) => setScreen({
+            kind: "run",
+            args,
+            label,
+            trace: {
+              flow: "advanced tools",
+              action: "init",
+              message: "advanced tools > init",
+              details: { label },
+            },
+          })}
           onCancel={() => setScreen({ kind: "menu" })}
         />
       </Box>
@@ -267,7 +313,17 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <ResetOptionsView
-          onRun={(args, label) => setScreen({ kind: "run", args, label })}
+          onRun={(args, label) => setScreen({
+            kind: "run",
+            args,
+            label,
+            trace: {
+              flow: "advanced tools",
+              action: "reset",
+              message: "advanced tools > reset",
+              details: { label },
+            },
+          })}
           onCancel={() => setScreen({ kind: "menu" })}
         />
       </Box>

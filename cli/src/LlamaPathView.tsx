@@ -6,6 +6,7 @@ import {
   listCachedLlamaBuilds,
   loadConfig,
   pickFileSync,
+  traceAction,
   updateLocalConfigField,
   CALIBR_LOCAL_CFG,
   type CachedLlamaBuild,
@@ -70,13 +71,34 @@ export function LlamaPathView({ onCancel }: Props) {
       initialDir,
     });
     if (picked) {
+      traceAction({
+        flow: "configure llama path",
+        action: "pick file",
+        status: "selected",
+        message: "configure llama path > pick file selected a path",
+        details: { path: picked },
+      });
       setPhase({ kind: "confirm", newPath: picked });
+    } else {
+      traceAction({
+        flow: "configure llama path",
+        action: "pick file",
+        status: "cancelled",
+        message: "configure llama path > pick file cancelled or returned no path",
+      });
     }
     // If picked is null, the user cancelled the dialog — stay on the form.
   };
 
   const saveAndExit = (path: string) => {
     updateLocalConfigField("llama_server_exe", path);
+    traceAction({
+      flow: "configure llama path",
+      action: "save path",
+      status: "completed",
+      message: "configure llama path > save path completed",
+      details: { path },
+    });
     setPhase({ kind: "saved", newPath: path });
   };
 
@@ -89,9 +111,23 @@ export function LlamaPathView({ onCancel }: Props) {
         const picked = cachedBuilds[phase.cursor];
         if (!picked) return;
         if (phase.action === "use") {
+          traceAction({
+            flow: "configure llama path",
+            action: "use cached llama.cpp",
+            status: "selected",
+            message: "configure llama path > use cached llama.cpp selected",
+            details: { tag: picked.tag, flavor: picked.flavor, path: picked.path },
+          });
           setPhase({ kind: "confirm", newPath: picked.path });
         } else {
           deleteCachedLlamaBuild(picked);
+          traceAction({
+            flow: "configure llama path",
+            action: "delete cached llama.cpp",
+            status: "completed",
+            message: "configure llama path > delete cached llama.cpp completed",
+            details: { tag: picked.tag, flavor: picked.flavor, path: picked.path },
+          });
           setPhase({ kind: "deleted", build: picked });
         }
       }
@@ -106,7 +142,16 @@ export function LlamaPathView({ onCancel }: Props) {
       if (key.escape) { setPhase({ kind: "form" }); return; }
       if (key.return) {
         const next = phase.value.trim();
-        if (next) setPhase({ kind: "confirm", newPath: next });
+        if (next) {
+          traceAction({
+            flow: "configure llama path",
+            action: "type path",
+            status: "selected",
+            message: "configure llama path > type path selected a path",
+            details: { path: next },
+          });
+          setPhase({ kind: "confirm", newPath: next });
+        }
         return;
       }
       if (typedKey.backspace || typedKey.delete || input === "\u007f") {
