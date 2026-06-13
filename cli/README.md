@@ -7,11 +7,11 @@ prompt speed, real VRAM, and the silent shared-memory paging that turns a
 `47 t/s` config into `10 t/s` with no error message.
 
 The CLI wraps the existing PowerShell engine and gives you a navigable
-console UI for running discovery → plan → bench → report and for browsing the
-resulting winners. Recommendations are based on measured fit, speed, headroom,
-and spill behavior, not model-quality scoring.
+console UI for guided setup/runs and for browsing the resulting winners.
+Recommendations are based on measured fit, speed, headroom, and spill behavior,
+not model-quality scoring.
 
-![calibr CLI all flow](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/cli-all.png)
+![calibr guided run CLI](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/cli-all.png)
 
 ![calibr full report](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/report-complete.png)
 
@@ -83,10 +83,13 @@ and use a local llama.cpp build with `llama-server` plus the Metal backend.
 
 ```
 $ calibr
-> guided run           download -> bench -> report
-  results              browse benchmark winners
-  advanced tools       status, init, discover, plan, bench, report, reset
-  configure llama path * choose a llama.cpp server binary
+calibr - status
+
+> guided run              download, bench, report
+  results                 browse winners
+  advanced tools          dev/debug commands
+  configure llama path *  set llama-server
+  help                    doctor and fixes
 ```
 
 A typical first session:
@@ -102,8 +105,8 @@ A typical first session:
    starter `low` preset, choose the llama.cpp setup when prompted, and leave
    `auto-cleanup: yes`. The CLI shows the peak disk
    requirement and free space before it downloads catalog models. After you
-   accept, the engine downloads each model, benches it, deletes it, and moves
-   to the next.
+   accept, the engine downloads each model, benches it, cleans it up, and
+   moves to the next.
 3. **results** - browse the fastest safe winners per model. Press
    `enter` to drill into per-config detail, `o` to open the full HTML
    report in your browser, `r` to re-run the selected config with `-Force`, or
@@ -115,7 +118,7 @@ Once the starter run works, repeat `guided run` and switch `which models` to
 For sub-tasks (re-bench one model, change run count):
 
 4. From the menu pick **advanced tools** -> **bench** -> configure model filter,
-   which models (level), runs, force flag, rotation -> start. Choosing a level
+   which models (level), runs, force flag, auto-cleanup -> start. Choosing a level
    downloads + benches that level's curated models; picking a single model
    benches just that one (downloading it first if it isn't on disk). If you want
    to keep the downloaded `.gguf` files after the bench, toggle `rotate: no`.
@@ -162,9 +165,9 @@ calibr
 
 ## Commands
 
-The main menu is product-facing. **Guided run** wraps the engine's `all` flow,
-while **advanced tools** exposes the individual engine verbs when you need
-manual control:
+The main menu is product-facing. **Guided run** is the normal path: setup,
+model selection, benchmark, cleanup, report. **Advanced tools** exposes the
+individual engine verbs when you need manual control or debug access:
 
 | Verb | What it does |
 |---|---|

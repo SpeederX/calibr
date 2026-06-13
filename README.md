@@ -20,7 +20,7 @@ so startup/download hangs can be inspected after the fact.
 It is not a model-quality judge yet. The recommendation is based on measured
 fit, speed, headroom, and spill behavior on your machine.
 
-![calibr CLI all flow](docs/cli-all.png)
+![calibr guided run CLI](docs/cli-all.png)
 
 ![calibr full report](docs/report-complete.png)
 
@@ -78,10 +78,11 @@ You get a menu with `guided run`, `results`, `advanced tools`,
 If something won't start, open `help` -> `doctor`: it checks your CPU/GPU/OS
 and every dependency, tells you exactly what's missing and how to fix it, and
 can export a redacted bundle to attach to a GitHub issue. Start with
-`guided run`: it is the consumer path that configures the old `all` flow,
-defaults to downloading the starter `low` preset, and rotates files off disk
-per model, so the first answer comes back faster. Switch the preset to
-`middle`, `high`, `ultra`, or `all` when you want the broader catalog sweep.
+`guided run`: it is the consumer path that sets up llama.cpp, downloads or
+scans models, benchmarks them, and builds the report. It defaults to the
+starter `low` preset and auto-cleans downloaded files after each model unless
+you choose to keep them. Switch the preset to `middle`, `high`, `ultra`, or
+`all` when you want the broader catalog sweep.
 The menu marks setup items with a green check when ready, or a red `*` when
 they need attention.
 
@@ -100,7 +101,7 @@ to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
 Don't have any `.gguf` files yet? Pick `guided run`, keep `model catalog: yes`,
 choose the llama.cpp setup when prompted, and let calibr walk the curated set
 one model at a time:
-download -> bench -> delete -> next model -> report.
+download -> bench -> cleanup -> next model -> report.
 
 ## What calibr recommends
 
