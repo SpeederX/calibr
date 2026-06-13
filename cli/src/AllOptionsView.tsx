@@ -40,10 +40,21 @@ function readDiscoveredModelNames(): string[] {
 }
 
 const ALL_RUNS_VALUES: number[] = [0, 1, 3, 5];
+const DOWNLOAD_RETENTION_VALUES = ["cleanup", "keep-all", "keep-top-3", "keep-top-1"] as const;
+export type DownloadRetention = (typeof DOWNLOAD_RETENTION_VALUES)[number];
 
 function next<T>(values: readonly T[], current: T): T {
   const i = values.indexOf(current);
   return values[(i + 1) % values.length];
+}
+
+function retentionLabel(policy: DownloadRetention): string {
+  switch (policy) {
+    case "keep-all": return "keep all (store downloaded models in the model folder)";
+    case "keep-top-3": return "keep top 3 results";
+    case "keep-top-1": return "keep top 1 result";
+    default: return "yes (delete each downloaded model when its bench finishes)";
+  }
 }
 
 export type LlamaDecisionLike =
@@ -58,7 +69,7 @@ export interface AllArgsOpts {
   customIds: string;
   currentPreset: string;
   runs: number;
-  keepDownloads: boolean;
+  downloadRetention: DownloadRetention;
   preferSpeed: boolean;
   minimalPolling: boolean;
   rerunAll: boolean;
@@ -90,7 +101,10 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
     args.push("-ContextSizes", csv); parts.push(`-ContextSizes ${csv}`);
   }
   if (o.runs > 0)        { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
-  if (o.keepDownloads)   { args.push("-KeepDownloads");  parts.push("-KeepDownloads"); }
+  if (o.downloadRetention !== "cleanup") {
+    args.push("-DownloadRetention", o.downloadRetention);
+    parts.push(`-DownloadRetention ${o.downloadRetention}`);
+  }
   if (o.rerunAll)        { args.push("-Force");          parts.push("-Force"); }
   if (o.preferSpeed)     { args.push("-PreferSpeed");    parts.push("-PreferSpeed"); }
   if (o.minimalPolling)  { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
@@ -120,10 +134,10 @@ type LlamaDecision =
 export function AllOptionsView({ onRun, onCancel }: Props) {
   // 'all' is the typical "I want everything" path; defaulting fetch on
   // matches what most users want (download the curated catalog + bench it).
-  // Users with their own .gguf collections in scan_paths toggle it off
+  // Users with their own .gguf collections in the model folder toggle it off
   // in one keystroke.
   const [fetchCatalog, setFetchCatalog] = useState<boolean>(true);
-  const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
+  const [downloadRetention, setDownloadRetention] = useState<DownloadRetention>("cleanup");
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
   const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
   const [model, setModel] = useState<string | null>(null);
@@ -192,11 +206,11 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
 
   const rows = [
     { kind: "llama"    as const, label: `llama.cpp:       ${llamaLabel}` },
-    { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — only bench what's already in scan_paths"}` },
+    { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — load from local folder"}` },
     { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog || model !== null },
     { kind: "model"    as const, label: `model filter:    ${model === null ? "all (use 'which models')" : model}` },
     { kind: "runs"     as const, label: `runs per config: ${runs === 0 ? `default (${runsDefault} from config)` : String(runs)}` },
-    { kind: "rotate"   as const, label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its bench finishes)"}` },
+    { kind: "rotate"   as const, label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
     { kind: "polling"  as const, label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
     { kind: "run"      as const, label: "> start all" },
@@ -212,7 +226,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, fetchCatalog, model, customIds, currentPreset, runs, keepDownloads, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
+    buildAllArgs({ decision, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -240,7 +254,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         customIds,
         contextSizes: customCtxSizes,
         runs,
-        keepDownloads,
+        downloadRetention,
         preferSpeed,
         minimalPolling,
         rerunAll,
@@ -395,7 +409,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       }
       case "model":    setModel(next(modelChoices, model)); break;
       case "runs":     setRuns(next(ALL_RUNS_VALUES, runs)); break;
-      case "rotate":   setKeepDownloads(!keepDownloads); break;
+      case "rotate":   setDownloadRetention(next(DOWNLOAD_RETENTION_VALUES, downloadRetention)); break;
       case "prefer":   setPreferSpeed(!preferSpeed); break;
       case "polling":  setMinimalPolling(!minimalPolling); break;
       case "run": startRun(); break;
@@ -589,7 +603,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
           ) : (
             <Text color="red">
               Not enough free space on {destination}: need {formatBytes(phase.required)},
-              have {formatBytes(phase.available)}. Free up space or change scan_paths[0].
+              have {formatBytes(phase.available)}. Free up space or change the model folder.
             </Text>
           )}
         </Box>

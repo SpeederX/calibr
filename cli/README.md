@@ -87,7 +87,6 @@ calibr - status
 
 > guided run              download, bench, report
   results                 browse winners
-  advanced tools          dev/debug commands
   configure llama path *  set llama-server
   help                    doctor and fixes
 ```
@@ -103,10 +102,11 @@ A typical first session:
    delete cached auto-fetched builds.
 2. **guided run** -> configure: leave `model catalog: yes`, start with the default
    starter `low` preset, choose the llama.cpp setup when prompted, and leave
-   `auto-cleanup: yes`. The CLI shows the peak disk
-   requirement and free space before it downloads catalog models. After you
-   accept, the engine downloads each model, benches it, cleans it up, and
-   moves to the next.
+   `auto-cleanup: yes`. The CLI shows the peak disk requirement and free space
+   before it downloads catalog models. After you accept, the engine downloads
+   each model, benches it, cleans it up, and moves to the next. Switch
+   `auto-cleanup` to `keep all`, `keep top 3`, or `keep top 1` when you want
+   downloaded models to survive in the model folder.
 3. **results** - browse the fastest safe winners per model. Press
    `enter` to drill into per-config detail, `o` to open the full HTML
    report in your browser, `r` to re-run the selected config with `-Force`, or
@@ -117,11 +117,10 @@ Once the starter run works, repeat `guided run` and switch `which models` to
 
 For sub-tasks (re-bench one model, change run count):
 
-4. From the menu pick **advanced tools** -> **bench** -> configure model filter,
-   which models (level), runs, force flag, auto-cleanup -> start. Choosing a level
-   downloads + benches that level's curated models; picking a single model
-   benches just that one (downloading it first if it isn't on disk). If you want
-   to keep the downloaded `.gguf` files after the bench, toggle `rotate: no`.
+4. Prefer repeating **guided run** and changing the visible fields. Set
+   `model catalog: no - load from local folder` to bench existing `.gguf` files
+   from the model folder. Those files are user-owned and are never deleted by
+   cleanup.
 
 ## Privacy and model licenses
 
@@ -140,7 +139,7 @@ calibr-data/
 ├── config.json          your overrides
 ├── catalog.json         models discovered on disk
 ├── plan.json            test plan expanded from catalog
-├── downloads.json       which .gguf files calibr downloaded (rotation manifest)
+├── downloads.json       legacy manifest of calibr-downloaded .gguf files
 ├── llama-bin/           auto-fetched llama.cpp builds
 ├── results/*.json       one file per bench config
 ├── logs/*.log           full llama-server stderr per config
@@ -166,15 +165,20 @@ calibr
 ## Commands
 
 The main menu is product-facing. **Guided run** is the normal path: setup,
-model selection, benchmark, cleanup, report. **Advanced tools** exposes the
-individual engine verbs when you need manual control or debug access:
+model selection, benchmark, cleanup, report.
+
+### Legacy / Deprecated Advanced Commands
+
+The individual engine verbs still exist for development and debugging, but
+they are no longer promoted in the main menu. Prefer **guided run** unless you
+are diagnosing the engine directly:
 
 | Verb | What it does |
 |---|---|
 | `init` | Detect hardware, auto-fetch llama.cpp if requested, write `config.json` with sane defaults. |
 | `discover` | Scan `scan_paths` for `*.gguf`, build the model catalog. |
 | `plan` | Expand the catalog into bench configurations, sweeping the right dimension per model (context / MoE-cpu / offload). |
-| `bench` | Run each pending plan entry, write a result JSON per config. When models came from `get-models`, each model's .gguf is deleted from disk after its configs all finish (use `-KeepDownloads` to opt out). |
+| `bench` | Run each pending plan entry, write a result JSON per config. Download retention is controlled by `-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1`; `-KeepDownloads` is deprecated. |
 | `report` | Build the HTML dashboard and per-config `.bat` launchers. |
 | `all` | discover → plan → bench → report, end to end. With `catalog: on`, fetches the curated set first; with auto-fetch on, downloads llama.cpp when setup is incomplete. |
 | `status` | Print current config + counts (also shown as a card in the menu). |

@@ -6,7 +6,7 @@ import { buildAllArgs } from "../dist/AllOptionsView.js";
 
 const base = {
   decision: null, fetchCatalog: true, model: null, customIds: "",
-  currentPreset: "low", runs: 0, keepDownloads: false, preferSpeed: false,
+  currentPreset: "low", runs: 0, downloadRetention: "cleanup", preferSpeed: false,
   minimalPolling: false, rerunAll: false,
 };
 
@@ -44,4 +44,9 @@ test("context sizes pass through as -ContextSizes csv", () => {
   const i = a.indexOf("-ContextSizes");
   assert.ok(i >= 0, "should include -ContextSizes");
   assert.equal(a[i + 1], "16384,32768");
+});
+
+test("download retention passes through as -DownloadRetention", () => {
+  assert.deepEqual(buildAllArgs({ ...base, downloadRetention: "keep-top-3" }).args,
+    ["all", "-FetchCatalog", "-Preset", "low", "-DownloadRetention", "keep-top-3"]);
 });

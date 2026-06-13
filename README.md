@@ -73,16 +73,17 @@ npm install -g calibr
 calibr
 ```
 
-You get a menu with `guided run`, `results`, `advanced tools`,
-`configure llama path`, and `help`. Walk through it with arrow keys + enter.
+You get a menu with `guided run`, `results`, `configure llama path`, and
+`help`. Walk through it with arrow keys + enter.
 If something won't start, open `help` -> `doctor`: it checks your CPU/GPU/OS
 and every dependency, tells you exactly what's missing and how to fix it, and
 can export a redacted bundle to attach to a GitHub issue. Start with
 `guided run`: it is the consumer path that sets up llama.cpp, downloads or
 scans models, benchmarks them, and builds the report. It defaults to the
-starter `low` preset and auto-cleans downloaded files after each model unless
-you choose to keep them. Switch the preset to `middle`, `high`, `ultra`, or
-`all` when you want the broader catalog sweep.
+starter `low` preset and auto-cleans downloaded files after each model. You
+can also keep all downloaded models, or keep only the top 3 / top 1 current
+winners according to the selected winner rule. Switch the preset to `middle`,
+`high`, `ultra`, or `all` when you want the broader catalog sweep.
 The menu marks setup items with a green check when ready, or a red `*` when
 they need attention.
 
@@ -102,6 +103,11 @@ Don't have any `.gguf` files yet? Pick `guided run`, keep `model catalog: yes`,
 choose the llama.cpp setup when prompted, and let calibr walk the curated set
 one model at a time:
 download -> bench -> cleanup -> next model -> report.
+
+Already have local `.gguf` files? Set `model catalog: no - load from local
+folder`. calibr scans the model folder and treats those files as user-owned:
+it will not delete them. Cleanup applies only to files downloaded during the
+current run.
 
 ## What calibr recommends
 

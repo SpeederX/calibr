@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { existsSync, readFileSync } from "node:fs";
 import { CALIBR_CATALOG, loadConfig, cachedResultsCount, readModelCatalog } from "./engine.js";
+import type { DownloadRetention } from "./AllOptionsView.js";
 
 interface Props {
   onRun: (args: string[], label: string) => void;
@@ -29,10 +30,20 @@ function readDiscoveredModels(): Set<string> {
 const LEVELS = ["all", "low", "middle", "high", "ultra"] as const;
 type Level = (typeof LEVELS)[number];
 const RUNS_VALUES: number[] = [0, 1, 3, 5];
+const DOWNLOAD_RETENTION_VALUES = ["cleanup", "keep-all", "keep-top-3", "keep-top-1"] as const;
 
 function next<T>(values: readonly T[], current: T): T {
   const i = values.indexOf(current);
   return values[(i + 1) % values.length];
+}
+
+function retentionLabel(policy: DownloadRetention): string {
+  switch (policy) {
+    case "keep-all": return "keep all (store downloaded models in the model folder)";
+    case "keep-top-3": return "keep top 3 results";
+    case "keep-top-1": return "keep top 1 result";
+    default: return "yes (delete each downloaded model when its configs finish)";
+  }
 }
 
 export interface BenchArgsOpts {
@@ -40,7 +51,7 @@ export interface BenchArgsOpts {
   modelOnDisk: boolean;
   level: Level;
   runs: number;
-  keepDownloads: boolean;
+  downloadRetention: DownloadRetention;
   minimalPolling: boolean;
   rerunAll: boolean;
 }
@@ -61,7 +72,10 @@ export function buildBenchArgs(o: BenchArgsOpts): { args: string[]; label: strin
   }
   if (o.runs > 0) { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
   if (o.rerunAll) { args.push("-Force"); parts.push("-Force"); }
-  if (o.keepDownloads) { args.push("-KeepDownloads"); parts.push("-KeepDownloads"); }
+  if (o.downloadRetention !== "cleanup") {
+    args.push("-DownloadRetention", o.downloadRetention);
+    parts.push(`-DownloadRetention ${o.downloadRetention}`);
+  }
   if (o.minimalPolling) { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
   return { args, label: parts.length ? `bench ${parts.join(" ")}` : "bench" };
 }
@@ -92,7 +106,7 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
   const [model, setModel] = useState<string | null>(null);
   const [level, setLevel] = useState<Level>("all");
   const [runs, setRuns] = useState<number>(0);
-  const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
+  const [downloadRetention, setDownloadRetention] = useState<DownloadRetention>("cleanup");
   const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
   const [cursor, setCursor] = useState(0);
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
@@ -116,14 +130,14 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
     { kind: "model" as const,   disabled: false,        label: `model filter:    ${modelLabel}` },
     { kind: "level" as const,   disabled: levelDisabled, label: `which models:    ${levelLabel}` },
     { kind: "runs" as const,    disabled: false,        label: `runs per config: ${runsLabel}` },
-    { kind: "rotate" as const,  disabled: false,        label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its configs finish)"}` },
+    { kind: "rotate" as const,  disabled: false,        label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "polling" as const, disabled: false,        label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
     { kind: "run" as const,     disabled: false,        label: "> start bench" },
     { kind: "cancel" as const,  disabled: false,        label: "  cancel" },
   ];
 
   const buildArgs = (rerunAll: boolean) =>
-    buildBenchArgs({ model, modelOnDisk, level, runs, keepDownloads, minimalPolling, rerunAll });
+    buildBenchArgs({ model, modelOnDisk, level, runs, downloadRetention, minimalPolling, rerunAll });
 
   const activate = (i: number) => {
     const row = rows[i];
@@ -132,7 +146,7 @@ export function BenchOptionsView({ onRun, onCancel }: Props) {
       case "model":   setModel(next(modelChoices, model)); break;
       case "level":   setLevel(next(LEVELS, level)); break;
       case "runs":    setRuns(next(RUNS_VALUES, runs)); break;
-      case "rotate":  setKeepDownloads(!keepDownloads); break;
+      case "rotate":  setDownloadRetention(next(DOWNLOAD_RETENTION_VALUES, downloadRetention)); break;
       case "polling": setMinimalPolling(!minimalPolling); break;
       case "run": {
         if (cachedCount > 0) {

@@ -256,11 +256,12 @@ Describe "Select-PlanForBench" {
 
 
 Describe "Invoke-RotationCheck" {
-    # Each It manipulates two script vars: $script:KeepDownloads (matches the
-    # CLI-level -KeepDownloads switch) and $script:CALIBR_DOWNLOADS (so the
-    # manifest lookup hits a per-test temp file). Saved here, restored after.
-    $script:_origKeep   = $script:KeepDownloads
-    $script:_origDlPath = $script:CALIBR_DOWNLOADS
+    # Each It manipulates script vars matching CLI-level cleanup flags and
+    # $script:CALIBR_DOWNLOADS (so the manifest lookup hits a per-test temp
+    # file). Saved here, restored after.
+    $script:_origKeep      = $script:KeepDownloads
+    $script:_origRetention = $script:DownloadRetention
+    $script:_origDlPath    = $script:CALIBR_DOWNLOADS
 
     function _modelStatus {
         param([int]$needed, [int]$ok, [int]$fail = 0, [int]$skip = 0, [string]$mmproj = "")
@@ -297,6 +298,7 @@ Describe "Invoke-RotationCheck" {
         $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-rot-manifest-{0}.json" -f ([guid]::NewGuid()))
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
         $script:CALIBR_DOWNLOADS = $tmp
+        $script:DownloadRetention = "cleanup"
         foreach ($p in $tracked) {
             Add-DownloadManifestEntry -CatalogId "s" -Model "M" -ModelPath $p
         }
@@ -355,6 +357,16 @@ Describe "Invoke-RotationCheck" {
         Assert-True (Test-Path $gguf)
         if (Test-Path $gguf) { Remove-Item $gguf -Force }
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
+    It "maps -KeepDownloads to keep-all but otherwise honors DownloadRetention" {
+        $script:KeepDownloads = $false
+        $script:DownloadRetention = "keep-top-3"
+        Assert-Equal "keep-top-3" (Get-DownloadRetentionPolicy)
+
+        $script:KeepDownloads = $true
+        $script:DownloadRetention = "cleanup"
+        Assert-Equal "keep-all" (Get-DownloadRetentionPolicy)
     }
 
     It "keeps the file when it is not in the manifest (user-owned)" {
@@ -463,8 +475,9 @@ Describe "Invoke-RotationCheck" {
         if (Test-Path $tmp)     { Remove-Item $tmp     -Force }
     }
 
-    $script:KeepDownloads    = $script:_origKeep
-    $script:CALIBR_DOWNLOADS = $script:_origDlPath
+    $script:KeepDownloads      = $script:_origKeep
+    $script:DownloadRetention  = $script:_origRetention
+    $script:CALIBR_DOWNLOADS   = $script:_origDlPath
 }
 
 Describe "Invoke-OneBench model-file pre-flight" {

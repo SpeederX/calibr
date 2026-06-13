@@ -17,11 +17,12 @@ Each app launch starts a new session section in `action-trace.log`. `session.end
 | guided run > llama.cpp > pick local | The user selected one discovered local `llama-server`. | Store that choice for the current guided run and pass it to the engine. |
 | guided run > start | The user started the benchmark/recommendation flow. | Run setup/discover/plan/bench/report internally with the selected catalog, model scope, cleanup policy, and llama.cpp choice. |
 | guided run > start > download model | The engine is downloading a catalog model from Hugging Face. | Download the model file, emit progress, record calibr-owned downloads in `downloads.json`, and report skip/fail/success. |
+| guided run > start > cleanup model | A downloaded model finished its bench configs. | Delete it, keep all downloads, or keep only top 1/top 3 current winners according to the selected winner rule. User-owned local-folder models are never deleted. |
 | configure llama path > pick file | The user opened the manual llama.cpp file picker. | Accept a selected path or record cancel/no selection. |
 | configure llama path > save path | The user confirmed a custom `llama-server` path. | Write `llama_server_exe` to the local config. |
 | configure llama path > use cached llama.cpp | The user selected an auto-fetched cached build. | Use that cached `llama-server` path as the configured binary. |
 | configure llama path > delete cached llama.cpp | The user deleted an auto-fetched cached build. | Remove the cached build folder from `llama-bin/<build>/<flavor>`. |
 | results > open report | The user asked to open the generated HTML report. | Launch the OS browser command or record that `report.html` is missing/open failed. |
 | results > re-run selected config | The user re-ran one benchmark result. | Launch `bench -Id <id> -Force` for that config. |
-| advanced tools > <command> | A developer/debug command was launched directly. | Run the selected engine command and record process start, exit code, or launch failure. |
+| advanced tools > <command> | Deprecated developer/debug command path. | Run the selected engine command and record process start, exit code, or launch failure. Prefer `guided run` for normal use. |
 

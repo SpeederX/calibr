@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { buildBenchArgs } from "../dist/BenchOptionsView.js";
 
-const base = { model: null, modelOnDisk: false, level: "all", runs: 0, keepDownloads: false, minimalPolling: false, rerunAll: false };
+const base = { model: null, modelOnDisk: false, level: "all", runs: 0, downloadRetention: "cleanup", minimalPolling: false, rerunAll: false };
 
 test("all models + level 'all' -> plain bench of the existing plan", () => {
   assert.deepEqual(buildBenchArgs(base).args, ["bench"]);
@@ -29,6 +29,6 @@ test("a specific model overrides the level (level is inherited, not sent)", () =
 });
 
 test("runs / cleanup / polling / force pass through", () => {
-  const a = buildBenchArgs({ ...base, level: "middle", runs: 3, keepDownloads: true, minimalPolling: true, rerunAll: true }).args;
-  assert.deepEqual(a, ["bench", "-Level", "middle", "-Fetch", "-Runs", "3", "-Force", "-KeepDownloads", "-MinimalPolling"]);
+  const a = buildBenchArgs({ ...base, level: "middle", runs: 3, downloadRetention: "keep-all", minimalPolling: true, rerunAll: true }).args;
+  assert.deepEqual(a, ["bench", "-Level", "middle", "-Fetch", "-Runs", "3", "-Force", "-DownloadRetention", "keep-all", "-MinimalPolling"]);
 });

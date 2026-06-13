@@ -731,7 +731,7 @@ function Invoke-Help {
             Examples = @( "calibr plan", "calibr plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "calibr bench [-Model <regex>] [-Level {low,middle,high,ultra}] [-Fetch] [-Id <wildcard>] [-Force] [-DryRun] [-KeepDownloads]"
+            Usage    = "calibr bench [-Model <regex>] [-Level {low,middle,high,ultra}] [-Fetch] [-Id <wildcard>] [-Force] [-DryRun] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
             Flags    = @(
                 "-Model <regex>    Only run configs whose model name matches"
                 "-Level <level>    Only run configs for that hardware level (low|middle|high|ultra)"
@@ -742,18 +742,18 @@ function Invoke-Help {
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
                 "-DryRun           List configs that would run, don't execute"
-                "-KeepDownloads    Opt out of post-bench rotation. By default, any model whose"
-                "                  .gguf is recorded in data/downloads.json (i.e. calibr"
-                "                  downloaded it) is deleted from disk after every config for"
-                "                  that model finishes successfully. User-owned files are"
-                "                  never touched regardless of this flag."
+                "-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1"
+                "                  cleanup deletes calibr-downloaded models after their bench;"
+                "                  keep-all keeps downloads in the model folder; keep-top-1/3"
+                "                  keeps only the best current winners by the report winner rule."
+                "-KeepDownloads    Deprecated alias for -DownloadRetention keep-all."
             )
             Examples = @(
                 "calibr bench"
                 "calibr bench -Model Qwen3.5-9B"
                 "calibr bench -Level low -Force"
                 "calibr bench -Level low -Fetch"
-                "calibr bench -KeepDownloads"
+                "calibr bench -DownloadRetention keep-top-3"
             )
         }
         "report" = @{
@@ -767,7 +767,7 @@ function Invoke-Help {
             Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-KeepDownloads]"
+            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
             Flags    = @(
                 "-AutoFetchLlama       Run init with automatic llama.cpp download when setup is incomplete"
                 "-LlamaCppBuild bNNNN   With -AutoFetchLlama, pin a specific llama.cpp release"
@@ -780,15 +780,16 @@ function Invoke-Help {
                 "-Model <regex>           Filter download AND bench by model name"
                 "-Force                   Re-run all benchmarks (skip cache)"
                 "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
-                "-KeepDownloads           Opt out of post-bench rotation. By default with"
-                "                         -FetchCatalog, calibr-downloaded files are deleted"
-                "                         after a clean bench to bound peak disk to one model."
+                "-DownloadRetention       cleanup (default), keep-all, keep-top-3, or keep-top-1."
+                "                         Only calibr-downloaded files from the current run are"
+                "                         eligible for cleanup; user-owned files are never touched."
+                "-KeepDownloads           Deprecated alias for -DownloadRetention keep-all."
             )
             Examples = @(
                 "calibr all"
                 "calibr all -FetchCatalog"
                 "calibr all -FetchCatalog -CatalogId qwen3.5-9b-q4km"
-                "calibr all -FetchCatalog -KeepDownloads"
+                "calibr all -FetchCatalog -DownloadRetention keep-top-3"
                 "calibr all -PreferSpeed"
             )
         }

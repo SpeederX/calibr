@@ -129,12 +129,6 @@ export function App() {
       run: () => setScreen({ kind: "results" }),
     },
     {
-      id: "advanced-tools",
-      label: "advanced tools",
-      description: "status, init, discover, plan, bench, report, reset",
-      run: () => setScreen({ kind: "advancedTools" }),
-    },
-    {
       id: "llama-path",
       label: "configure llama path",
       description: "choose a llama.cpp server binary",
