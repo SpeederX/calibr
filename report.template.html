@@ -16,7 +16,7 @@
   h1 { font-size: 22px; margin: 0 0 4px 0; color: var(--c-accent); }
   h2 { font-size: 17px; margin: 28px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--c-border); }
   h3 { font-size: 14px; margin: 12px 0 8px; }
-  .container { max-width: 1400px; margin: 0 auto; }
+  .container { max-width: 1720px; margin: 0 auto; }
   .meta { color: var(--c-muted); font-size: 12px; }
   .hw { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12px; }
   .hw code { background:#1a1a1a; padding: 1px 5px; border-radius: 3px; color: var(--c-accent); }
@@ -81,8 +81,8 @@
          border-radius: 5px 5px 0 0; cursor: pointer; font-size: 12px; color: var(--c-muted); font-family: inherit; }
   .tab.active { background:#242424; color: var(--c-accent); border-bottom: 1px solid #242424; }
   .tab-content { background:#242424; border: 1px solid var(--c-border); border-radius: 0 5px 5px 5px; padding: 12px; }
-  .bar-row { display: grid; grid-template-columns: 320px 1fr 90px; gap: 8px; align-items: center; margin: 2px 0; }
-  .bar-row.bar-row-ann { grid-template-columns: 320px 1fr 90px 150px; }
+  .bar-row { display: grid; grid-template-columns: minmax(360px, 520px) minmax(280px, 1fr) 112px; gap: 8px; align-items: center; margin: 2px 0; }
+  .bar-row.bar-row-ann { grid-template-columns: minmax(360px, 520px) minmax(280px, 1fr) 112px minmax(260px, 420px); }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-row.is-winner .name::before { content: '★ '; color: var(--c-win); }
   .bar-row .track { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
@@ -90,17 +90,16 @@
     height: 100%;
     background: linear-gradient(90deg,#14532d 0%,#22c55e 34%,#facc15 62%,#f97316 80%,#ef4444 100%);
   }
-  .bar-row .fill.eval {
-    background: linear-gradient(90deg,#ef4444 0%,#ef4444 16.7%,#f97316 50%,#22c55e 100%);
-  }
-  .bar-row .fill.eval.fast {
-    background:#14532d;
-  }
+  .bar-row .fill.speed-red { background:#ef4444; }
+  .bar-row .fill.speed-orange { background:#f97316; }
+  .bar-row .fill.speed-green { background:#22c55e; }
+  .bar-row .fill.speed-dark-green { background:#14532d; }
   .bar-row .fill.memory {
     background: linear-gradient(90deg,#14532d 0%,#22c55e 34%,#facc15 62%,#f97316 80%,#ef4444 100%);
   }
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
-  .bar-row .ann { font-family: Consolas, monospace; font-size: 11px; text-align: right; color: var(--c-muted); }
+  .bar-row .ann { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; font-family: Consolas, monospace; font-size: 10px; color: var(--c-muted); }
+  .bar-row .metric { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; padding: 0 4px; white-space: nowrap; }
 
   /* ----- Scatter (now first chart) ----- */
   .scatter-bg-ram   { fill: rgba(255,255,255,0.035); }
@@ -154,7 +153,7 @@
   </div>
 
   <h2>Memory vs latency</h2>
-  <p class="meta">One dot per ok config. <b>Y</b> = VRAM peak + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). Winners for the current filter have a red pulsing ring.</p>
+  <p class="meta">One dot per ok config. <b>Y</b> = VRAM peak + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). Winners for the current filter have a pulsing ring.</p>
   <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
 
   <h2>Models (winners per current filter)</h2>
@@ -164,8 +163,11 @@
   <h2>Throughput &amp; memory</h2>
   <div class="tabs" id="bars-tabs">
     <div class="tab active" data-bars="eval">Eval tokens/s</div>
+    <div class="tab" data-bars="prompt">Prompt tokens/s</div>
+    <div class="tab" data-bars="throughput">Prompt + eval</div>
     <div class="tab" data-bars="vram">VRAM peak</div>
     <div class="tab" data-bars="memory">VRAM + RAM</div>
+    <div class="tab" data-bars="disk">Disk read</div>
   </div>
   <div class="tab-content"><div id="bars"></div></div>
 
@@ -581,15 +583,45 @@ function totalMemoryUsedMib(d) {
   return (+d.vram_peak_mib || 0) + Math.max(0, +d.ram_used_peak_mib || 0);
 }
 
+function metricChip(label, value) {
+  return '<span class="metric">' + label + ' ' + value + '</span>';
+}
+
+function throughputNote(d) {
+  return metricChip('eval', fmt1(d.eval_tps) + ' t/s') +
+         metricChip('prompt', fmt1(d.prompt_tps) + ' t/s');
+}
+
 function memoryUsageNote(d) {
   const vram = (+d.vram_peak_mib || 0);
   const ram = Math.max(0, +d.ram_used_peak_mib || 0);
   const shared = Math.max(0, +d.shared_peak_mib || 0);
-  return vram + ' VRAM + ' + ram + ' RAM' + (shared > 0 ? ' · +' + shared + ' shared' : '');
+  return throughputNote(d) +
+         metricChip('VRAM', vram + ' MiB') +
+         metricChip('RAM', ram + ' MiB') +
+         (shared > 0 ? metricChip('shared', '+' + shared) : '');
 }
 
-function evalPct(d) {
-  return Math.min(100, ((+d.eval_tps || 0) / 30) * 100);
+function vramUsageNote(d) {
+  return throughputNote(d) + metricChip('headroom', vramHeadroom(d));
+}
+
+function diskUsageNote(d) {
+  return throughputNote(d) + metricChip('disk', fmt1(d.disk_read_peak_mb_s) + ' MB/s');
+}
+
+function speedClass(value, mode, maxv) {
+  if (mode === 'eval') {
+    if (value < 5) return 'speed-red';
+    if (value < 15) return 'speed-orange';
+    if (value < 30) return 'speed-green';
+    return 'speed-dark-green';
+  }
+  const ratio = maxv > 0 ? value / maxv : 0;
+  if (ratio < 0.25) return 'speed-red';
+  if (ratio < 0.5) return 'speed-orange';
+  if (ratio < 0.75) return 'speed-green';
+  return 'speed-dark-green';
 }
 
 function renderBars() {
@@ -601,30 +633,55 @@ function renderBars() {
     return;
   }
 
-  let sorted, field, maxv, unit, annotate, valueOf, pctOf, fillClass;
+  let sorted, field, maxv, unit, annotate, valueOf, pctOf, fillClass, colorOf;
   if (STATE.bars === 'eval') {
-    field = 'eval_tps'; unit = 't/s'; annotate = null; fillClass = 'eval';
+    field = 'eval_tps'; unit = 't/s'; annotate = null; fillClass = '';
     valueOf = d => +d.eval_tps || 0;
-    pctOf = evalPct;
+    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
+    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    colorOf = d => speedClass(valueOf(d), 'eval', maxv);
+    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
+  } else if (STATE.bars === 'prompt') {
+    field = 'prompt_tps'; unit = 't/s'; annotate = d => metricChip('eval', fmt1(d.eval_tps) + ' t/s'); fillClass = '';
+    valueOf = d => +d.prompt_tps || 0;
+    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
+    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    colorOf = d => speedClass(valueOf(d), 'prompt', maxv);
+    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
+  } else if (STATE.bars === 'throughput') {
+    field = 'throughput_total_tps'; unit = 't/s'; annotate = throughputNote; fillClass = '';
+    valueOf = d => (+d.prompt_tps || 0) + (+d.eval_tps || 0);
+    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
+    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    colorOf = d => speedClass(valueOf(d), 'throughput', maxv);
     sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
   } else if (STATE.bars === 'memory') {
     field = 'memory_total_mib'; unit = 'MiB'; annotate = memoryUsageNote; fillClass = 'memory';
     valueOf = totalMemoryUsedMib;
     maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
     pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    colorOf = () => 'memory';
+    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
+  } else if (STATE.bars === 'disk') {
+    field = 'disk_read_peak_mb_s'; unit = 'MB/s'; annotate = diskUsageNote; fillClass = 'memory';
+    valueOf = d => +d.disk_read_peak_mb_s || 0;
+    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
+    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    colorOf = () => 'memory';
     sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
   } else { // vram
-    field = 'vram_peak_mib'; unit = 'MiB'; annotate = vramHeadroom; fillClass = 'memory';
+    field = 'vram_peak_mib'; unit = 'MiB'; annotate = vramUsageNote; fillClass = 'memory';
     valueOf = d => +d.vram_peak_mib || 0;
     maxv = (CFG.hardware && CFG.hardware.vram_total_mib) || 8192;
     pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    colorOf = () => 'memory';
     sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
   }
 
   for (const d of sorted) {
     const value = valueOf(d);
     const pctVal = pctOf(d);
-    const speedClass = STATE.bars === 'eval' && value >= 30 ? ' fast' : '';
+    const fillClasses = (fillClass + ' ' + colorOf(d)).trim();
     const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM+' + d.shared_peak_mib + 'MiB]</span>' :
                   d.wddm_flag_high_vram  ? ' <span class="wddm">[WDDM?' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
     const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
@@ -632,7 +689,7 @@ function renderBars() {
     el.insertAdjacentHTML('beforeend',
       '<div class="bar-row' + (annotate ? ' bar-row-ann' : '') + winCls + '">' +
         '<div class="name"><span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.label) + badge + '</div>' +
-        '<div class="track"><div class="fill ' + fillClass + speedClass + '" style="width:' + pctVal + '%"></div></div>' +
+        '<div class="track"><div class="fill ' + fillClasses + '" style="width:' + pctVal + '%"></div></div>' +
         '<div class="val">' + value.toFixed(1) + ' ' + unit + '</div>' +
         annHtml +
       '</div>'
