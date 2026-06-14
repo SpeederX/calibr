@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAllArgs, catalogModelNamesForScope, countGgufModels, modelNameFromGgufFileName, scanLocalModelNames } from "../dist/AllOptionsView.js";
+import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, scanLocalModelNames } from "../dist/AllOptionsView.js";
 
 const base = {
   decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",
@@ -39,9 +39,10 @@ test("preset 'all' emits no -Preset", () => {
 
 test("catalog model choices can be narrowed by preset scope", () => {
   const catalog = [
-    { id: "low-a-q4", model: "Low A" },
-    { id: "high-b-q4", model: "High B" },
-    { id: "high-b-q8", model: "High B" },
+    { id: "low-a-q4", model: "Low A", hf_file: "low-a-q4.gguf" },
+    { id: "high-b-q4", model: "High B", hf_file: "high-b-q4.gguf" },
+    { id: "high-b-q8", model: "High B", hf_file: "high-b-q8.gguf" },
+    { id: "mmproj-f16", model: "mmproj-F16", hf_file: "mmproj-F16.gguf" },
   ];
   const presets = {
     low: { label: "Low", models: ["low-*"] },
@@ -86,12 +87,19 @@ test("model folder scan counts local gguf files and exposes model names", () => 
     mkdirSync(join(root, "nested"));
     writeFileSync(join(root, "Qwen3.5-9B-Q4_K_M.gguf"), "stub");
     writeFileSync(join(root, "nested", "Gemma-4-E2B-it.F16.gguf"), "stub");
+    writeFileSync(join(root, "nested", "mmproj-F16.gguf"), "stub");
     writeFileSync(join(root, "notes.txt"), "ignore");
     assert.equal(countGgufModels(root), 2);
     assert.deepEqual(scanLocalModelNames(root), ["Gemma-4-E2B-it", "Qwen3.5-9B"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("mmproj gguf files are support assets, not selectable models", () => {
+  assert.equal(isSelectableModelGguf("mmproj-F16.gguf"), false);
+  assert.equal(isSelectableModelGguf("MMProj-model-f16-12B.gguf"), false);
+  assert.equal(isSelectableModelGguf("Gemma-4-E2B-it.F16.gguf"), true);
 });
 
 test("local model name parser mirrors common variant suffixes", () => {

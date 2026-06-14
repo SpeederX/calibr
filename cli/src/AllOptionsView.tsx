@@ -82,6 +82,11 @@ export function modelNameFromGgufFileName(fileName: string): string {
   return base;
 }
 
+export function isSelectableModelGguf(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith(".gguf") && !lower.startsWith("mmproj");
+}
+
 export function scanLocalModelNames(root: string): string[] {
   if (!root.trim() || !existsSync(root)) return [];
   const stack = [root];
@@ -99,7 +104,7 @@ export function scanLocalModelNames(root: string): string[] {
       try {
         const st = statSync(path);
         if (st.isDirectory()) stack.push(path);
-        else if (st.isFile() && entry.toLowerCase().endsWith(".gguf")) names.add(modelNameFromGgufFileName(entry));
+        else if (st.isFile() && isSelectableModelGguf(entry)) names.add(modelNameFromGgufFileName(entry));
       } catch {
         // Ignore files that disappear or cannot be read during the scan.
       }
@@ -121,7 +126,11 @@ export function catalogModelNamesForScope(
     if (Array.isArray(preset.models)) return filterCatalog(catalog, { catalogId: preset.models.join(",") });
     return catalog;
   })();
-  return [...new Set(entries.map(e => e.model).filter(Boolean))].sort();
+  return [...new Set(entries
+    .filter(e => isSelectableModelGguf(e.hf_file) && !e.model.toLowerCase().startsWith("mmproj"))
+    .map(e => e.model)
+    .filter(Boolean))]
+    .sort();
 }
 
 function compactPath(path: string, max = 58): string {
@@ -153,7 +162,7 @@ export function countGgufModels(root: string): number {
       try {
         const st = statSync(path);
         if (st.isDirectory()) stack.push(path);
-        else if (st.isFile() && entry.toLowerCase().endsWith(".gguf")) count++;
+        else if (st.isFile() && isSelectableModelGguf(entry)) count++;
       } catch {
         // Ignore files that disappear or cannot be read during the scan.
       }
