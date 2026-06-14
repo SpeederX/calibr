@@ -8,7 +8,8 @@
 `calibr` is a guided local-LLM recommender for GGUF models served by
 [llama.cpp](https://github.com/ggml-org/llama.cpp). It discovers or downloads
 candidate models, sweeps launch configurations, watches real memory behavior,
-and tells you which model/config is the fastest safe choice on your hardware.
+and shows which model/config fits your hardware under different recommendation
+profiles.
 Its sweet spot is NVIDIA CUDA on Windows — where it also detects the silent
 WDDM VRAM-to-RAM paging cliff — but it **runs on Linux too**, with experimental
 macOS/Metal detection in progress. The output is an HTML dashboard plus
@@ -80,9 +81,9 @@ and every dependency, tells you exactly what's missing and how to fix it, and
 can export a redacted bundle to attach to a GitHub issue. Start with
 `guided run`: it is the consumer path that sets up llama.cpp, downloads or
 scans models, benchmarks them, and builds the report. It defaults to the
-starter `low` preset and auto-cleans downloaded files after each model. You
+starter `low` scope and auto-cleans downloaded files after each model. You
 can also keep all downloaded models, or keep only the top 3 / top 1 current
-winners according to the selected winner rule. Switch the preset to `middle`,
+winners according to the selected winner rule. Switch the scope to `middle`,
 `high`, `ultra`, or `all` when you want the broader catalog sweep.
 The menu marks setup items with a green check when ready, or a red `*` when
 they need attention.
@@ -115,10 +116,32 @@ the current run.
 
 ## What calibr recommends
 
-`calibr` recommends the fastest safe local setup it has actually measured:
-model file, quant/variant, context/KV-cache choice, offload flags, and a ready
-launcher. "Safe" means the run completed without the hidden VRAM-to-system-RAM
-spill that makes a model look loaded but feel unusable.
+`calibr` recommends from measurements it actually ran: model file,
+quant/variant, context/KV-cache choice, offload flags, memory behavior, and a
+ready launcher.
+
+There is not one universal winner. The report exposes profiles:
+
+- **Speed**: highest measured `eval_tps`. It ignores spill and power.
+- **Safety-balanced**: fastest config that did not page into shared/system
+  memory. This matches the default launcher pick.
+- **Efficiency**: best tokens per watt when GPU power data is available.
+- **Overall**: weighted view across speed, safety, and efficiency.
+
+"Safe" currently means no confirmed shared-memory spill. On Windows, that is a
+delta above `wddm_detection.shared_delta_confirm_mib` (default `500 MiB`) in
+the WDDM shared-memory counter. A high VRAM saturation warning also appears
+above `wddm_detection.vram_saturation_threshold` (default `0.92`, or 92% of
+VRAM), but the hard disqualifier for the default safety picker is confirmed
+shared spill. On AMD/Linux, GTT via `radeontop` feeds the same
+`shared_peak_mib` signal when available. NVIDIA/Linux usually fails cleanly
+instead of silently spilling.
+
+The report also records RAM, VRAM/shared memory, GPU power, temperature,
+utilization, headroom, and load/throughput fields. Those are shown for
+inspection and secondary scoring, but calibr does not yet optimize for "largest
+parameter count that fits" or "lowest memory use". Those are useful future
+profiles once the quality/performance tradeoffs are better understood.
 
 It does not rank instruction-following quality, coding ability, multilingual
 performance, or preference alignment. Treat the winner as "this is the best
@@ -245,68 +268,21 @@ of widely used GGUF packagers. It avoids random distillations, fine-tunes, and
 one-off community remixes because the goal is to recommend a reliable local
 baseline.
 
-### Low - GTX 1650 / RTX 3050 / iGPU + 16 GB system
+The exact list lives in [`models_catalog.json`](models_catalog.json). The
+guided run's `scope` field comes from
+[`default_bench_presets.json`](default_bench_presets.json):
 
-| Model | Variant | Sweep | Source | Approx size |
-|---|---|---:|---|---:|
-| SmolLM2-135M-Instruct | Q4_K_M | context | bartowski | 91 MB |
-| SmolLM2-360M-Instruct | Q4_K_M | context | bartowski | 219 MB |
-| Qwen2.5-0.5B-Instruct | Q4_K_M | context | Qwen | 381 MB |
-| Qwen3-0.6B | Q4_K_M | context | unsloth | 448 MB |
-| Qwen3.5-0.8B | UD-Q4_K_XL | context | unsloth | 533 MB |
-| TinyLlama-1.1B-Chat | Q4_K_M | context | TheBloke | 639 MB |
-| Llama-3.2-1B-Instruct | Q4_K_M | context | unsloth | 763 MB |
-| Gemma-3-1B-it | Q4_K_M | context | ggml-org | 763 MB |
-| Qwen3.5-0.8B | Q8_0 | context | unsloth | 774 MB |
-| Qwen2.5-1.5B-Instruct | Q4_K_M | context | Qwen | 954 MB |
-| StableLM-2-1.6B-Zephyr | Q4_K_M | context | second-state | 954 MB |
-| SmolLM2-1.7B-Instruct | Q4_K_M | context | HuggingFaceTB | 1.0 GB |
-| Qwen3.5-2B | UD-Q4_K_XL | context | unsloth | 1.2 GB |
-| Granite-3.0-2B-Instruct | Q4_K_M | context | bartowski | 1.4 GB |
-| Gemma-2-2B-it | Q4_K_M | context | bartowski | 1.6 GB |
-| Phi-2-2.7B | Q4_K_M | context | TheBloke | 1.6 GB |
-| Qwen2.5-3B-Instruct | Q4_K_M | context | Qwen | 1.8 GB |
-| Llama-3.2-3B-Instruct | Q4_K_M | context | unsloth | 1.9 GB |
-| Ministral-3-3B-Instruct | Q4_K_M | context | unsloth | 1.9 GB |
-| Gemma-4-E2B | Q4_K_M | context | unsloth | 2.3 GB |
+| Scope | Target hardware | Contents |
+|---|---|---|
+| `low` | 2-4 GB VRAM / iGPU-class machines | small dense models and starter references |
+| `middle` | 8 GB VRAM + 24-32 GB RAM | compact 3B-9B dense models and small active-parameter MoE |
+| `high` | 12-24 GB VRAM + 32-96 GB RAM | 12B-27B dense/coder/reasoning models |
+| `ultra` | 24-48 GB VRAM/UMA + 64-128 GB RAM | 30B-40B class and workstation-oriented entries |
+| `all` | any machine with enough disk/time | every catalog entry |
 
-### Middle - RTX 2070 / 3060 8 GB + 32 GB system
-
-| Model | Variant | Sweep | Source | Approx size |
-|---|---|---:|---|---:|
-| Phi-3.5-mini-Instruct | Q4_K_M | context | bartowski | 2.2 GB |
-| Phi-4-mini-reasoning | Q4_K_M | context | lmstudio-community | 2.3 GB |
-| Gemma-3-4B-it | Q4_K_M | context | ggml-org | 2.4 GB |
-| Qwen3.5-4B | Q4_K_M | context | unsloth | 2.6 GB |
-| Qwen3.5-2B | BF16 | context | unsloth | 3.5 GB |
-| Gemma-3n-E4B-it | Q4_K_M | context | unsloth | 4.2 GB |
-| Gemma-4-E4B | Q4_K_M | context | unsloth | 4.6 GB |
-| Qwen3.5-9B | Q4_K_M | context | unsloth | 5.2 GB |
-| Gemma-4-26B-A4B | UD-Q4_K_M | moe-cpu | unsloth | 14.9 GB |
-
-### High - 12-24 GB VRAM + 32-96 GB RAM
-
-| Model | Variant | Sweep | Source | Approx size |
-|---|---|---:|---|---:|
-| Gemma-4-12B-it | Q4_K_M | offload | unsloth | 6.6 GB |
-| Gemma-3-12B-it-QAT | Q4_0 | offload | google | 7.5 GB |
-| Phi-4-reasoning-plus | Q4_K_M | offload | unsloth | 8.4 GB |
-| DeepSeek-Coder-V2-Lite-Instruct | Q4_K_M | offload | bartowski | 9.7 GB |
-| Qwen3.5-27B | Q4_K_S | offload | unsloth | 14.7 GB |
-| Gemma-3-27B-it-QAT | Q4_0 | offload | google | 16.0 GB |
-
-### Ultra - 24-48 GB VRAM/UMA + 64-128 GB RAM
-
-| Model | Variant | Sweep | Source | Approx size |
-|---|---|---:|---|---:|
-| Qwen3-30B-A3B-Instruct-2507 | UD-Q4_K_XL | moe-cpu | unsloth | 16.5 GB |
-| Qwen3-Coder-30B-A3B-Instruct | Q4_K_M | moe-cpu | Intel | 16.1 GB |
-| Granite-4.1-30B | Q4_K_M | offload | ibm-granite | 16.3 GB |
-| Qwen3-30B-A3B | Q4_K_M | moe-cpu | Qwen | 17.3 GB |
-| Gemma-4-31B | Q4_K_M | offload | unsloth | 17.1 GB |
-| Qwen3-32B | Q4_K_M | offload | Qwen | 18.4 GB |
-| DeepSeek-R1-Distill-Qwen-32B | Q4_K_M | offload | unsloth | 18.5 GB |
-| Qwen3.6-35B-A3B | UD-Q4_K_M | moe-cpu | unsloth | 20.6 GB |
+The `model` field in guided run narrows the selected scope to a single model.
+The catalog changes faster than the README; treat the JSON files as the source
+of truth for exact ids, variants, sizes, and upstream repositories.
 
 ## Technical details
 
@@ -405,6 +381,13 @@ variants unless there is a clear consumer reason and the provenance is obvious.
 Implementation details live in [HOW-IT-WORKS.md](HOW-IT-WORKS.md). The current
 product surface is the Node + Ink CLI in `cli/`, wrapping the existing engine
 through a single adapter boundary.
+
+Runtime validation is just as useful as code. Windows and Linux are covered by
+the maintainer's day-to-day testing, but dedicated AMD/ROCm, `amd-smi`,
+macOS/Metal, and ARM machines need more real-world coverage. Good contributions
+include: running `calibr doctor -Export`, attaching redacted logs/action traces
+to issues, testing guided run on those platforms, or sending PRs that generalize
+a platform fix without hardcoding one user's machine.
 
 ## License
 

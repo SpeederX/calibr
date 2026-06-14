@@ -19,6 +19,49 @@ Current baseline:
 These are the next larger product improvements to keep in view after the
 current guided-run cleanup line.
 
+Proposed order:
+
+1. Prune unused legacy paths and duplicated UI/engine behavior.
+2. Move the HTTP benchmark client toward TypeScript where stream parsing and
+   telemetry are easier to maintain.
+3. Add benchmark metric glossary / latency work and prompt-length prefill
+   sweep.
+4. Add opt-in telemetry / leaderboard submission when the server-side
+   Cloudflare + PHP token layer exists.
+5. Add MTP/speculative decoding support if it stays small enough for 0.1.8;
+   otherwise shift it to 0.1.9.
+
+### Engine pruning before deeper migration
+
+Before moving more logic out of PowerShell, remove or isolate legacy branches
+that no longer map to the current guided-run product.
+
+Targets:
+
+- dead CLI paths hidden behind advanced tools
+- stale command flags kept only for old prototype workflows
+- duplicated model/catalog/filter behavior across CLI screens
+- old report/backlog documentation that increases context without guiding
+  current work
+
+The goal is to shrink the surface before a TypeScript benchmark-client
+migration, not to rewrite the engine wholesale.
+
+### TypeScript benchmark-client migration
+
+Move the llama.cpp HTTP request/response handling out of PowerShell in small
+steps, keeping the existing engine adapter boundary.
+
+Good first migration targets:
+
+- chat/completions request building
+- streaming response parsing for `ttfr_ms` / `e2e_ttft_ms`
+- request timing and retry/error classification
+- telemetry event serialization, redaction, and upload
+
+Keep platform probing, model discovery, planning, and launcher generation in
+PowerShell until a concrete reason appears to move each one.
+
 ### Benchmark metric glossary and latency pass
 
 Make every benchmark metric explicit in the result schema and report. The
@@ -143,22 +186,6 @@ Open choices:
 - whether failed configs are uploaded by default
 - leaderboard schema and deduplication rules
 - public opt-in wording in CLI and README privacy section
-
-### Engine pruning before deeper migration
-
-Before moving more logic out of PowerShell, remove or isolate legacy branches
-that no longer map to the current guided-run product.
-
-Targets:
-
-- dead CLI paths hidden behind advanced tools
-- stale command flags kept only for old prototype workflows
-- duplicated model/catalog/filter behavior across CLI screens
-- old report/backlog documentation that increases context without guiding
-  current work
-
-The goal is to shrink the surface before a TypeScript benchmark-client
-migration, not to rewrite the engine wholesale.
 
 Recently shipped and removed from the TODO queue:
 
@@ -293,6 +320,8 @@ The report has fixed profile buttons. A future version can expose sliders for:
 - speed
 - efficiency
 - safety/headroom
+- largest parameter count that fits without OOM/spill
+- lowest memory footprint among acceptable winners
 - honesty/quality
 - hardware stress
 

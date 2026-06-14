@@ -1,15 +1,16 @@
 # calibr
 
 Interactive console for **[calibr](https://github.com/SpeederX/calibr)** — a
-guided local-LLM recommender that finds the fastest safe `llama.cpp`
-model/configuration your hardware can actually run. It measures eval speed,
-prompt speed, real VRAM, and the silent shared-memory paging that turns a
-`47 t/s` config into `10 t/s` with no error message.
+guided local-LLM recommender that measures which `llama.cpp`
+model/configurations your hardware can actually run. It measures eval speed,
+prompt speed, real VRAM, power, and the silent shared-memory paging that turns
+a `47 t/s` config into `10 t/s` with no error message.
 
 The CLI wraps the existing PowerShell engine and gives you a navigable
 console UI for guided setup/runs and for browsing the resulting winners.
-Recommendations are based on measured fit, speed, headroom, and spill behavior,
-not model-quality scoring.
+Recommendations are based on measured fit, speed, headroom, power, and spill
+behavior, not model-quality scoring. The report exposes multiple winner
+profiles: speed, safety-balanced, efficiency, and overall.
 
 ![calibr guided run CLI](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/cli-all.png)
 
@@ -107,7 +108,7 @@ A typical first session:
    each model, benches it, cleans it up, and moves to the next. Switch
    `auto-cleanup` to `keep all`, `keep top 3`, or `keep top 1` when you want
    downloaded models to survive in the model folder.
-3. **results** - browse the fastest safe winners per model. Press
+3. **results** - browse measured winners per model. Press
    `enter` to drill into per-config detail, `o` to open the full HTML
    report in your browser, `r` to re-run the selected config with `-Force`, or
    `q` to go back.
