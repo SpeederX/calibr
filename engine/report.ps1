@@ -222,6 +222,7 @@ function Invoke-Report {
         $gpuUt  = if ($null -ne $r.gpu_util_avg_pct)   { [int]$r.gpu_util_avg_pct } else { $null }
         $ramPk  = if ($null -ne $r.ram_used_peak_mib)  { [int]$r.ram_used_peak_mib } else { $null }
         $ramBl  = if ($null -ne $r.ram_baseline_mib)   { [int]$r.ram_baseline_mib } else { $null }
+        $diskRd = if ($null -ne $r.disk_read_peak_mb_s) { [double]$r.disk_read_peak_mb_s } else { $null }
         # Failure-classification fields. The report needs them to give a
         # meaningful summary for failed configs (otherwise the row shows
         # zeros + 'unknown' fit and the user thinks the config wasn't run).
@@ -268,6 +269,7 @@ function Invoke-Report {
             gpu_util_avg_pct=$gpuUt
             ram_used_peak_mib=$ramPk
             ram_baseline_mib=$ramBl
+            disk_read_peak_mb_s=$diskRd
         }
     }) | ConvertTo-Json -Depth 5 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {

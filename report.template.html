@@ -90,6 +90,15 @@
     height: 100%;
     background: linear-gradient(90deg,#14532d 0%,#22c55e 34%,#facc15 62%,#f97316 80%,#ef4444 100%);
   }
+  .bar-row .fill.eval {
+    background: linear-gradient(90deg,#ef4444 0%,#ef4444 16.7%,#f97316 50%,#22c55e 100%);
+  }
+  .bar-row .fill.eval.fast {
+    background:#14532d;
+  }
+  .bar-row .fill.memory {
+    background: linear-gradient(90deg,#14532d 0%,#22c55e 34%,#facc15 62%,#f97316 80%,#ef4444 100%);
+  }
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
   .bar-row .ann { font-family: Consolas, monospace; font-size: 11px; text-align: right; color: var(--c-muted); }
 
@@ -156,6 +165,7 @@
   <div class="tabs" id="bars-tabs">
     <div class="tab active" data-bars="eval">Eval tokens/s</div>
     <div class="tab" data-bars="vram">VRAM peak</div>
+    <div class="tab" data-bars="memory">VRAM + RAM</div>
   </div>
   <div class="tab-content"><div id="bars"></div></div>
 
@@ -174,6 +184,7 @@
         <th class="num">VRAM</th><th class="num">Shared</th>
         <th class="num">RAM Δ</th>
         <th class="num">GPU W</th><th class="num">GPU °C</th><th class="num">GPU %</th>
+        <th class="num">Disk MB/s</th>
         <th>Layers</th><th>Fit</th>
       </tr></thead>
       <tbody></tbody>
@@ -521,6 +532,7 @@ function renderModelsList() {
               '<td class="num">' + wddm + '</td>' +
               '<td class="num">' + fmt2(c.ttft_sec) + '</td>' +
               '<td class="num">' + ((+c.gpu_power_peak_w > 0) ? fmt0(c.gpu_power_peak_w) + ' W' : '-') + '</td>' +
+              '<td class="num">' + (c.disk_read_peak_mb_s != null ? fmt1(c.disk_read_peak_mb_s) : '-') + '</td>' +
               '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
               '<td><a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a></td>' +
               '</tr>';
@@ -540,6 +552,7 @@ function renderModelsList() {
               '<th class="num">VRAM</th><th class="num">Shared</th>' +
               '<th class="num">TTFT s</th>' +
               '<th class="num">GPU W</th>' +
+              '<th class="num">Disk MB/s</th>' +
               '<th>Fit</th><th></th>' +
             '</tr></thead>' +
             '<tbody>' + rows + '</tbody>' +
@@ -564,6 +577,21 @@ function vramHeadroom(d) {
   return '+' + left + ' MiB';
 }
 
+function totalMemoryUsedMib(d) {
+  return (+d.vram_peak_mib || 0) + Math.max(0, +d.ram_used_peak_mib || 0);
+}
+
+function memoryUsageNote(d) {
+  const vram = (+d.vram_peak_mib || 0);
+  const ram = Math.max(0, +d.ram_used_peak_mib || 0);
+  const shared = Math.max(0, +d.shared_peak_mib || 0);
+  return vram + ' VRAM + ' + ram + ' RAM' + (shared > 0 ? ' · +' + shared + ' shared' : '');
+}
+
+function evalPct(d) {
+  return Math.min(100, ((+d.eval_tps || 0) / 30) * 100);
+}
+
 function renderBars() {
   const el = document.getElementById('bars');
   el.innerHTML = '';
@@ -573,19 +601,30 @@ function renderBars() {
     return;
   }
 
-  let sorted, field, maxv, unit, annotate;
+  let sorted, field, maxv, unit, annotate, valueOf, pctOf, fillClass;
   if (STATE.bars === 'eval') {
-    field = 'eval_tps'; unit = 't/s'; annotate = null;
-    maxv = Math.ceil(Math.max(...okData.map(d => +d[field] || 0)) * 1.1);
-    sorted = okData.slice().sort((a, b) => (+b[field] || 0) - (+a[field] || 0));
+    field = 'eval_tps'; unit = 't/s'; annotate = null; fillClass = 'eval';
+    valueOf = d => +d.eval_tps || 0;
+    pctOf = evalPct;
+    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
+  } else if (STATE.bars === 'memory') {
+    field = 'memory_total_mib'; unit = 'MiB'; annotate = memoryUsageNote; fillClass = 'memory';
+    valueOf = totalMemoryUsedMib;
+    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
+    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
   } else { // vram
-    field = 'vram_peak_mib'; unit = 'MiB'; annotate = vramHeadroom;
+    field = 'vram_peak_mib'; unit = 'MiB'; annotate = vramHeadroom; fillClass = 'memory';
+    valueOf = d => +d.vram_peak_mib || 0;
     maxv = (CFG.hardware && CFG.hardware.vram_total_mib) || 8192;
-    sorted = okData.slice().sort((a, b) => (+a[field] || 0) - (+b[field] || 0));
+    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
   }
 
   for (const d of sorted) {
-    const pctVal = Math.min(100, ((+d[field] || 0) / maxv) * 100);
+    const value = valueOf(d);
+    const pctVal = pctOf(d);
+    const speedClass = STATE.bars === 'eval' && value >= 30 ? ' fast' : '';
     const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM+' + d.shared_peak_mib + 'MiB]</span>' :
                   d.wddm_flag_high_vram  ? ' <span class="wddm">[WDDM?' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
     const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
@@ -593,8 +632,8 @@ function renderBars() {
     el.insertAdjacentHTML('beforeend',
       '<div class="bar-row' + (annotate ? ' bar-row-ann' : '') + winCls + '">' +
         '<div class="name"><span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.label) + badge + '</div>' +
-        '<div class="track"><div class="fill level-' + lvl(d) + '" style="width:' + pctVal + '%"></div></div>' +
-        '<div class="val">' + (+d[field] || 0).toFixed(1) + ' ' + unit + '</div>' +
+        '<div class="track"><div class="fill ' + fillClass + speedClass + '" style="width:' + pctVal + '%"></div></div>' +
+        '<div class="val">' + value.toFixed(1) + ' ' + unit + '</div>' +
         annHtml +
       '</div>'
     );
@@ -833,6 +872,7 @@ function renderAllTable() {
         '<td class="num">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? (+d.gpu_power_peak_w).toFixed(0) : '-') + '</td>' +
         '<td class="num">' + (d.gpu_temp_peak_c != null && d.gpu_temp_peak_c > 0 ? d.gpu_temp_peak_c : '-') + '</td>' +
         '<td class="num">' + (d.gpu_util_avg_pct != null && d.gpu_util_avg_pct > 0 ? d.gpu_util_avg_pct + '%' : '-') + '</td>' +
+        '<td class="num">' + (d.disk_read_peak_mb_s != null ? (+d.disk_read_peak_mb_s).toFixed(1) : '-') + '</td>' +
         '<td>' + (d.layers_offloaded || '-') + '</td>' +
         '<td class="' + fitClass(d) + '">' + fitLabel(d) + '</td>' +
       '</tr>'
