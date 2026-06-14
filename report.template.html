@@ -5,10 +5,10 @@
 <title>calibr report</title>
 <style>
   :root {
-    --c-bg:#444; --c-card:#383838; --c-border:#666; --c-text:#eee;
-    --c-muted:#bbb; --c-accent:#c44;
-    --c-a:#eee; --c-b:#ccc; --c-c:#c44;
-    --c-win:#c44; --c-win-bg:rgba(204,68,68,0.16);
+    --c-bg:#1e1e1e; --c-card:#292929; --c-border:#4f4f4f; --c-text:#f0f0f0;
+    --c-muted:#b7b7b7; --c-accent:#c4b5fd;
+    --c-a:#7bc99a; --c-b:#d7c678; --c-c:#d98ba6;
+    --c-win:#d8b4fe; --c-win-bg:rgba(216,180,254,0.16);
   }
   * { box-sizing: border-box; }
   body { font: 14px/1.5 -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
@@ -19,22 +19,22 @@
   .container { max-width: 1400px; margin: 0 auto; }
   .meta { color: var(--c-muted); font-size: 12px; }
   .hw { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12px; }
-  .hw code { background:#2d2d2d; padding: 1px 5px; border-radius: 3px; color: var(--c-accent); }
+  .hw code { background:#1a1a1a; padding: 1px 5px; border-radius: 3px; color: var(--c-accent); }
   table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
   th, td { padding: 6px 9px; text-align: left; border-bottom: 1px solid var(--c-border); }
-  th { background:#333; color: var(--c-accent); position: sticky; top: 0; }
+  th { background:#242424; color: var(--c-accent); position: sticky; top: 0; }
   tr:hover { background: rgba(255,255,255,0.035); }
   td.num { text-align: right; font-family: Consolas, monospace; font-variant-numeric: tabular-nums; }
   .fit-success  { color: var(--c-a); font-weight: 600; }
   .fit-unknown  { color: var(--c-b); font-weight: 600; }
   .fit-failed_but_running, .fit-failed { color: var(--c-c); font-weight: 600; }
-  .level-low    { color:#ccc; font-weight: 600; }
-  .level-middle { color:#aaa; font-weight: 600; }
-  .level-high   { color:#777; font-weight: 600; }
-  .level-ultra  { color:#c44; font-weight: 600; }
-  .level-custom { color:#555; font-weight: 600; }
+  .level-low    { color:#c4b5fd; font-weight: 600; }
+  .level-middle { color:#9fbc88; font-weight: 600; }
+  .level-high   { color:#6fa66f; font-weight: 600; }
+  .level-ultra  { color:#4f8f63; font-weight: 600; }
+  .level-custom { color:#8f8f8f; font-weight: 600; }
   .wddm { color: var(--c-c); font-weight: 700; }
-  .bat-link { display: inline-block; padding: 2px 8px; background:#2d2d2d; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; cursor: pointer; }
+  .bat-link { display: inline-block; padding: 2px 8px; background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; cursor: pointer; }
   .bat-link:hover { border-color: var(--c-accent); }
 
   /* ----- Filter selector (new in v1.2) ----- */
@@ -42,7 +42,7 @@
                 margin: 14px 0 8px; padding: 10px 14px; background: var(--c-card);
                 border: 1px solid var(--c-border); border-radius: 6px; }
   .filter-bar .label { color: var(--c-muted); font-size: 12px; margin-right: 4px; }
-  .filter-btn { padding: 6px 14px; background:#2d2d2d; border: 1px solid var(--c-border);
+  .filter-btn { padding: 6px 14px; background:#1a1a1a; border: 1px solid var(--c-border);
                 border-radius: 4px; color: var(--c-text); font-size: 12px; cursor: pointer;
                 font-family: inherit; }
   .filter-btn:hover { border-color: var(--c-accent); }
@@ -79,18 +79,18 @@
   .tabs { display: flex; gap: 4px; margin: 14px 0 0; }
   .tab { padding: 6px 12px; background: var(--c-card); border: 1px solid var(--c-border); border-bottom: none;
          border-radius: 5px 5px 0 0; cursor: pointer; font-size: 12px; color: var(--c-muted); font-family: inherit; }
-  .tab.active { background:#333; color: var(--c-accent); border-bottom: 1px solid #333; }
-  .tab-content { background:#333; border: 1px solid var(--c-border); border-radius: 0 5px 5px 5px; padding: 12px; }
+  .tab.active { background:#242424; color: var(--c-accent); border-bottom: 1px solid #242424; }
+  .tab-content { background:#242424; border: 1px solid var(--c-border); border-radius: 0 5px 5px 5px; padding: 12px; }
   .bar-row { display: grid; grid-template-columns: 320px 1fr 90px; gap: 8px; align-items: center; margin: 2px 0; }
   .bar-row.bar-row-ann { grid-template-columns: 320px 1fr 90px 150px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-row.is-winner .name::before { content: '★ '; color: var(--c-win); }
-  .bar-row .track { background:#2d2d2d; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
-  .bar-row .fill { height: 100%; background: linear-gradient(90deg,#777,#ccc); }
-  .bar-row .fill.level-middle { background: linear-gradient(90deg,#555,#aaa); }
-  .bar-row .fill.level-high   { background: linear-gradient(90deg,#333,#777); }
-  .bar-row .fill.level-ultra  { background: linear-gradient(90deg,#777,#c44); }
-  .bar-row .fill.level-custom { background: linear-gradient(90deg,#222,#555); }
+  .bar-row .track { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
+  .bar-row .fill { height: 100%; background: linear-gradient(90deg,#7c5fb8,#c4b5fd); }
+  .bar-row .fill.level-middle { background: linear-gradient(90deg,#725fa8,#9fbc88); }
+  .bar-row .fill.level-high   { background: linear-gradient(90deg,#5f6f7b,#6fa66f); }
+  .bar-row .fill.level-ultra  { background: linear-gradient(90deg,#4f6f63,#4f8f63); }
+  .bar-row .fill.level-custom { background: linear-gradient(90deg,#555,#8f8f8f); }
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
   .bar-row .ann { font-family: Consolas, monospace; font-size: 11px; text-align: right; color: var(--c-muted); }
 
@@ -352,11 +352,11 @@ const STATE = {
 const LEVEL_ORDER = ['low', 'middle', 'high', 'ultra', 'custom'];
 function lvl(d) { return d && d.level ? d.level : 'custom'; }
 function lvlColor(level) {
-  return level === 'low' ? '#ccc'
-       : level === 'middle' ? '#aaa'
-       : level === 'high' ? '#777'
-       : level === 'ultra' ? '#c44'
-       : '#555';
+  return level === 'low' ? '#c4b5fd'
+       : level === 'middle' ? '#9fbc88'
+       : level === 'high' ? '#6fa66f'
+       : level === 'ultra' ? '#4f8f63'
+       : '#8f8f8f';
 }
 
 // View of DATA after the data-scope filter. All renderers operate on this
@@ -618,8 +618,10 @@ document.getElementById('bars-tabs').querySelectorAll('.tab').forEach(tab => {
 function modelColor(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
-  const lightness = 42 + (Math.abs(h) % 36);
-  return 'hsl(0, 0%, ' + lightness + '%)';
+  const t = (Math.abs(h) % 1000) / 999;
+  const hue = 270 - (130 * t);
+  const lightness = 64 - (18 * t);
+  return 'hsl(' + hue.toFixed(0) + ', 38%, ' + lightness.toFixed(0) + '%)';
 }
 
 function renderScatter() {
