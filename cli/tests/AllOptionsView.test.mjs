@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { buildAllArgs } from "../dist/AllOptionsView.js";
 
 const base = {
-  decision: null, fetchCatalog: true, model: null, customIds: "",
+  decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",
   currentPreset: "low", runs: 0, downloadRetention: "cleanup", preferSpeed: false,
   minimalPolling: false, rerunAll: false,
 };
@@ -49,4 +49,9 @@ test("context sizes pass through as -ContextSizes csv", () => {
 test("download retention passes through as -DownloadRetention", () => {
   assert.deepEqual(buildAllArgs({ ...base, downloadRetention: "keep-top-3" }).args,
     ["all", "-FetchCatalog", "-Preset", "low", "-DownloadRetention", "keep-top-3"]);
+});
+
+test("model folder passes through as scan path and download destination", () => {
+  assert.deepEqual(buildAllArgs({ ...base, modelFolder: "D:\\models" }).args,
+    ["all", "-ScanPath", "D:\\models", "-Destination", "D:\\models", "-FetchCatalog", "-Preset", "low"]);
 });

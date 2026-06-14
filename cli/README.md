@@ -117,9 +117,12 @@ Once the starter run works, repeat `guided run` and switch `which models` to
 
 For sub-tasks (re-bench one model, change run count):
 
-4. Prefer repeating **guided run** and changing the visible fields. Set
-   `model catalog: no - load from local folder` to bench existing `.gguf` files
-   from the model folder. Those files are user-owned and are never deleted by
+4. Prefer repeating **guided run** and changing the visible fields. `model
+   folder` defaults to `<CURRENT_PATH>`, the folder where you launched
+   `calibr`; change it to your local model directory, then set `model catalog:
+   no - load from local folder` to bench existing `.gguf` files there. When you
+   save a folder, calibr offers to create it if missing and reports how many
+   `.gguf` models it found. Those files are user-owned and are never deleted by
    cleanup.
 
 ## Privacy and model licenses
@@ -161,6 +164,10 @@ $env:CALIBR_DATA_DIR = "D:\calibr-data"
 $env:CALIBR_CONFIG = "D:\calibr-data\config.json"
 calibr
 ```
+
+The **model folder** is separate from this app-data folder. It is the directory
+you choose in **guided run** for local `.gguf` files and kept catalog downloads.
+Its default is `<CURRENT_PATH>`.
 
 ## Commands
 

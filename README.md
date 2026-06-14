@@ -104,10 +104,13 @@ choose the llama.cpp setup when prompted, and let calibr walk the curated set
 one model at a time:
 download -> bench -> cleanup -> next model -> report.
 
-Already have local `.gguf` files? Set `model catalog: no - load from local
-folder`. calibr scans the model folder and treats those files as user-owned:
-it will not delete them. Cleanup applies only to files downloaded during the
-current run.
+Already have local `.gguf` files? In `guided run`, set `model folder` to that
+directory, then set `model catalog: no - load from local folder`. The default
+model folder is `<CURRENT_PATH>`, the folder where you launched `calibr`. When
+you save a folder, calibr stores it in config, checks whether it exists, offers
+to create it if needed, and reports how many `.gguf` models it found. Files in
+the model folder are user-owned: cleanup applies only to files downloaded
+during the current run.
 
 ## What calibr recommends
 

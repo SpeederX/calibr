@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   CALIBR_CATALOG,
   readModelCatalog,
@@ -14,7 +15,9 @@ import {
   readPresetCatalog,
   findLlamaServerCandidates,
   normalizeLlamaBuildInput,
+  pickFolderSync,
   traceAction,
+  updateLocalConfigField,
   type LlamaServerCandidate,
   type TraceContext,
 } from "./engine.js";
@@ -57,6 +60,31 @@ function retentionLabel(policy: DownloadRetention): string {
   }
 }
 
+function countGgufModels(root: string): number {
+  const stack = [root];
+  let count = 0;
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = resolve(dir, entry);
+      try {
+        const st = statSync(path);
+        if (st.isDirectory()) stack.push(path);
+        else if (st.isFile() && entry.toLowerCase().endsWith(".gguf")) count++;
+      } catch {
+        // Ignore files that disappear or cannot be read during the scan.
+      }
+    }
+  }
+  return count;
+}
+
 export type LlamaDecisionLike =
   | { kind: "download"; build: string }
   | { kind: "local"; path: string }
@@ -64,6 +92,7 @@ export type LlamaDecisionLike =
 
 export interface AllArgsOpts {
   decision: LlamaDecisionLike;
+  modelFolder: string;
   fetchCatalog: boolean;
   model: string | null;
   customIds: string;
@@ -87,6 +116,13 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
     if (o.decision.build) { args.push("-LlamaCppBuild", o.decision.build); parts.push(`-LlamaCppBuild ${o.decision.build}`); }
   } else if (o.decision?.kind === "local") {
     args.push("-LlamaServer", o.decision.path); parts.push(`-LlamaServer "${o.decision.path}"`);
+  }
+  const folder = o.modelFolder.trim();
+  if (folder) {
+    args.push("-ScanPath", folder); parts.push(`-ScanPath "${folder}"`);
+    if (o.fetchCatalog) {
+      args.push("-Destination", folder); parts.push(`-Destination "${folder}"`);
+    }
   }
   if (o.fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
   if (o.model) {
@@ -124,6 +160,9 @@ type Phase =
   | { kind: "llamaDownloadVersion"; error?: string }
   | { kind: "llamaLocalPick" }
   | { kind: "llamaNoLocal" }
+  | { kind: "modelFolderInput"; error?: string }
+  | { kind: "modelFolderCreate"; path: string }
+  | { kind: "modelFolderSaved"; path: string; count: number; created: boolean }
   | { kind: "gate"; required: number; available: number; entryCount: number; sufficient: boolean }
   | { kind: "cachePrompt" };
 
@@ -137,6 +176,14 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // Users with their own .gguf collections in the model folder toggle it off
   // in one keystroke.
   const [fetchCatalog, setFetchCatalog] = useState<boolean>(true);
+  const currentPath = process.cwd();
+  const cfg = useMemo(loadConfig, []);
+  const configuredModelFolder = useMemo(() => {
+    const paths = cfg.scan_paths;
+    return Array.isArray(paths) && paths.length > 0 && paths[0] ? paths[0] : "";
+  }, [cfg]);
+  const [modelFolder, setModelFolder] = useState<string>(() => configuredModelFolder || currentPath);
+  const [modelFolderDraft, setModelFolderDraft] = useState<string>("");
   const [downloadRetention, setDownloadRetention] = useState<DownloadRetention>("cleanup");
   const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
   const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
@@ -151,7 +198,6 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
   const catalog = useMemo(readModelCatalog, []);
-  const cfg = useMemo(loadConfig, []);
   // Model filter spans every known model: discovered (on disk) ∪ curated.
   const models = useMemo<string[]>(() => {
     const names = new Set<string>(readDiscoveredModelNames());
@@ -170,7 +216,8 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     if (llamaDecision?.kind === "local") return `use local (${llamaDecision.path})`;
     return "choose when missing";
   })();
-  const destination = useMemo(() => downloadDestination(cfg), [cfg]);
+  const destination = modelFolder.trim() || currentPath;
+  const modelFolderDisplay = configuredModelFolder || modelFolder !== currentPath ? destination : "<CURRENT_PATH>";
   const cachedCount = useMemo(cachedResultsCount, []);
   // Presets: built-in (default_bench_presets.json) + user-saved
   // (data/user_bench_presets.json) merged into one dict.
@@ -206,6 +253,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
 
   const rows = [
     { kind: "llama"    as const, label: `llama.cpp:       ${llamaLabel}` },
+    { kind: "folder"   as const, label: `model folder:    ${modelFolderDisplay}` },
     { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — load from local folder"}` },
     { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog || model !== null },
     { kind: "model"    as const, label: `model filter:    ${model === null ? "all (use 'which models')" : model}` },
@@ -226,7 +274,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
+    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -248,6 +296,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       details: {
         setup,
         llamaDecision: decision,
+        modelFolder: "<model_folder_dir>",
         fetchCatalog,
         preset: currentPreset,
         model,
@@ -396,6 +445,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     const row = rows[i];
     switch (row.kind) {
       case "llama":    setLlamaSourceCursor(0); setPhase({ kind: "llamaSource" }); break;
+      case "folder":   chooseModelFolder(); break;
       case "fetch":    setFetchCatalog(!fetchCatalog); break;
       case "preset": {
         if (!fetchCatalog || model !== null) break;   // disabled when a model is fixed
@@ -417,11 +467,139 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     }
   };
 
+  function normalizedModelFolder(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === "<CURRENT_PATH>") return currentPath;
+    return resolve(trimmed);
+  }
+
+  function saveModelFolder(path: string, created: boolean) {
+    const count = countGgufModels(path);
+    updateLocalConfigField("scan_paths", [path]);
+    setModelFolder(path);
+    traceAction({
+      flow: "guided run",
+      action: "model folder",
+      status: "completed",
+      message: `guided run > model folder selected (${count} model${count === 1 ? "" : "s"} found)`,
+      details: {
+        modelFolder: "<model_folder_dir>",
+        modelCount: count,
+        created,
+      },
+    });
+    setPhase({ kind: "modelFolderSaved", path, count, created });
+  }
+
+  function chooseModelFolder() {
+    if (process.platform !== "win32") {
+      setModelFolderDraft(modelFolderDisplay);
+      setPhase({ kind: "modelFolderInput" });
+      return;
+    }
+    const picked = pickFolderSync({
+      description: "Select the folder containing local .gguf models",
+      initialDir: destination,
+    });
+    if (!picked) {
+      traceAction({
+        flow: "guided run",
+        action: "model folder",
+        status: "cancelled",
+        message: "guided run > model folder picker cancelled",
+      });
+      return;
+    }
+    saveModelFolder(picked, false);
+  }
+
   useInput((input, key) => {
     // The custom phase delegates all input handling to CustomBenchView
     // (which has its own useInput inside) so we MUST not also consume
     // keystrokes here — otherwise the picker can't toggle.
     if (phase.kind === "custom") return;
+    if (phase.kind === "modelFolderInput") {
+      if (key.escape) { setPhase({ kind: "form" }); return; }
+      if (key.return) {
+        if (!modelFolderDraft.trim()) {
+          setPhase({ kind: "modelFolderInput", error: "Type or paste a folder path, or press esc to cancel." });
+          return;
+        }
+        const nextFolder = normalizedModelFolder(modelFolderDraft);
+        if (!existsSync(nextFolder)) {
+          traceAction({
+            flow: "guided run",
+            action: "model folder",
+            status: "selected",
+            message: "guided run > model folder missing; asking to create",
+            details: { modelFolder: "<model_folder_dir>" },
+          });
+          setPhase({ kind: "modelFolderCreate", path: nextFolder });
+          return;
+        }
+        try {
+          if (!statSync(nextFolder).isDirectory()) {
+            setPhase({ kind: "modelFolderInput", error: "That path exists but is not a folder." });
+            return;
+          }
+        } catch {
+          setPhase({ kind: "modelFolderInput", error: "Cannot read that path. Check permissions or choose another folder." });
+          return;
+        }
+        saveModelFolder(nextFolder, false);
+        return;
+      }
+      if (key.backspace || key.delete || input === "\u007f") {
+        setModelFolderDraft(v => v.slice(0, -1));
+        setPhase({ kind: "modelFolderInput" });
+        return;
+      }
+      if (input && !key.ctrl && !key.meta) {
+        setModelFolderDraft(v => v + input);
+        setPhase({ kind: "modelFolderInput" });
+      }
+      return;
+    }
+    if (phase.kind === "modelFolderCreate") {
+      if (key.escape || input === "q" || input === "n" || input === "N") {
+        traceAction({
+          flow: "guided run",
+          action: "model folder create",
+          status: "cancelled",
+          message: "guided run > model folder create cancelled",
+          details: { modelFolder: "<model_folder_dir>" },
+        });
+        setPhase({ kind: "modelFolderInput" });
+        return;
+      }
+      if (key.return || input === "y" || input === "Y") {
+        try {
+          mkdirSync(phase.path, { recursive: true });
+          traceAction({
+            flow: "guided run",
+            action: "model folder create",
+            status: "completed",
+            message: "guided run > model folder create completed",
+            details: { modelFolder: "<model_folder_dir>" },
+          });
+          saveModelFolder(phase.path, true);
+        } catch (error) {
+          traceAction({
+            flow: "guided run",
+            action: "model folder create",
+            status: "failed",
+            message: "guided run > model folder create failed",
+            details: { modelFolder: "<model_folder_dir>", error: error instanceof Error ? error.message : String(error) },
+          });
+          setPhase({ kind: "modelFolderInput", error: "Could not create that folder. Check the path or permissions." });
+        }
+      }
+      return;
+    }
+    if (phase.kind === "modelFolderSaved") {
+      setPhase({ kind: "form" });
+      return;
+    }
     if (phase.kind === "llamaSource") {
       if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
       if (key.upArrow || input === "k") { setLlamaSourceCursor(c => Math.max(0, c - 1)); return; }
@@ -534,6 +712,57 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
           })}
         </Box>
         <Box marginTop={1}><Text dimColor>up/down to move | enter to select | q/esc back</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "modelFolderInput") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="cyan">model folder</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>Paste or type the folder that contains local .gguf files.</Text>
+          <Text dimColor>Catalog downloads are also stored here when you choose to keep them.</Text>
+          <Text dimColor>Use <Text color="cyan">&lt;CURRENT_PATH&gt;</Text> for the folder where calibr was launched.</Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          <Text>path: <Text color="cyan">{modelFolderDraft || "(empty)"}</Text></Text>
+          {phase.error && <Text color="red">{phase.error}</Text>}
+        </Box>
+        <Box marginTop={1}><Text dimColor>enter saves | backspace edits | esc cancels</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "modelFolderCreate") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="yellow">model folder does not exist</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>calibr could not find this folder:</Text>
+          <Text color="cyan">{phase.path}</Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text>Create it now? <Text color="cyan">[y/n]</Text></Text>
+        </Box>
+        <Box marginTop={1}><Text dimColor>enter/y creates | n/q/esc back</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "modelFolderSaved") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="green">model folder saved</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text>folder: <Text color="cyan">{phase.path}</Text></Text>
+          <Text>
+            In the path provided, we found <Text color="cyan">{phase.count}</Text>{" "}
+            model{phase.count === 1 ? "" : "s"} available.
+          </Text>
+          {phase.created && <Text dimColor>The folder was created because it did not exist.</Text>}
+        </Box>
+        <Box marginTop={1}><Text dimColor>press any key to return</Text></Box>
       </Box>
     );
   }

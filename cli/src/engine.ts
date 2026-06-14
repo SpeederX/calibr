@@ -466,6 +466,32 @@ export function pickFileSync(opts: {
   return out.length > 0 ? out : null;
 }
 
+export function pickFolderSync(opts: {
+  description?: string;
+  initialDir?: string;
+} = {}): string | null {
+  const esc = (s: string) => s.replace(/'/g, "''");
+  const lines = [
+    "Add-Type -AssemblyName System.Windows.Forms | Out-Null",
+    "$dlg = New-Object System.Windows.Forms.FolderBrowserDialog",
+    "$dlg.ShowNewFolderButton = $true",
+  ];
+  if (opts.description) lines.push(`$dlg.Description = '${esc(opts.description)}'`);
+  if (opts.initialDir) {
+    lines.push(`if (Test-Path -LiteralPath '${esc(opts.initialDir)}') { $dlg.SelectedPath = '${esc(opts.initialDir)}' }`);
+  }
+  lines.push("if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dlg.SelectedPath }");
+
+  const res = spawnSync(
+    "powershell",
+    ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", lines.join("; ")],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (res.status !== 0) return null;
+  const out = (res.stdout || "").trim();
+  return out.length > 0 ? out : null;
+}
+
 export interface Status {
   config: Config;
   catalogCount: number;
@@ -670,6 +696,17 @@ function injectNonInteractive(args: string[]): string[] {
   return [...args, "-NonInteractive"];
 }
 
+function redactEngineArgsForTrace(args: string[]): string[] {
+  const redacted = [...args];
+  for (let i = 0; i < redacted.length - 1; i++) {
+    if (redacted[i] === "-ScanPath" || redacted[i] === "-Destination") {
+      redacted[i + 1] = "<model_folder_dir>";
+      i++;
+    }
+  }
+  return redacted;
+}
+
 /**
  * Shell out to calibr.ps1 with the given engine arguments.
  * stdout/stderr are streamed to the caller via the child process.
@@ -696,10 +733,11 @@ export function runEngine(args: string[], trace?: TraceContext): EngineRun {
     ...injectNonInteractive(injectConfigArg(args)),
   ];
   const traceContext = trace ?? inferTraceContext(args);
+  const traceArgs = redactEngineArgsForTrace(args);
   traceAction({
     ...traceContext,
     status: "started",
-    details: { ...(traceContext.details ?? {}), args },
+    details: { ...(traceContext.details ?? {}), args: traceArgs },
   });
   const proc = spawn(shell, psArgs, {
     cwd: ENGINE_ROOT,
@@ -715,7 +753,7 @@ export function runEngine(args: string[], trace?: TraceContext): EngineRun {
       traceAction({
         ...traceContext,
         status: exitCode === 0 ? "completed" : "failed",
-        details: { ...(traceContext.details ?? {}), args, exitCode },
+        details: { ...(traceContext.details ?? {}), args: traceArgs, exitCode },
       });
       res(exitCode);
     });
@@ -724,7 +762,7 @@ export function runEngine(args: string[], trace?: TraceContext): EngineRun {
         ...traceContext,
         status: "failed",
         message: `${traceContext.flow} > ${traceContext.action} failed to launch engine`,
-        details: { ...(traceContext.details ?? {}), args, error: error.message },
+        details: { ...(traceContext.details ?? {}), args: traceArgs, error: error.message },
       });
       res(-1);
     });
