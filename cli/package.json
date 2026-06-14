@@ -1,6 +1,6 @@
 {
   "name": "calibr",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Find the fastest safe llama.cpp model and launch configuration for your hardware.",
   "type": "module",
   "license": "MIT",

@@ -5,7 +5,7 @@ only open work, no shipped feature archaeology.
 
 Current baseline:
 
-- npm package line: `0.1.6`.
+- npm package line: `0.1.7`.
 - `dev` contains the Phase-1 CLI, engine split, mirrored tests, expanded
   presets, report redesign, guided llama.cpp auto-fetch, Linux support,
   `doctor`, the guided-run / advanced-tools menu split, and readiness badges.
@@ -233,6 +233,22 @@ captures draft tokens, accepted tokens, acceptance rate, and speedup.
 
 This is useful for MoE models, but it needs a dedicated report track so normal
 throughput numbers stay comparable.
+
+Needed shape:
+
+- catalog metadata for models that support MTP/speculative decoding
+- bench flags for llama.cpp MTP/speculative mode, including draft model and
+  speculative parameters when required by the backend
+- opt-in sweep over speculative settings such as draft/speculative count and
+  strategy/type, only for compatible entries
+- baseline run without MTP, then matched MTP run with the same prompt/context
+- report fields for accepted tokens, rejected/draft tokens, acceptance rate,
+  speedup, and whether quality-affecting sampler settings were changed
+
+Keep sampler settings deterministic by default. Current bench requests set
+`temperature = 0.0` and do not sweep `top_p`, `top_k`, `min_p`, or sampler
+order. If sampler sweeps become useful, treat them as a separate benchmark
+mode from hardware-fit recommendation.
 
 ### Abstention / behavioral quality bench
 
