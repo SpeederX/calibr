@@ -16,7 +16,7 @@
   h1 { font-size: 22px; margin: 0 0 4px 0; color: var(--c-accent); }
   h2 { font-size: 17px; margin: 28px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--c-border); }
   h3 { font-size: 14px; margin: 12px 0 8px; }
-  .container { max-width: 1720px; margin: 0 auto; }
+  .container { width: 100%; max-width: none; margin: 0 auto; }
   .meta { color: var(--c-muted); font-size: 12px; }
   .hw { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12px; }
   .hw code { background:#1a1a1a; padding: 1px 5px; border-radius: 3px; color: var(--c-accent); }
@@ -85,13 +85,16 @@
   .bar-row.bar-row-ann { grid-template-columns: minmax(360px, 520px) minmax(280px, 1fr) 112px minmax(260px, 420px); }
   .bar-row.mode-vram,
   .bar-row.mode-memory,
-  .bar-row.mode-disk { grid-template-columns: minmax(340px, 500px) minmax(300px, 1fr) minmax(520px, 760px); }
+  .bar-row.mode-disk { grid-template-columns: minmax(340px, 520px) minmax(420px, 1fr) minmax(520px, max-content); }
   .bar-row.mode-vram .val,
   .bar-row.mode-memory .val,
   .bar-row.mode-disk .val { display: none; }
   .bar-row.mode-vram .ann,
   .bar-row.mode-memory .ann,
-  .bar-row.mode-disk .ann { justify-content: flex-start; }
+  .bar-row.mode-disk .ann { justify-content: end; }
+  .bar-row.mode-vram .ann { display: grid; grid-template-columns: 90px 90px 110px 128px; }
+  .bar-row.mode-memory .ann { display: grid; grid-template-columns: 104px 90px 110px 92px 92px 90px; }
+  .bar-row.mode-disk .ann { display: grid; grid-template-columns: 118px 90px 110px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-row.is-winner .name::before { content: '★ '; color: var(--c-win); }
   .bar-row .track { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
@@ -104,7 +107,7 @@
   }
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
   .bar-row .ann { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; font-family: Consolas, monospace; font-size: 10px; color: var(--c-muted); }
-  .bar-row .metric { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; padding: 0 4px; white-space: nowrap; }
+  .bar-row .metric { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; padding: 0 4px; white-space: nowrap; text-align: right; }
 
   /* ----- Scatter (now first chart) ----- */
   .scatter-bg-ram   { fill: rgba(255,255,255,0.035); }
@@ -169,7 +172,7 @@
   <div class="tabs" id="bars-tabs">
     <div class="tab active" data-bars="eval">Eval tokens/s</div>
     <div class="tab" data-bars="prompt">Prompt tokens/s</div>
-    <div class="tab" data-bars="throughput">Prompt + eval avg</div>
+    <div class="tab" data-bars="throughput">Prompt + eval</div>
     <div class="tab" data-bars="vram">VRAM peak</div>
     <div class="tab" data-bars="memory">VRAM + RAM</div>
     <div class="tab" data-bars="disk">Disk read</div>
@@ -605,7 +608,7 @@ function memoryUsageNote(d) {
          throughputNote(d) +
          metricChip('VRAM', vram + ' MiB') +
          metricChip('RAM', ram + ' MiB') +
-         (shared > 0 ? metricChip('shared', '+' + shared) : '');
+         metricChip('shared', shared > 0 ? '+' + shared : '-');
 }
 
 function vramUsageNote(d) {
@@ -618,8 +621,8 @@ function diskUsageNote(d) {
   return metricChip('disk', fmt1(d.disk_read_peak_mb_s) + ' MB/s') + throughputNote(d);
 }
 
-function averageThroughput(d) {
-  return ((+d.prompt_tps || 0) + (+d.eval_tps || 0)) / 2;
+function totalThroughput(d) {
+  return (+d.prompt_tps || 0) + (+d.eval_tps || 0);
 }
 
 function speedGradient(value, mode) {
@@ -660,8 +663,8 @@ function renderBars() {
     fillStyleOf = d => 'background:' + speedGradient(valueOf(d), 'prompt') + ';';
     sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
   } else if (STATE.bars === 'throughput') {
-    field = 'throughput_avg_tps'; unit = 't/s avg'; annotate = throughputNote; fillClass = '';
-    valueOf = averageThroughput;
+    field = 'throughput_total_tps'; unit = 't/s'; annotate = throughputNote; fillClass = '';
+    valueOf = totalThroughput;
     maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
     pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
     fillStyleOf = d => 'background:' + speedGradient(valueOf(d), 'prompt') + ';';
