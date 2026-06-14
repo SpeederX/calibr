@@ -12,6 +12,109 @@ Current baseline:
 - Public-facing docs stay in `README.md` and `cli/README.md`.
 - Process rules live in `AGENTS.md`.
 
+---
+
+## 0.1.8 candidate track
+
+These are the next larger product improvements to keep in view after the
+current guided-run cleanup line.
+
+### Benchmark metric glossary and latency pass
+
+Make every benchmark metric explicit in the result schema and report. The
+report should explain what each value measures, how it is measured, and why it
+matters in the pipeline.
+
+Candidate metric names:
+
+- `load_ms`: `llama-server` process start to server-ready; model load plus
+  backend/runtime initialization.
+- `prompt_ms`: prefill / prompt-processing time reported by llama.cpp. This
+  varies with prompt length, system prompt shape, context already loaded, and
+  model architecture.
+- `prompt_tps`: prefill throughput.
+- `ttfr_ms`: time to first streamed response chunk, aligned with
+  llama-benchy / vLLM-style terminology.
+- `e2e_ttft_ms`: end-to-end time to first generated content token.
+- `eval_tps`: decode / token-generation throughput.
+- `total_request_ms`: full request duration, excluding model load.
+
+Implementation note: robust stream timing is awkward in PowerShell. Consider
+moving the HTTP benchmark client into TypeScript before adding `ttfr_ms` /
+`e2e_ttft_ms`, while keeping the rest of the engine boundary intact.
+
+### Prompt-length prefill sweep
+
+Add an opt-in mode that varies prompt length to show how prefill cost scales.
+This is not a quality test; it answers how quickly the model processes short,
+medium, and long inputs.
+
+Suggested buckets:
+
+- short prompt
+- medium chat/system prompt
+- long synthetic prompt
+- near-context stress prompt, bounded by the selected context size
+
+Track `prompt_ms`, `prompt_tps`, memory deltas, and whether the model remains
+usable under the longer prefill load.
+
+### Benchmark telemetry and leaderboard upload
+
+Add opt-in benchmark-result submission for a future leaderboard. Keep it
+benchmark-only: no user account data, no prompt contents, no local paths, no
+machine username, no raw logs.
+
+Allowed payload shape:
+
+- anonymous client/session id generated locally
+- calibr version, llama.cpp version/backend, OS/platform family
+- coarse hardware facts needed to compare results: CPU model/class, RAM size,
+  GPU name, VRAM/unified-memory size, backend/tooling availability
+- model id/name/variant/source metadata
+- benchmark config: context, KV cache, offload flags, runs, cleanup policy
+- measured timings and hardware metrics
+
+Avoid:
+
+- local filesystem paths
+- usernames, hostnames, IP-derived identity in stored payloads
+- prompt text
+- action trace contents
+- doctor raw export unless the user explicitly attaches it to an issue
+
+Minimal trust model:
+
+- PHP endpoint generates or validates a submission secret / run token.
+- Client starts a run with the token and submits step/config completion events.
+- Cloudflare layer handles rate limiting, bot filtering, and coarse abuse
+  protection before PHP.
+- Treat this as a deterrent, not proof: motivated users can still falsify
+  local benchmark results.
+
+Open choices:
+
+- batch upload at report end vs event upload after each config completes
+- whether failed configs are uploaded by default
+- leaderboard schema and deduplication rules
+- public opt-in wording in CLI and README privacy section
+
+### Engine pruning before deeper migration
+
+Before moving more logic out of PowerShell, remove or isolate legacy branches
+that no longer map to the current guided-run product.
+
+Targets:
+
+- dead CLI paths hidden behind advanced tools
+- stale command flags kept only for old prototype workflows
+- duplicated model/catalog/filter behavior across CLI screens
+- old report/backlog documentation that increases context without guiding
+  current work
+
+The goal is to shrink the surface before a TypeScript benchmark-client
+migration, not to rewrite the engine wholesale.
+
 Recently shipped and removed from the TODO queue:
 
 - Engine modularization plus mirrored PowerShell tests.
