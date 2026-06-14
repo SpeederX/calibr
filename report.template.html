@@ -5,10 +5,10 @@
 <title>calibr report</title>
 <style>
   :root {
-    --c-bg:#0f1420; --c-card:#1a2030; --c-border:#2a3040; --c-text:#e8ecf0;
-    --c-muted:#8a96a8; --c-accent:#5fd4ff;
-    --c-a:#22c55e; --c-b:#f59e0b; --c-c:#ef4444;
-    --c-win:#5fd4ff; --c-win-bg:rgba(95,212,255,0.08);
+    --c-bg:#000; --c-card:#101010; --c-border:#2f2f2f; --c-text:#ccc;
+    --c-muted:#777; --c-accent:#f00;
+    --c-a:#ccc; --c-b:#999; --c-c:#f00;
+    --c-win:#f00; --c-win-bg:rgba(255,0,0,0.11);
   }
   * { box-sizing: border-box; }
   body { font: 14px/1.5 -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
@@ -19,22 +19,22 @@
   .container { max-width: 1400px; margin: 0 auto; }
   .meta { color: var(--c-muted); font-size: 12px; }
   .hw { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12px; }
-  .hw code { background:#0b1020; padding: 1px 5px; border-radius: 3px; color: var(--c-accent); }
+  .hw code { background:#050505; padding: 1px 5px; border-radius: 3px; color: var(--c-accent); }
   table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
   th, td { padding: 6px 9px; text-align: left; border-bottom: 1px solid var(--c-border); }
-  th { background:#141a28; color: var(--c-accent); position: sticky; top: 0; }
-  tr:hover { background: rgba(95,212,255,0.04); }
+  th { background:#181818; color: var(--c-accent); position: sticky; top: 0; }
+  tr:hover { background: rgba(255,255,255,0.035); }
   td.num { text-align: right; font-family: Consolas, monospace; font-variant-numeric: tabular-nums; }
   .fit-success  { color: var(--c-a); font-weight: 600; }
   .fit-unknown  { color: var(--c-b); font-weight: 600; }
   .fit-failed_but_running, .fit-failed { color: var(--c-c); font-weight: 600; }
-  .level-low    { color:#5fd4ff; font-weight: 600; }
-  .level-middle { color:#34d399; font-weight: 600; }
-  .level-high   { color:#a78bfa; font-weight: 600; }
-  .level-ultra  { color:#f59e0b; font-weight: 600; }
-  .level-custom { color:#94a3b8; font-weight: 600; }
+  .level-low    { color:#ccc; font-weight: 600; }
+  .level-middle { color:#aaa; font-weight: 600; }
+  .level-high   { color:#777; font-weight: 600; }
+  .level-ultra  { color:#f00; font-weight: 600; }
+  .level-custom { color:#555; font-weight: 600; }
   .wddm { color: var(--c-c); font-weight: 700; }
-  .bat-link { display: inline-block; padding: 2px 8px; background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; cursor: pointer; }
+  .bat-link { display: inline-block; padding: 2px 8px; background:#050505; border: 1px solid var(--c-border); border-radius: 3px; color: var(--c-accent); text-decoration: none; font-size: 11px; cursor: pointer; }
   .bat-link:hover { border-color: var(--c-accent); }
 
   /* ----- Filter selector (new in v1.2) ----- */
@@ -42,7 +42,7 @@
                 margin: 14px 0 8px; padding: 10px 14px; background: var(--c-card);
                 border: 1px solid var(--c-border); border-radius: 6px; }
   .filter-bar .label { color: var(--c-muted); font-size: 12px; margin-right: 4px; }
-  .filter-btn { padding: 6px 14px; background:#0b1020; border: 1px solid var(--c-border);
+  .filter-btn { padding: 6px 14px; background:#050505; border: 1px solid var(--c-border);
                 border-radius: 4px; color: var(--c-text); font-size: 12px; cursor: pointer;
                 font-family: inherit; }
   .filter-btn:hover { border-color: var(--c-accent); }
@@ -79,28 +79,43 @@
   .tabs { display: flex; gap: 4px; margin: 14px 0 0; }
   .tab { padding: 6px 12px; background: var(--c-card); border: 1px solid var(--c-border); border-bottom: none;
          border-radius: 5px 5px 0 0; cursor: pointer; font-size: 12px; color: var(--c-muted); font-family: inherit; }
-  .tab.active { background:#141a28; color: var(--c-accent); border-bottom: 1px solid #141a28; }
-  .tab-content { background:#141a28; border: 1px solid var(--c-border); border-radius: 0 5px 5px 5px; padding: 12px; }
+  .tab.active { background:#181818; color: var(--c-accent); border-bottom: 1px solid #181818; }
+  .tab-content { background:#181818; border: 1px solid var(--c-border); border-radius: 0 5px 5px 5px; padding: 12px; }
   .bar-row { display: grid; grid-template-columns: 320px 1fr 90px; gap: 8px; align-items: center; margin: 2px 0; }
   .bar-row.bar-row-ann { grid-template-columns: 320px 1fr 90px 150px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-row.is-winner .name::before { content: '★ '; color: var(--c-win); }
-  .bar-row .track { background:#0b1020; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
-  .bar-row .fill { height: 100%; background: linear-gradient(90deg,#5fd4ff,#4ade80); }
-  .bar-row .fill.level-middle { background: linear-gradient(90deg,#34d399,#10b981); }
-  .bar-row .fill.level-high   { background: linear-gradient(90deg,#a78bfa,#7c3aed); }
-  .bar-row .fill.level-ultra  { background: linear-gradient(90deg,#f59e0b,#d97706); }
-  .bar-row .fill.level-custom { background: linear-gradient(90deg,#94a3b8,#64748b); }
+  .bar-row .track { background:#050505; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
+  .bar-row .fill { height: 100%; background: linear-gradient(90deg,#777,#ccc); }
+  .bar-row .fill.level-middle { background: linear-gradient(90deg,#555,#aaa); }
+  .bar-row .fill.level-high   { background: linear-gradient(90deg,#333,#777); }
+  .bar-row .fill.level-ultra  { background: linear-gradient(90deg,#777,#f00); }
+  .bar-row .fill.level-custom { background: linear-gradient(90deg,#222,#555); }
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
   .bar-row .ann { font-family: Consolas, monospace; font-size: 11px; text-align: right; color: var(--c-muted); }
 
   /* ----- Scatter (now first chart) ----- */
-  .scatter-bg-ram   { fill: rgba(255,255,255,0.025); }
+  .scatter-bg-ram   { fill: rgba(255,255,255,0.035); }
   .scatter-line-gpu { stroke: var(--c-c); stroke-dasharray: 4 4; stroke-width: 1.2; opacity: 0.7; }
   .scatter-axis     { stroke: var(--c-border); stroke-width: 1; }
   .scatter-tick     { fill: var(--c-muted); font-size: 10px; font-family: Consolas, monospace; }
-  .scatter-dot      { stroke-width: 2; cursor: default; }
-  .scatter-dot.is-winner { stroke-width: 3.5; }
+  .scatter-dot      { stroke-width: 1.8; cursor: default; opacity: 0.74; }
+  .scatter-dot.is-winner { stroke: var(--c-win); stroke-width: 3.5; opacity: 1; }
+  .scatter-winner-ring {
+    fill: none;
+    stroke: var(--c-win);
+    stroke-width: 2;
+    stroke-dasharray: 4 3;
+    opacity: 0.95;
+    pointer-events: none;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .scatter-winner-ring { animation: winnerPulse 1.8s ease-in-out infinite; }
+  }
+  @keyframes winnerPulse {
+    0%, 100% { opacity: 0.35; stroke-width: 1.6; }
+    50% { opacity: 1; stroke-width: 2.8; }
+  }
   .scatter-dot:hover { stroke: var(--c-accent); stroke-width: 3; }
 
   /* ----- All-results table (winner-aware) ----- */
@@ -131,7 +146,7 @@
   </div>
 
   <h2>Memory vs latency</h2>
-  <p class="meta">One dot per ok config. <b>Y</b> = VRAM peak + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). ★ winners for the current filter are outlined thicker.</p>
+  <p class="meta">One dot per ok config. <b>Y</b> = VRAM peak + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). Winners for the current filter have a red pulsing ring.</p>
   <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
 
   <h2>Models (winners per current filter)</h2>
@@ -337,11 +352,11 @@ const STATE = {
 const LEVEL_ORDER = ['low', 'middle', 'high', 'ultra', 'custom'];
 function lvl(d) { return d && d.level ? d.level : 'custom'; }
 function lvlColor(level) {
-  return level === 'low' ? '#5fd4ff'
-       : level === 'middle' ? '#34d399'
-       : level === 'high' ? '#a78bfa'
-       : level === 'ultra' ? '#f59e0b'
-       : '#94a3b8';
+  return level === 'low' ? '#ccc'
+       : level === 'middle' ? '#aaa'
+       : level === 'high' ? '#777'
+       : level === 'ultra' ? '#f00'
+       : '#555';
 }
 
 // View of DATA after the data-scope filter. All renderers operate on this
@@ -603,8 +618,8 @@ document.getElementById('bars-tabs').querySelectorAll('.tab').forEach(tab => {
 function modelColor(name) {
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
-  const hue = ((h % 360) + 360) % 360;
-  return 'hsl(' + hue + ', 70%, 65%)';
+  const lightness = 42 + (Math.abs(h) % 36);
+  return 'hsl(0, 0%, ' + lightness + '%)';
 }
 
 function renderScatter() {
@@ -653,7 +668,7 @@ function renderScatter() {
   p.push('<text class="scatter-tick" transform="translate(14,' + (M.t + innerH/2) + ') rotate(-90)" text-anchor="middle">Memory used (MiB)</text>');
   p.push('<line class="scatter-line-gpu" x1="' + M.l + '" y1="' + yGpu + '" x2="' + (M.l + innerW) + '" y2="' + yGpu + '"/>');
   p.push('<text class="scatter-tick" x="' + (M.l + innerW - 6) + '" y="' + (yGpu - 4) + '" text-anchor="end">GPU VRAM (' + cap + ' MiB)</text>');
-  pts.forEach(pt => {
+  pts.sort((a, b) => (isWinnerId(a.d.id) ? 1 : 0) - (isWinnerId(b.d.id) ? 1 : 0)).forEach(pt => {
     const d = pt.d;
     const cx = xs(pt.x);
     const cy = ys(Math.min(pt.y, yMax));
@@ -661,8 +676,12 @@ function renderScatter() {
     const stroke = lvlColor(lvl(d));
     const tip = d.label + ' · vram peak ' + d.vram_peak_mib + ' · shared +' + (d.shared_peak_mib || 0) +
                 ' · time ' + pt.x + 's · eval ' + (+d.eval_tps).toFixed(1) + ' t/s';
-    const winCls = isWinnerId(d.id) ? ' is-winner' : '';
-    const r = isWinnerId(d.id) ? 6 : 5;
+    const isWin = isWinnerId(d.id);
+    const winCls = isWin ? ' is-winner' : '';
+    const r = isWin ? 6 : 5;
+    if (isWin) {
+      p.push('<circle class="scatter-winner-ring" cx="' + cx + '" cy="' + cy + '" r="10"><animate attributeName="r" values="9;14;9" dur="1.8s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.35;1;0.35" dur="1.8s" repeatCount="indefinite"/></circle>');
+    }
     p.push('<circle class="scatter-dot' + winCls + '" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + fill + '" stroke="' + stroke + '"><title>' + tip + '</title></circle>');
   });
   svg.innerHTML = p.join('');
