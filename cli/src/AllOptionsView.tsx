@@ -25,8 +25,6 @@ import {
 } from "./engine.js";
 import { CustomBenchView } from "./CustomBenchView.js";
 
-const SINGLE_MODEL_SCOPE = "single";
-
 interface Props {
   onRun: (args: string[], label: string, trace?: TraceContext) => void;
   onCancel: () => void;
@@ -116,7 +114,7 @@ export function catalogModelNamesForScope(
   scope: string,
 ): string[] {
   const entries = (() => {
-    if (scope === "all" || scope === SINGLE_MODEL_SCOPE || scope === "custom") return catalog;
+    if (scope === "all" || scope === "custom") return catalog;
     const preset = presets[scope];
     if (!preset) return catalog;
     if (preset.models === "*") return catalog;
@@ -208,7 +206,7 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
     args.push("-Model", o.model); parts.push(`-Model "${o.model}"`);
   } else if (o.fetchCatalog && o.customIds) {
     args.push("-CatalogId", o.customIds); parts.push(`-CatalogId "${o.customIds}"`);
-  } else if (o.fetchCatalog && o.currentPreset !== "all" && o.currentPreset !== "custom" && o.currentPreset !== SINGLE_MODEL_SCOPE) {
+  } else if (o.fetchCatalog && o.currentPreset !== "all" && o.currentPreset !== "custom") {
     args.push("-Preset", o.currentPreset); parts.push(`-Preset ${o.currentPreset}`);
   }
   if (o.contextSizes && o.contextSizes.length > 0) {
@@ -309,15 +307,14 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   // Presets: built-in (default_bench_presets.json) + user-saved
   // (data/user_bench_presets.json) merged into one dict.
   const presets = useMemo(readPresetCatalog, []);
-  // Cycle order: all, low, middle, high, ultra, then any extra user-saved presets,
-  // then 'custom' as the last sentinel that routes to CustomBenchView.
+  // Cycle order: all, low, middle, high, ultra, then any extra user-saved presets.
   const presetNames = useMemo<string[]>(() => {
-    // Keep 'all' as a non-custom fallback even if default_bench_presets.json is
+    // Keep 'all' as a fallback even if default_bench_presets.json is
     // missing/unreadable. A broken preset file should not dump a first-time
-    // user straight into CustomBenchView.
-    const builtin = ["all", SINGLE_MODEL_SCOPE, "low", "middle", "high", "ultra"].filter(n => n === "all" || n === SINGLE_MODEL_SCOPE || presets[n]);
+    // user into an empty or invalid scope.
+    const builtin = ["all", "low", "middle", "high", "ultra"].filter(n => n === "all" || presets[n]);
     const extras = Object.keys(presets).filter(n => !builtin.includes(n)).sort();
-    return [...builtin, ...extras, "custom"];
+    return [...builtin, ...extras];
   }, [presets]);
   const [presetIdx, setPresetIdx] = useState<number>(() => {
     const rememberedIdx = session?.currentPreset ? presetNames.indexOf(session.currentPreset) : -1;
@@ -326,24 +323,18 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     return starterIdx >= 0 ? starterIdx : 0;
   });
   const currentPreset = presetNames[presetIdx] ?? "all";
-  const singleModelMode = fetchCatalog && currentPreset === SINGLE_MODEL_SCOPE;
   const scopedCatalogModels = useMemo<string[]>(
     () => catalogModelNamesForScope(catalog, presets, currentPreset),
     [catalog, presets, currentPreset],
   );
-  // In catalog mode, model selection is only enabled for the explicit single-model scope.
+  // In catalog mode, model selection is scoped by the selected preset/tier.
   // In local-folder mode, it lists local .gguf models found in the selected folder.
   const models = useMemo<string[]>(() => {
     if (!fetchCatalog) return localModels;
-    if (currentPreset !== SINGLE_MODEL_SCOPE) return [];
-    const names = new Set<string>(scopedCatalogModels);
-    for (const name of readDiscoveredModelNames()) names.add(name);
-    return [...names].sort();
+    return scopedCatalogModels;
   }, [currentPreset, fetchCatalog, localModels, scopedCatalogModels]);
   const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
-  const modelRequired = singleModelMode && model === null;
   const presetCount = (() => {
-    if (currentPreset === SINGLE_MODEL_SCOPE) return models.length;
     if (currentPreset === "custom") return null;
     const p = presets[currentPreset];
     if (!p) return null;
@@ -351,7 +342,6 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     return Array.isArray(p.models) ? p.models.length : 0;
   })();
   const presetLabel = (() => {
-    if (currentPreset === SINGLE_MODEL_SCOPE) return "single model";
     if (currentPreset === "custom") return "custom (pick models)";
     const p = presets[currentPreset];
     if (!p) return currentPreset;
@@ -363,12 +353,12 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     { kind: "folder"   as const, label: `local folder:    ${modelFolderDisplay}` },
     { kind: "fetch"    as const, label: `source:          ${fetchCatalog ? "catalog downloads" : "local folder"}` },
     { kind: "preset"   as const, label: `scope:           ${presetLabel}`, disabled: !fetchCatalog },
-    { kind: "model"    as const, label: `model:           ${model === null ? (singleModelMode ? "choose one" : fetchCatalog ? "not used" : "all local models") : model}`, disabled: fetchCatalog && !singleModelMode },
+    { kind: "model"    as const, label: `model:           ${model === null ? (fetchCatalog ? "all in scope" : "all local models") : model}` },
     { kind: "runs"     as const, label: `runs per config: ${runs === 0 ? `default (${runsDefault} from config)` : String(runs)}` },
     { kind: "rotate"   as const, label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
     { kind: "polling"  as const, label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
-    { kind: "run"      as const, label: modelRequired ? "> start all   (choose a model first)" : "> start all", disabled: modelRequired },
+    { kind: "run"      as const, label: "> start all" },
     { kind: "cancel"   as const, label: "  cancel" },
   ];
 
@@ -558,7 +548,8 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
       case "folder":   chooseModelFolder(); break;
       case "fetch": {
         const nextFetch = !fetchCatalog;
-        const nextModel = nextFetch ? null : (model && localModels.includes(model) ? model : null);
+        const nextChoices = nextFetch ? scopedCatalogModels : localModels;
+        const nextModel = model && nextChoices.includes(model) ? model : null;
         setFetchCatalog(nextFetch);
         if (nextModel !== model) setModel(nextModel);
         onSessionChange?.({ fetchCatalog: nextFetch, model: nextModel });
@@ -569,7 +560,8 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         const nextIdx = (presetIdx + 1) % presetNames.length;
         setPresetIdx(nextIdx);
         const nextPreset = presetNames[nextIdx] ?? "all";
-        const nextModel = nextPreset === SINGLE_MODEL_SCOPE ? model : null;
+        const nextChoices = catalogModelNamesForScope(catalog, presets, nextPreset);
+        const nextModel = model && nextChoices.includes(model) ? model : null;
         if (nextModel !== model) setModel(nextModel);
         onSessionChange?.({ currentPreset: nextPreset, model: nextModel });
         // Stepping off 'custom' clears any prior custom selection so

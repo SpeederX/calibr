@@ -113,8 +113,8 @@ A typical first session:
    `q` to go back.
 
 Once the starter run works, repeat `guided run` and switch `scope` to
-`middle`, `high`, `ultra`, `all`, or `single model` for a broader or narrower
-recommendation set.
+`middle`, `high`, `ultra`, or `all` for a broader recommendation set. The
+`model` field can narrow any scope to one model from that scope.
 
 For sub-tasks (re-bench one model, change run count):
 
