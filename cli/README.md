@@ -122,8 +122,10 @@ For sub-tasks (re-bench one model, change run count):
    `calibr`; change it to your local model directory, then set `model catalog:
    no - load from local folder` to bench existing `.gguf` files there. When you
    save a folder, calibr offers to create it if missing and reports how many
-   `.gguf` models it found. Those files are user-owned and are never deleted by
-   cleanup.
+   `.gguf` models it found. In local-folder mode, `model filter` cycles through
+   those local models. Those files are user-owned and are never deleted by
+   cleanup. Guided-run field choices stay in memory while this `calibr` session
+   is open; restarting `calibr` returns non-config fields to defaults.
 
 ## Privacy and model licenses
 

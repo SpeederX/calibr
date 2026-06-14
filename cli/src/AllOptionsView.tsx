@@ -26,6 +26,8 @@ import { CustomBenchView } from "./CustomBenchView.js";
 interface Props {
   onRun: (args: string[], label: string, trace?: TraceContext) => void;
   onCancel: () => void;
+  session?: GuidedRunSession;
+  onSessionChange?: (patch: Partial<GuidedRunSession>) => void;
 }
 
 // Model names discovered on disk (data/catalog.json), unioned with the curated
@@ -60,7 +62,52 @@ function retentionLabel(policy: DownloadRetention): string {
   }
 }
 
-function countGgufModels(root: string): number {
+export function modelNameFromGgufFileName(fileName: string): string {
+  const base = fileName.replace(/\.gguf$/i, "");
+  const patterns = [
+    /^(.+?)[.-](UD-Q\d+_K_XL)$/i,
+    /^(.+?)[.-](UD-Q\d+_K_M)$/i,
+    /^(.+?)[.-](UD-Q\d+_K_S)$/i,
+    /^(.+?)[.-](Q\d+_K_[A-Z]+)$/i,
+    /^(.+?)[.-](Q\d+_\d+)$/i,
+    /^(.+?)[.-](IQ\d+_[A-Z_]+)$/i,
+    /^(.+?)[.-](BF16|F16|F32)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = base.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return base;
+}
+
+export function scanLocalModelNames(root: string): string[] {
+  if (!root.trim() || !existsSync(root)) return [];
+  const stack = [root];
+  const names = new Set<string>();
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = resolve(dir, entry);
+      try {
+        const st = statSync(path);
+        if (st.isDirectory()) stack.push(path);
+        else if (st.isFile() && entry.toLowerCase().endsWith(".gguf")) names.add(modelNameFromGgufFileName(entry));
+      } catch {
+        // Ignore files that disappear or cannot be read during the scan.
+      }
+    }
+  }
+  return [...names].sort();
+}
+
+export function countGgufModels(root: string): number {
+  if (!root.trim() || !existsSync(root)) return 0;
   const stack = [root];
   let count = 0;
   while (stack.length > 0) {
@@ -170,26 +217,40 @@ type LlamaDecision =
   | { kind: "download"; build: string }
   | { kind: "local"; path: string };
 
-export function AllOptionsView({ onRun, onCancel }: Props) {
+export interface GuidedRunSession {
+  fetchCatalog?: boolean;
+  modelFolder?: string;
+  model?: string | null;
+  currentPreset?: string;
+  customIds?: string;
+  customCtxSizes?: number[] | null;
+  runs?: number;
+  downloadRetention?: DownloadRetention;
+  preferSpeed?: boolean;
+  minimalPolling?: boolean;
+  llamaDecision?: LlamaDecision | null;
+}
+
+export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Props) {
   // 'all' is the typical "I want everything" path; defaulting fetch on
   // matches what most users want (download the curated catalog + bench it).
   // Users with their own .gguf collections in the model folder toggle it off
   // in one keystroke.
-  const [fetchCatalog, setFetchCatalog] = useState<boolean>(true);
+  const [fetchCatalog, setFetchCatalog] = useState<boolean>(session?.fetchCatalog ?? true);
   const currentPath = process.cwd();
   const cfg = useMemo(loadConfig, []);
   const configuredModelFolder = useMemo(() => {
     const paths = cfg.scan_paths;
     return Array.isArray(paths) && paths.length > 0 && paths[0] ? paths[0] : "";
   }, [cfg]);
-  const [modelFolder, setModelFolder] = useState<string>(() => configuredModelFolder || currentPath);
+  const [modelFolder, setModelFolder] = useState<string>(() => session?.modelFolder || configuredModelFolder || currentPath);
   const [modelFolderDraft, setModelFolderDraft] = useState<string>("");
-  const [downloadRetention, setDownloadRetention] = useState<DownloadRetention>("cleanup");
-  const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
-  const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
-  const [model, setModel] = useState<string | null>(null);
-  const [runs, setRuns] = useState<number>(0);
-  const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(null);
+  const [downloadRetention, setDownloadRetention] = useState<DownloadRetention>(session?.downloadRetention ?? "cleanup");
+  const [preferSpeed, setPreferSpeed] = useState<boolean>(session?.preferSpeed ?? false);
+  const [minimalPolling, setMinimalPolling] = useState<boolean>(session?.minimalPolling ?? false);
+  const [model, setModel] = useState<string | null>(session?.model ?? null);
+  const [runs, setRuns] = useState<number>(session?.runs ?? 0);
+  const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(session?.llamaDecision ?? null);
   const [llamaVersionInput, setLlamaVersionInput] = useState<string>("");
   const [llamaCandidates, setLlamaCandidates] = useState<LlamaServerCandidate[]>([]);
   const [llamaSourceCursor, setLlamaSourceCursor] = useState(0);
@@ -198,12 +259,16 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
   const catalog = useMemo(readModelCatalog, []);
+  const destination = modelFolder.trim() || currentPath;
+  const modelFolderDisplay = configuredModelFolder || modelFolder !== currentPath ? destination : "<CURRENT_PATH>";
+  const localModels = useMemo<string[]>(() => scanLocalModelNames(destination), [destination]);
   // Model filter spans every known model: discovered (on disk) ∪ curated.
   const models = useMemo<string[]>(() => {
+    if (!fetchCatalog) return localModels;
     const names = new Set<string>(readDiscoveredModelNames());
     for (const e of catalog) if (e?.model) names.add(e.model);
     return [...names].sort();
-  }, [catalog]);
+  }, [catalog, fetchCatalog, localModels]);
   const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
   const runsDefault = useMemo<number>(() => {
     const v = cfg?.bench?.runs_per_config;
@@ -216,8 +281,6 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     if (llamaDecision?.kind === "local") return `use local (${llamaDecision.path})`;
     return "choose when missing";
   })();
-  const destination = modelFolder.trim() || currentPath;
-  const modelFolderDisplay = configuredModelFolder || modelFolder !== currentPath ? destination : "<CURRENT_PATH>";
   const cachedCount = useMemo(cachedResultsCount, []);
   // Presets: built-in (default_bench_presets.json) + user-saved
   // (data/user_bench_presets.json) merged into one dict.
@@ -233,6 +296,8 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     return [...builtin, ...extras, "custom"];
   }, [presets]);
   const [presetIdx, setPresetIdx] = useState<number>(() => {
+    const rememberedIdx = session?.currentPreset ? presetNames.indexOf(session.currentPreset) : -1;
+    if (rememberedIdx >= 0) return rememberedIdx;
     const starterIdx = presetNames.indexOf("low");
     return starterIdx >= 0 ? starterIdx : 0;
   });
@@ -268,8 +333,8 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // Custom selection (CustomBenchView) writes its result here; when set,
   // buildArgs ignores the named preset and passes -CatalogId with the
   // comma-list of picked catalog ids.
-  const [customIds, setCustomIds] = useState<string>("");
-  const [customCtxSizes, setCustomCtxSizes] = useState<number[] | null>(null);
+  const [customIds, setCustomIds] = useState<string>(session?.customIds ?? "");
+  const [customCtxSizes, setCustomCtxSizes] = useState<number[] | null>(session?.customCtxSizes ?? null);
 
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
@@ -400,6 +465,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       details: { build: build || "latest" },
     });
     setLlamaDecision(decision);
+    onSessionChange?.({ llamaDecision: decision });
     startAfterLlamaSetup(decision);
   };
 
@@ -426,6 +492,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         details: { path: decision.path, candidateCount: 1 },
       });
       setLlamaDecision(decision);
+      onSessionChange?.({ llamaDecision: decision });
       startAfterLlamaSetup(decision);
       return;
     }
@@ -446,22 +513,57 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     switch (row.kind) {
       case "llama":    setLlamaSourceCursor(0); setPhase({ kind: "llamaSource" }); break;
       case "folder":   chooseModelFolder(); break;
-      case "fetch":    setFetchCatalog(!fetchCatalog); break;
+      case "fetch": {
+        const nextFetch = !fetchCatalog;
+        setFetchCatalog(nextFetch);
+        onSessionChange?.({ fetchCatalog: nextFetch, model: nextFetch ? model : (model && localModels.includes(model) ? model : null) });
+        if (!nextFetch && model && !localModels.includes(model)) setModel(null);
+        break;
+      }
       case "preset": {
         if (!fetchCatalog || model !== null) break;   // disabled when a model is fixed
         const nextIdx = (presetIdx + 1) % presetNames.length;
         setPresetIdx(nextIdx);
+        onSessionChange?.({ currentPreset: presetNames[nextIdx] });
         // Stepping off 'custom' clears any prior custom selection so
         // subsequent runs use the named preset's expansion, not the
         // stale picked-ids list.
-        if (presetNames[nextIdx] !== "custom" && customIds) setCustomIds("");
+        if (presetNames[nextIdx] !== "custom" && customIds) {
+          setCustomIds("");
+          onSessionChange?.({ customIds: "", customCtxSizes: null });
+        }
         break;
       }
-      case "model":    setModel(next(modelChoices, model)); break;
-      case "runs":     setRuns(next(ALL_RUNS_VALUES, runs)); break;
-      case "rotate":   setDownloadRetention(next(DOWNLOAD_RETENTION_VALUES, downloadRetention)); break;
-      case "prefer":   setPreferSpeed(!preferSpeed); break;
-      case "polling":  setMinimalPolling(!minimalPolling); break;
+      case "model": {
+        const nextModel = next(modelChoices, model);
+        setModel(nextModel);
+        onSessionChange?.({ model: nextModel });
+        break;
+      }
+      case "runs": {
+        const nextRuns = next(ALL_RUNS_VALUES, runs);
+        setRuns(nextRuns);
+        onSessionChange?.({ runs: nextRuns });
+        break;
+      }
+      case "rotate": {
+        const nextRetention = next(DOWNLOAD_RETENTION_VALUES, downloadRetention);
+        setDownloadRetention(nextRetention);
+        onSessionChange?.({ downloadRetention: nextRetention });
+        break;
+      }
+      case "prefer": {
+        const nextPrefer = !preferSpeed;
+        setPreferSpeed(nextPrefer);
+        onSessionChange?.({ preferSpeed: nextPrefer });
+        break;
+      }
+      case "polling": {
+        const nextPolling = !minimalPolling;
+        setMinimalPolling(nextPolling);
+        onSessionChange?.({ minimalPolling: nextPolling });
+        break;
+      }
       case "run": startRun(); break;
       case "cancel": onCancel(); break;
     }
@@ -475,8 +577,15 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
 
   function saveModelFolder(path: string, created: boolean) {
     const count = countGgufModels(path);
+    const names = scanLocalModelNames(path);
     updateLocalConfigField("scan_paths", [path]);
     setModelFolder(path);
+    if (!fetchCatalog && model && !names.includes(model)) {
+      setModel(null);
+      onSessionChange?.({ modelFolder: path, model: null });
+    } else {
+      onSessionChange?.({ modelFolder: path });
+    }
     traceAction({
       flow: "guided run",
       action: "model folder",
@@ -646,6 +755,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
             details: { path: picked.path, label: picked.label },
           });
           setLlamaDecision(decision);
+          onSessionChange?.({ llamaDecision: decision });
           startAfterLlamaSetup(decision);
         }
       }
@@ -851,6 +961,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         onSubmit={(idList, ctxSizes) => {
           setCustomIds(idList);
           setCustomCtxSizes(ctxSizes && ctxSizes.length > 0 ? ctxSizes : null);
+          onSessionChange?.({ customIds: idList, customCtxSizes: ctxSizes && ctxSizes.length > 0 ? ctxSizes : null });
           // After picking, go straight to the disk gate; the user already
           // accepted the form's other choices when they hit '> start all'.
           runGate(idList);

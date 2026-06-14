@@ -2,7 +2,10 @@
 // model-filter + runs and their interaction with the preset.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildAllArgs } from "../dist/AllOptionsView.js";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildAllArgs, countGgufModels, modelNameFromGgufFileName, scanLocalModelNames } from "../dist/AllOptionsView.js";
 
 const base = {
   decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",
@@ -54,4 +57,29 @@ test("download retention passes through as -DownloadRetention", () => {
 test("model folder passes through as scan path and download destination", () => {
   assert.deepEqual(buildAllArgs({ ...base, modelFolder: "D:\\models" }).args,
     ["all", "-ScanPath", "D:\\models", "-Destination", "D:\\models", "-FetchCatalog", "-Preset", "low"]);
+});
+
+test("model folder scan returns 0 for empty or missing paths", () => {
+  assert.equal(countGgufModels(""), 0);
+  assert.deepEqual(scanLocalModelNames(""), []);
+  assert.equal(countGgufModels(join(tmpdir(), "calibr-missing-model-folder")), 0);
+});
+
+test("model folder scan counts local gguf files and exposes model names", () => {
+  const root = mkdtempSync(join(tmpdir(), "calibr-model-folder-"));
+  try {
+    mkdirSync(join(root, "nested"));
+    writeFileSync(join(root, "Qwen3.5-9B-Q4_K_M.gguf"), "stub");
+    writeFileSync(join(root, "nested", "Gemma-4-E2B-it.F16.gguf"), "stub");
+    writeFileSync(join(root, "notes.txt"), "ignore");
+    assert.equal(countGgufModels(root), 2);
+    assert.deepEqual(scanLocalModelNames(root), ["Gemma-4-E2B-it", "Qwen3.5-9B"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("local model name parser mirrors common variant suffixes", () => {
+  assert.equal(modelNameFromGgufFileName("Qwen3.5-9B-Q4_K_M.gguf"), "Qwen3.5-9B");
+  assert.equal(modelNameFromGgufFileName("Phi-4-mini-instruct.Q8_0.gguf"), "Phi-4-mini-instruct");
 });

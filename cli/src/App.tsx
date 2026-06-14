@@ -6,7 +6,7 @@ import { StatusView } from "./StatusView.js";
 import { RunView } from "./RunView.js";
 import { ResultsView } from "./ResultsView.js";
 import { BenchOptionsView } from "./BenchOptionsView.js";
-import { AllOptionsView } from "./AllOptionsView.js";
+import { AllOptionsView, type GuidedRunSession } from "./AllOptionsView.js";
 import { InitOptionsView } from "./InitOptionsView.js";
 import { ResetOptionsView } from "./ResetOptionsView.js";
 import { LlamaPathView } from "./LlamaPathView.js";
@@ -76,6 +76,7 @@ export function App() {
   const { exit } = useApp();
   const [screen, setScreen] = useState<Screen>({ kind: "menu" });
   const [status, setStatus] = useState<Status>(() => readStatus());
+  const [guidedSession, setGuidedSession] = useState<GuidedRunSession>({});
   const [menuCursor, setMenuCursor] = useState(0);
   const [advancedCursor, setAdvancedCursor] = useState(0);
   const [helpCursor, setHelpCursor] = useState(0);
@@ -280,6 +281,8 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <AllOptionsView
+          session={guidedSession}
+          onSessionChange={(patch) => setGuidedSession((current) => ({ ...current, ...patch }))}
           onRun={(args, label, trace) => setScreen({ kind: "run", args, label, trace })}
           onCancel={() => setScreen({ kind: "menu" })}
         />

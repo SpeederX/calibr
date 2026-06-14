@@ -108,9 +108,10 @@ Already have local `.gguf` files? In `guided run`, set `model folder` to that
 directory, then set `model catalog: no - load from local folder`. The default
 model folder is `<CURRENT_PATH>`, the folder where you launched `calibr`. When
 you save a folder, calibr stores it in config, checks whether it exists, offers
-to create it if needed, and reports how many `.gguf` models it found. Files in
-the model folder are user-owned: cleanup applies only to files downloaded
-during the current run.
+to create it if needed, and reports how many `.gguf` models it found. In this
+mode, `model filter` lists the local models found in that folder. Files in the
+model folder are user-owned: cleanup applies only to files downloaded during
+the current run.
 
 ## What calibr recommends
 
