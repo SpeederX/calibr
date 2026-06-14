@@ -59,6 +59,51 @@ Suggested buckets:
 Track `prompt_ms`, `prompt_tps`, memory deltas, and whether the model remains
 usable under the longer prefill load.
 
+### MTP / speculative decoding support
+
+Unsloth documents llama.cpp MTP support around `--spec-type draft-mtp` and
+`--spec-draft-n-max`. Treat this as an opt-in benchmark mode, not part of the
+normal recommendation path until numbers are comparable.
+
+Catalog shape to add:
+
+```json
+{
+  "mtp": {
+    "supported": true,
+    "mode": "draft-mtp",
+    "draft_file": "mtp-gemma-4-12B-it.gguf",
+    "draft_n_default": 2,
+    "draft_n_sweep": [1, 2, 3, 4, 5, 6],
+    "extra_memory_mib": 2048
+  }
+}
+```
+
+Model notes:
+
+- Gemma 4 MTP can use an `mtp-` prefixed draft GGUF via `--model-draft`.
+- Qwen3.6 / Qwen3.5 MTP often lives in dedicated MTP GGUF repos and may not
+  require a separate `--model-draft` file in the manual path.
+- Unsloth suggests `--spec-draft-n-max 2` as a starting point, but recommends
+  trying `1..6` because the best value is hardware-dependent.
+- MTP needs extra memory; start with a conservative `extra_memory_mib` around
+  2048 until measured locally.
+
+Benchmark shape:
+
+- baseline run without MTP
+- MTP run with `draft_n_default`
+- optional MTP sweep across `draft_n_sweep`
+- same prompt/context/sampler settings between baseline and MTP runs
+- report baseline eval t/s, MTP eval t/s, speedup, extra RAM/VRAM, best
+  `spec-draft-n-max`, and failures caused by memory pressure
+
+Keep sampler settings deterministic by default. Current bench requests set
+`temperature = 0.0` and do not sweep `top_p`, `top_k`, `min_p`, or sampler
+order. If sampler sweeps become useful, treat them as a separate benchmark
+mode from hardware-fit recommendation.
+
 ### Benchmark telemetry and leaderboard upload
 
 Add opt-in benchmark-result submission for a future leaderboard. Keep it
@@ -227,28 +272,7 @@ Needed shape:
 
 ### MTP / speculative decoding benchmark mode
 
-Keep this out of the normal recommendation path until it can be compared
-fairly. Add an opt-in mode that runs baseline vs MTP/speculative decoding and
-captures draft tokens, accepted tokens, acceptance rate, and speedup.
-
-This is useful for MoE models, but it needs a dedicated report track so normal
-throughput numbers stay comparable.
-
-Needed shape:
-
-- catalog metadata for models that support MTP/speculative decoding
-- bench flags for llama.cpp MTP/speculative mode, including draft model and
-  speculative parameters when required by the backend
-- opt-in sweep over speculative settings such as draft/speculative count and
-  strategy/type, only for compatible entries
-- baseline run without MTP, then matched MTP run with the same prompt/context
-- report fields for accepted tokens, rejected/draft tokens, acceptance rate,
-  speedup, and whether quality-affecting sampler settings were changed
-
-Keep sampler settings deterministic by default. Current bench requests set
-`temperature = 0.0` and do not sweep `top_p`, `top_k`, `min_p`, or sampler
-order. If sampler sweeps become useful, treat them as a separate benchmark
-mode from hardware-fit recommendation.
+Tracked in the 0.1.8 candidate section above.
 
 ### Abstention / behavioral quality bench
 
