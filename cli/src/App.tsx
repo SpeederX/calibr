@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
-import { ENGINE_COMMANDS, readStatus, traceAction, type EngineCommand, type Status, type TraceContext } from "./engine.js";
+import { ENGINE_COMMANDS, readStatus, traceAction, traceSessionEnd, traceSessionStart, type EngineCommand, type Status, type TraceContext } from "./engine.js";
 import { StatusView } from "./StatusView.js";
 import { RunView } from "./RunView.js";
 import { ResultsView } from "./ResultsView.js";
 import { BenchOptionsView } from "./BenchOptionsView.js";
-import { AllOptionsView } from "./AllOptionsView.js";
+import { AllOptionsView, type GuidedRunSession } from "./AllOptionsView.js";
 import { InitOptionsView } from "./InitOptionsView.js";
 import { ResetOptionsView } from "./ResetOptionsView.js";
 import { LlamaPathView } from "./LlamaPathView.js";
@@ -76,9 +76,14 @@ export function App() {
   const { exit } = useApp();
   const [screen, setScreen] = useState<Screen>({ kind: "menu" });
   const [status, setStatus] = useState<Status>(() => readStatus());
+  const [guidedSession, setGuidedSession] = useState<GuidedRunSession>({});
   const [menuCursor, setMenuCursor] = useState(0);
   const [advancedCursor, setAdvancedCursor] = useState(0);
   const [helpCursor, setHelpCursor] = useState(0);
+
+  useEffect(() => {
+    traceSessionStart();
+  }, []);
 
   // Refresh status whenever we return to a menu with readiness indicators.
   useEffect(() => {
@@ -125,12 +130,6 @@ export function App() {
       run: () => setScreen({ kind: "results" }),
     },
     {
-      id: "advanced-tools",
-      label: "advanced tools",
-      description: "status, init, discover, plan, bench, report, reset",
-      run: () => setScreen({ kind: "advancedTools" }),
-    },
-    {
       id: "llama-path",
       label: "configure llama path",
       description: "choose a llama.cpp server binary",
@@ -173,6 +172,7 @@ export function App() {
           status: "completed",
           message: "app > quit",
         });
+        traceSessionEnd("user quit from main menu");
         exit();
         return;
       }
@@ -281,6 +281,8 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <AllOptionsView
+          session={guidedSession}
+          onSessionChange={(patch) => setGuidedSession((current) => ({ ...current, ...patch }))}
           onRun={(args, label, trace) => setScreen({ kind: "run", args, label, trace })}
           onCancel={() => setScreen({ kind: "menu" })}
         />

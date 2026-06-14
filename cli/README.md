@@ -7,11 +7,11 @@ prompt speed, real VRAM, and the silent shared-memory paging that turns a
 `47 t/s` config into `10 t/s` with no error message.
 
 The CLI wraps the existing PowerShell engine and gives you a navigable
-console UI for running discovery → plan → bench → report and for browsing the
-resulting winners. Recommendations are based on measured fit, speed, headroom,
-and spill behavior, not model-quality scoring.
+console UI for guided setup/runs and for browsing the resulting winners.
+Recommendations are based on measured fit, speed, headroom, and spill behavior,
+not model-quality scoring.
 
-![calibr CLI all flow](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/cli-all.png)
+![calibr guided run CLI](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/cli-all.png)
 
 ![calibr full report](https://raw.githubusercontent.com/SpeederX/calibr/master/docs/report-complete.png)
 
@@ -83,10 +83,12 @@ and use a local llama.cpp build with `llama-server` plus the Metal backend.
 
 ```
 $ calibr
-> guided run           download -> bench -> report
-  results              browse benchmark winners
-  advanced tools       status, init, discover, plan, bench, report, reset
-  configure llama path * choose a llama.cpp server binary
+calibr - status
+
+> guided run              download, bench, report
+  results                 browse winners
+  configure llama path *  set llama-server
+  help                    doctor and fixes
 ```
 
 A typical first session:
@@ -98,27 +100,33 @@ A typical first session:
    automatically; multiple binaries open a picker. Typed build tags are saved
    as the preferred auto-fetch build, and **configure llama path** can reuse or
    delete cached auto-fetched builds.
-2. **guided run** -> configure: leave `model catalog: yes`, start with the default
-   starter `low` preset, choose the llama.cpp setup when prompted, and leave
-   `auto-cleanup: yes`. The CLI shows the peak disk
-   requirement and free space before it downloads catalog models. After you
-   accept, the engine downloads each model, benches it, deletes it, and moves
-   to the next.
+2. **guided run** -> configure: leave `source: catalog downloads`, start with the default
+   starter `low` scope, choose the llama.cpp setup when prompted, and leave
+   `auto-cleanup: yes`. The CLI shows the peak disk requirement and free space
+   before it downloads catalog models. After you accept, the engine downloads
+   each model, benches it, cleans it up, and moves to the next. Switch
+   `auto-cleanup` to `keep all`, `keep top 3`, or `keep top 1` when you want
+   downloaded models to survive in the model folder.
 3. **results** - browse the fastest safe winners per model. Press
    `enter` to drill into per-config detail, `o` to open the full HTML
    report in your browser, `r` to re-run the selected config with `-Force`, or
    `q` to go back.
 
-Once the starter run works, repeat `guided run` and switch `which models` to
-`middle`, `high`, `ultra`, or `all` for a broader recommendation set.
+Once the starter run works, repeat `guided run` and switch `scope` to
+`middle`, `high`, `ultra`, or `all` for a broader recommendation set. The
+`model` field can narrow any scope to one model from that scope.
 
 For sub-tasks (re-bench one model, change run count):
 
-4. From the menu pick **advanced tools** -> **bench** -> configure model filter,
-   which models (level), runs, force flag, rotation -> start. Choosing a level
-   downloads + benches that level's curated models; picking a single model
-   benches just that one (downloading it first if it isn't on disk). If you want
-   to keep the downloaded `.gguf` files after the bench, toggle `rotate: no`.
+4. Prefer repeating **guided run** and changing the visible fields. `local
+   folder` defaults to `<CURRENT_PATH>`, the folder where you launched
+   `calibr`; change it to your local model directory, then set `source: local
+   folder` to bench existing `.gguf` files there. When you
+   save a folder, calibr offers to create it if missing and reports how many
+   `.gguf` models it found. In local-folder mode, `model` cycles through
+   those local models. Those files are user-owned and are never deleted by
+   cleanup. Guided-run field choices stay in memory while this `calibr` session
+   is open; restarting `calibr` returns non-config fields to defaults.
 
 ## Privacy and model licenses
 
@@ -137,11 +145,12 @@ calibr-data/
 ├── config.json          your overrides
 ├── catalog.json         models discovered on disk
 ├── plan.json            test plan expanded from catalog
-├── downloads.json       which .gguf files calibr downloaded (rotation manifest)
+├── downloads.json       legacy manifest of calibr-downloaded .gguf files
 ├── llama-bin/           auto-fetched llama.cpp builds
 ├── results/*.json       one file per bench config
 ├── logs/*.log           full llama-server stderr per config
-├── logs/action-trace.jsonl user/engine action trace for startup/download debugging
+├── logs/action-trace.log human-readable user/engine action trace
+├── logs/action-trace.jsonl machine-readable action trace
 ├── bats/*.bat           per-config launch scripts (*.sh on Linux)
 └── report.html          aggregated dashboard
 ```
@@ -159,18 +168,27 @@ $env:CALIBR_CONFIG = "D:\calibr-data\config.json"
 calibr
 ```
 
+The **model folder** is separate from this app-data folder. It is the directory
+you choose in **guided run** for local `.gguf` files and kept catalog downloads.
+Its default is `<CURRENT_PATH>`.
+
 ## Commands
 
-The main menu is product-facing. **Guided run** wraps the engine's `all` flow,
-while **advanced tools** exposes the individual engine verbs when you need
-manual control:
+The main menu is product-facing. **Guided run** is the normal path: setup,
+model selection, benchmark, cleanup, report.
+
+### Legacy / Deprecated Advanced Commands
+
+The individual engine verbs still exist for development and debugging, but
+they are no longer promoted in the main menu. Prefer **guided run** unless you
+are diagnosing the engine directly:
 
 | Verb | What it does |
 |---|---|
 | `init` | Detect hardware, auto-fetch llama.cpp if requested, write `config.json` with sane defaults. |
 | `discover` | Scan `scan_paths` for `*.gguf`, build the model catalog. |
 | `plan` | Expand the catalog into bench configurations, sweeping the right dimension per model (context / MoE-cpu / offload). |
-| `bench` | Run each pending plan entry, write a result JSON per config. When models came from `get-models`, each model's .gguf is deleted from disk after its configs all finish (use `-KeepDownloads` to opt out). |
+| `bench` | Run each pending plan entry, write a result JSON per config. Download retention is controlled by `-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1`; `-KeepDownloads` is deprecated. |
 | `report` | Build the HTML dashboard and per-config `.bat` launchers. |
 | `all` | discover → plan → bench → report, end to end. With `catalog: on`, fetches the curated set first; with auto-fetch on, downloads llama.cpp when setup is incomplete. |
 | `status` | Print current config + counts (also shown as a card in the menu). |

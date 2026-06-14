@@ -13,14 +13,14 @@ Its sweet spot is NVIDIA CUDA on Windows — where it also detects the silent
 WDDM VRAM-to-RAM paging cliff — but it **runs on Linux too**, with experimental
 macOS/Metal detection in progress. The output is an HTML dashboard plus
 per-model optimized launchers (`.bat` on Windows, `.sh` on Linux/macOS).
-Action-level diagnostics are written to `logs/action-trace.jsonl` under the
-calibr data directory, so startup/download hangs can be inspected after the
-fact.
+Action-level diagnostics are written to `logs/action-trace.log` under the
+calibr data directory, with `logs/action-trace.jsonl` kept for machine parsing,
+so startup/download hangs can be inspected after the fact.
 
 It is not a model-quality judge yet. The recommendation is based on measured
 fit, speed, headroom, and spill behavior on your machine.
 
-![calibr CLI all flow](docs/cli-all.png)
+![calibr guided run CLI](docs/cli-all.png)
 
 ![calibr full report](docs/report-complete.png)
 
@@ -73,15 +73,17 @@ npm install -g calibr
 calibr
 ```
 
-You get a menu with `guided run`, `results`, `advanced tools`,
-`configure llama path`, and `help`. Walk through it with arrow keys + enter.
+You get a menu with `guided run`, `results`, `configure llama path`, and
+`help`. Walk through it with arrow keys + enter.
 If something won't start, open `help` -> `doctor`: it checks your CPU/GPU/OS
 and every dependency, tells you exactly what's missing and how to fix it, and
 can export a redacted bundle to attach to a GitHub issue. Start with
-`guided run`: it is the consumer path that configures the old `all` flow,
-defaults to downloading the starter `low` preset, and rotates files off disk
-per model, so the first answer comes back faster. Switch the preset to
-`middle`, `high`, `ultra`, or `all` when you want the broader catalog sweep.
+`guided run`: it is the consumer path that sets up llama.cpp, downloads or
+scans models, benchmarks them, and builds the report. It defaults to the
+starter `low` preset and auto-cleans downloaded files after each model. You
+can also keep all downloaded models, or keep only the top 3 / top 1 current
+winners according to the selected winner rule. Switch the preset to `middle`,
+`high`, `ultra`, or `all` when you want the broader catalog sweep.
 The menu marks setup items with a green check when ready, or a red `*` when
 they need attention.
 
@@ -97,10 +99,19 @@ Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
 to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
 — either way, llama-server runs with the optimized flags.
 
-Don't have any `.gguf` files yet? Pick `guided run`, keep `model catalog: yes`,
+Don't have any `.gguf` files yet? Pick `guided run`, keep `source: catalog downloads`,
 choose the llama.cpp setup when prompted, and let calibr walk the curated set
 one model at a time:
-download -> bench -> delete -> next model -> report.
+download -> bench -> cleanup -> next model -> report.
+
+Already have local `.gguf` files? In `guided run`, set `local folder` to that
+directory, then set `source: local folder`. The default local folder is
+`<CURRENT_PATH>`, the folder where you launched `calibr`. When
+you save a folder, calibr stores it in config, checks whether it exists, offers
+to create it if needed, and reports how many `.gguf` models it found. In this
+mode, `model` lists the local models found in that folder. Files in the
+local folder are user-owned: cleanup applies only to files downloaded during
+the current run.
 
 ## What calibr recommends
 

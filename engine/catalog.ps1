@@ -111,6 +111,19 @@ function Add-DownloadManifestEntry {
     ConvertTo-Json -InputObject $manifest -Depth 5 | Out-File -Encoding utf8 $CALIBR_DOWNLOADS
 }
 
+function Remove-DownloadManifestEntry {
+    param([Parameter(Mandatory)][string]$ModelPath)
+    if (-not (Test-Path $CALIBR_DOWNLOADS)) { return }
+    $remaining = @(Get-DownloadManifest | Where-Object {
+        $_ -and $_.model_path -and $_.model_path -ine $ModelPath
+    })
+    if ($remaining.Count -gt 0) {
+        ConvertTo-Json -InputObject $remaining -Depth 5 | Out-File -Encoding utf8 $CALIBR_DOWNLOADS
+    } else {
+        Remove-Item -LiteralPath $CALIBR_DOWNLOADS -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Test-DownloadedByCalibr {
     # Returns $true iff the given absolute path is recorded in the download
     # manifest. Paths are compared case-insensitively to match Windows

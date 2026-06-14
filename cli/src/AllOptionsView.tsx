@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   CALIBR_CATALOG,
   readModelCatalog,
@@ -14,8 +15,12 @@ import {
   readPresetCatalog,
   findLlamaServerCandidates,
   normalizeLlamaBuildInput,
+  pickFolderSync,
   traceAction,
+  updateLocalConfigField,
+  type CatalogEntry,
   type LlamaServerCandidate,
+  type Preset,
   type TraceContext,
 } from "./engine.js";
 import { CustomBenchView } from "./CustomBenchView.js";
@@ -23,6 +28,8 @@ import { CustomBenchView } from "./CustomBenchView.js";
 interface Props {
   onRun: (args: string[], label: string, trace?: TraceContext) => void;
   onCancel: () => void;
+  session?: GuidedRunSession;
+  onSessionChange?: (patch: Partial<GuidedRunSession>) => void;
 }
 
 // Model names discovered on disk (data/catalog.json), unioned with the curated
@@ -40,10 +47,128 @@ function readDiscoveredModelNames(): string[] {
 }
 
 const ALL_RUNS_VALUES: number[] = [0, 1, 3, 5];
+const DOWNLOAD_RETENTION_VALUES = ["cleanup", "keep-all", "keep-top-3", "keep-top-1"] as const;
+export type DownloadRetention = (typeof DOWNLOAD_RETENTION_VALUES)[number];
 
 function next<T>(values: readonly T[], current: T): T {
   const i = values.indexOf(current);
   return values[(i + 1) % values.length];
+}
+
+function retentionLabel(policy: DownloadRetention): string {
+  switch (policy) {
+    case "keep-all": return "keep all (store downloaded models in the model folder)";
+    case "keep-top-3": return "keep top 3 results";
+    case "keep-top-1": return "keep top 1 result";
+    default: return "yes (delete each downloaded model when its bench finishes)";
+  }
+}
+
+export function modelNameFromGgufFileName(fileName: string): string {
+  const base = fileName.replace(/\.gguf$/i, "");
+  const patterns = [
+    /^(.+?)[.-](UD-Q\d+_K_XL)$/i,
+    /^(.+?)[.-](UD-Q\d+_K_M)$/i,
+    /^(.+?)[.-](UD-Q\d+_K_S)$/i,
+    /^(.+?)[.-](Q\d+_K_[A-Z]+)$/i,
+    /^(.+?)[.-](Q\d+_\d+)$/i,
+    /^(.+?)[.-](IQ\d+_[A-Z_]+)$/i,
+    /^(.+?)[.-](BF16|F16|F32)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = base.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return base;
+}
+
+export function isSelectableModelGguf(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return lower.endsWith(".gguf") && !lower.startsWith("mmproj");
+}
+
+export function scanLocalModelNames(root: string): string[] {
+  if (!root.trim() || !existsSync(root)) return [];
+  const stack = [root];
+  const names = new Set<string>();
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = resolve(dir, entry);
+      try {
+        const st = statSync(path);
+        if (st.isDirectory()) stack.push(path);
+        else if (st.isFile() && isSelectableModelGguf(entry)) names.add(modelNameFromGgufFileName(entry));
+      } catch {
+        // Ignore files that disappear or cannot be read during the scan.
+      }
+    }
+  }
+  return [...names].sort();
+}
+
+export function catalogModelNamesForScope(
+  catalog: CatalogEntry[],
+  presets: Record<string, Preset>,
+  scope: string,
+): string[] {
+  const entries = (() => {
+    if (scope === "all" || scope === "custom") return catalog;
+    const preset = presets[scope];
+    if (!preset) return catalog;
+    if (preset.models === "*") return catalog;
+    if (Array.isArray(preset.models)) return filterCatalog(catalog, { catalogId: preset.models.join(",") });
+    return catalog;
+  })();
+  return [...new Set(entries
+    .filter(e => isSelectableModelGguf(e.hf_file) && !e.model.toLowerCase().startsWith("mmproj"))
+    .map(e => e.model)
+    .filter(Boolean))]
+    .sort();
+}
+
+function compactPath(path: string, max = 58): string {
+  if (path.length <= max) return path;
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length >= 2) {
+    const tail = `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+    const prefix = /^[A-Za-z]:/.test(normalized) ? normalized.slice(0, 2) : "";
+    return `${prefix}/.../${tail}`;
+  }
+  return `...${path.slice(Math.max(0, path.length - max + 3))}`;
+}
+
+export function countGgufModels(root: string): number {
+  if (!root.trim() || !existsSync(root)) return 0;
+  const stack = [root];
+  let count = 0;
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const path = resolve(dir, entry);
+      try {
+        const st = statSync(path);
+        if (st.isDirectory()) stack.push(path);
+        else if (st.isFile() && isSelectableModelGguf(entry)) count++;
+      } catch {
+        // Ignore files that disappear or cannot be read during the scan.
+      }
+    }
+  }
+  return count;
 }
 
 export type LlamaDecisionLike =
@@ -53,12 +178,13 @@ export type LlamaDecisionLike =
 
 export interface AllArgsOpts {
   decision: LlamaDecisionLike;
+  modelFolder: string;
   fetchCatalog: boolean;
   model: string | null;
   customIds: string;
   currentPreset: string;
   runs: number;
-  keepDownloads: boolean;
+  downloadRetention: DownloadRetention;
   preferSpeed: boolean;
   minimalPolling: boolean;
   rerunAll: boolean;
@@ -77,6 +203,13 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
   } else if (o.decision?.kind === "local") {
     args.push("-LlamaServer", o.decision.path); parts.push(`-LlamaServer "${o.decision.path}"`);
   }
+  const folder = o.modelFolder.trim();
+  if (folder) {
+    args.push("-ScanPath", folder); parts.push(`-ScanPath "${folder}"`);
+    if (o.fetchCatalog) {
+      args.push("-Destination", folder); parts.push(`-Destination "${folder}"`);
+    }
+  }
   if (o.fetchCatalog) { args.push("-FetchCatalog"); parts.push("-FetchCatalog"); }
   if (o.model) {
     args.push("-Model", o.model); parts.push(`-Model "${o.model}"`);
@@ -90,7 +223,10 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
     args.push("-ContextSizes", csv); parts.push(`-ContextSizes ${csv}`);
   }
   if (o.runs > 0)        { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
-  if (o.keepDownloads)   { args.push("-KeepDownloads");  parts.push("-KeepDownloads"); }
+  if (o.downloadRetention !== "cleanup") {
+    args.push("-DownloadRetention", o.downloadRetention);
+    parts.push(`-DownloadRetention ${o.downloadRetention}`);
+  }
   if (o.rerunAll)        { args.push("-Force");          parts.push("-Force"); }
   if (o.preferSpeed)     { args.push("-PreferSpeed");    parts.push("-PreferSpeed"); }
   if (o.minimalPolling)  { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
@@ -110,6 +246,9 @@ type Phase =
   | { kind: "llamaDownloadVersion"; error?: string }
   | { kind: "llamaLocalPick" }
   | { kind: "llamaNoLocal" }
+  | { kind: "modelFolderInput"; error?: string }
+  | { kind: "modelFolderCreate"; path: string }
+  | { kind: "modelFolderSaved"; path: string; count: number; created: boolean }
   | { kind: "gate"; required: number; available: number; entryCount: number; sufficient: boolean }
   | { kind: "cachePrompt" };
 
@@ -117,18 +256,40 @@ type LlamaDecision =
   | { kind: "download"; build: string }
   | { kind: "local"; path: string };
 
-export function AllOptionsView({ onRun, onCancel }: Props) {
+export interface GuidedRunSession {
+  fetchCatalog?: boolean;
+  modelFolder?: string;
+  model?: string | null;
+  currentPreset?: string;
+  customIds?: string;
+  customCtxSizes?: number[] | null;
+  runs?: number;
+  downloadRetention?: DownloadRetention;
+  preferSpeed?: boolean;
+  minimalPolling?: boolean;
+  llamaDecision?: LlamaDecision | null;
+}
+
+export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Props) {
   // 'all' is the typical "I want everything" path; defaulting fetch on
   // matches what most users want (download the curated catalog + bench it).
-  // Users with their own .gguf collections in scan_paths toggle it off
+  // Users with their own .gguf collections in the model folder toggle it off
   // in one keystroke.
-  const [fetchCatalog, setFetchCatalog] = useState<boolean>(true);
-  const [keepDownloads, setKeepDownloads] = useState<boolean>(false);
-  const [preferSpeed, setPreferSpeed] = useState<boolean>(false);
-  const [minimalPolling, setMinimalPolling] = useState<boolean>(false);
-  const [model, setModel] = useState<string | null>(null);
-  const [runs, setRuns] = useState<number>(0);
-  const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(null);
+  const [fetchCatalog, setFetchCatalog] = useState<boolean>(session?.fetchCatalog ?? true);
+  const currentPath = process.cwd();
+  const cfg = useMemo(loadConfig, []);
+  const configuredModelFolder = useMemo(() => {
+    const paths = cfg.scan_paths;
+    return Array.isArray(paths) && paths.length > 0 && paths[0] ? paths[0] : "";
+  }, [cfg]);
+  const [modelFolder, setModelFolder] = useState<string>(() => session?.modelFolder || configuredModelFolder || currentPath);
+  const [modelFolderDraft, setModelFolderDraft] = useState<string>("");
+  const [downloadRetention, setDownloadRetention] = useState<DownloadRetention>(session?.downloadRetention ?? "cleanup");
+  const [preferSpeed, setPreferSpeed] = useState<boolean>(session?.preferSpeed ?? false);
+  const [minimalPolling, setMinimalPolling] = useState<boolean>(session?.minimalPolling ?? false);
+  const [model, setModel] = useState<string | null>(session?.model ?? null);
+  const [runs, setRuns] = useState<number>(session?.runs ?? 0);
+  const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(session?.llamaDecision ?? null);
   const [llamaVersionInput, setLlamaVersionInput] = useState<string>("");
   const [llamaCandidates, setLlamaCandidates] = useState<LlamaServerCandidate[]>([]);
   const [llamaSourceCursor, setLlamaSourceCursor] = useState(0);
@@ -137,45 +298,51 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   const [phase, setPhase] = useState<Phase>({ kind: "form" });
 
   const catalog = useMemo(readModelCatalog, []);
-  const cfg = useMemo(loadConfig, []);
-  // Model filter spans every known model: discovered (on disk) ∪ curated.
-  const models = useMemo<string[]>(() => {
-    const names = new Set<string>(readDiscoveredModelNames());
-    for (const e of catalog) if (e?.model) names.add(e.model);
-    return [...names].sort();
-  }, [catalog]);
-  const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
+  const destination = modelFolder.trim() || currentPath;
+  const modelFolderDisplay = configuredModelFolder || modelFolder !== currentPath ? compactPath(destination) : "<CURRENT_PATH>";
+  const localModels = useMemo<string[]>(() => scanLocalModelNames(destination), [destination]);
   const runsDefault = useMemo<number>(() => {
     const v = cfg?.bench?.runs_per_config;
     return typeof v === "number" && v > 0 ? v : 3;
   }, [cfg]);
   const llamaConfigured = Boolean(cfg.llama_server_exe && existsSync(cfg.llama_server_exe));
   const llamaLabel = (() => {
-    if (llamaConfigured) return `configured (${cfg.llama_server_exe})`;
+    if (llamaConfigured) return `configured (${compactPath(cfg.llama_server_exe ?? "")})`;
     if (llamaDecision?.kind === "download") return llamaDecision.build ? `download ${llamaDecision.build}` : "download latest";
-    if (llamaDecision?.kind === "local") return `use local (${llamaDecision.path})`;
+    if (llamaDecision?.kind === "local") return `use local (${compactPath(llamaDecision.path)})`;
     return "choose when missing";
   })();
-  const destination = useMemo(() => downloadDestination(cfg), [cfg]);
   const cachedCount = useMemo(cachedResultsCount, []);
   // Presets: built-in (default_bench_presets.json) + user-saved
   // (data/user_bench_presets.json) merged into one dict.
   const presets = useMemo(readPresetCatalog, []);
-  // Cycle order: all, low, middle, high, ultra, then any extra user-saved presets,
-  // then 'custom' as the last sentinel that routes to CustomBenchView.
+  // Cycle order: all, low, middle, high, ultra, then any extra user-saved presets.
   const presetNames = useMemo<string[]>(() => {
-    // Keep 'all' as a non-custom fallback even if default_bench_presets.json is
+    // Keep 'all' as a fallback even if default_bench_presets.json is
     // missing/unreadable. A broken preset file should not dump a first-time
-    // user straight into CustomBenchView.
+    // user into an empty or invalid scope.
     const builtin = ["all", "low", "middle", "high", "ultra"].filter(n => n === "all" || presets[n]);
     const extras = Object.keys(presets).filter(n => !builtin.includes(n)).sort();
-    return [...builtin, ...extras, "custom"];
+    return [...builtin, ...extras];
   }, [presets]);
   const [presetIdx, setPresetIdx] = useState<number>(() => {
+    const rememberedIdx = session?.currentPreset ? presetNames.indexOf(session.currentPreset) : -1;
+    if (rememberedIdx >= 0) return rememberedIdx;
     const starterIdx = presetNames.indexOf("low");
     return starterIdx >= 0 ? starterIdx : 0;
   });
-  const currentPreset = presetNames[presetIdx];
+  const currentPreset = presetNames[presetIdx] ?? "all";
+  const scopedCatalogModels = useMemo<string[]>(
+    () => catalogModelNamesForScope(catalog, presets, currentPreset),
+    [catalog, presets, currentPreset],
+  );
+  // In catalog mode, model selection is scoped by the selected preset/tier.
+  // In local-folder mode, it lists local .gguf models found in the selected folder.
+  const models = useMemo<string[]>(() => {
+    if (!fetchCatalog) return localModels;
+    return scopedCatalogModels;
+  }, [currentPreset, fetchCatalog, localModels, scopedCatalogModels]);
+  const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
   const presetCount = (() => {
     if (currentPreset === "custom") return null;
     const p = presets[currentPreset];
@@ -191,12 +358,13 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   })();
 
   const rows = [
-    { kind: "llama"    as const, label: `llama.cpp:       ${llamaLabel}` },
-    { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — only bench what's already in scan_paths"}` },
-    { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog || model !== null },
-    { kind: "model"    as const, label: `model filter:    ${model === null ? "all (use 'which models')" : model}` },
+    { kind: "llama"    as const, label: `llama.cpp:       ${llamaLabel}`, disabled: llamaConfigured },
+    { kind: "folder"   as const, label: `local folder:    ${modelFolderDisplay}` },
+    { kind: "fetch"    as const, label: `source:          ${fetchCatalog ? "catalog downloads" : "local folder"}` },
+    { kind: "preset"   as const, label: `scope:           ${presetLabel}`, disabled: !fetchCatalog },
+    { kind: "model"    as const, label: `model:           ${model === null ? (fetchCatalog ? "all in scope" : "all local models") : model}` },
     { kind: "runs"     as const, label: `runs per config: ${runs === 0 ? `default (${runsDefault} from config)` : String(runs)}` },
-    { kind: "rotate"   as const, label: `auto-cleanup:    ${keepDownloads ? "no  (keep downloaded models on disk after bench)" : "yes (delete each downloaded model when its bench finishes)"}` },
+    { kind: "rotate"   as const, label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
     { kind: "polling"  as const, label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
     { kind: "run"      as const, label: "> start all" },
@@ -206,13 +374,13 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
   // Custom selection (CustomBenchView) writes its result here; when set,
   // buildArgs ignores the named preset and passes -CatalogId with the
   // comma-list of picked catalog ids.
-  const [customIds, setCustomIds] = useState<string>("");
-  const [customCtxSizes, setCustomCtxSizes] = useState<number[] | null>(null);
+  const [customIds, setCustomIds] = useState<string>(session?.customIds ?? "");
+  const [customCtxSizes, setCustomCtxSizes] = useState<number[] | null>(session?.customCtxSizes ?? null);
 
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, fetchCatalog, model, customIds, currentPreset, runs, keepDownloads, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
+    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -234,13 +402,14 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       details: {
         setup,
         llamaDecision: decision,
+        modelFolder: "<model_folder_dir>",
         fetchCatalog,
         preset: currentPreset,
         model,
         customIds,
         contextSizes: customCtxSizes,
         runs,
-        keepDownloads,
+        downloadRetention,
         preferSpeed,
         minimalPolling,
         rerunAll,
@@ -337,6 +506,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
       details: { build: build || "latest" },
     });
     setLlamaDecision(decision);
+    onSessionChange?.({ llamaDecision: decision });
     startAfterLlamaSetup(decision);
   };
 
@@ -363,6 +533,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         details: { path: decision.path, candidateCount: 1 },
       });
       setLlamaDecision(decision);
+      onSessionChange?.({ llamaDecision: decision });
       startAfterLlamaSetup(decision);
       return;
     }
@@ -380,34 +551,212 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
 
   const activate = (i: number) => {
     const row = rows[i];
+    if ((row as { disabled?: boolean }).disabled) return;
     switch (row.kind) {
       case "llama":    setLlamaSourceCursor(0); setPhase({ kind: "llamaSource" }); break;
-      case "fetch":    setFetchCatalog(!fetchCatalog); break;
+      case "folder":   chooseModelFolder(); break;
+      case "fetch": {
+        const nextFetch = !fetchCatalog;
+        const nextChoices = nextFetch ? scopedCatalogModels : localModels;
+        const nextModel = model && nextChoices.includes(model) ? model : null;
+        setFetchCatalog(nextFetch);
+        if (nextModel !== model) setModel(nextModel);
+        onSessionChange?.({ fetchCatalog: nextFetch, model: nextModel });
+        break;
+      }
       case "preset": {
-        if (!fetchCatalog || model !== null) break;   // disabled when a model is fixed
+        if (!fetchCatalog) break;
         const nextIdx = (presetIdx + 1) % presetNames.length;
         setPresetIdx(nextIdx);
+        const nextPreset = presetNames[nextIdx] ?? "all";
+        const nextChoices = catalogModelNamesForScope(catalog, presets, nextPreset);
+        const nextModel = model && nextChoices.includes(model) ? model : null;
+        if (nextModel !== model) setModel(nextModel);
+        onSessionChange?.({ currentPreset: nextPreset, model: nextModel });
         // Stepping off 'custom' clears any prior custom selection so
         // subsequent runs use the named preset's expansion, not the
         // stale picked-ids list.
-        if (presetNames[nextIdx] !== "custom" && customIds) setCustomIds("");
+        if (nextPreset !== "custom" && customIds) {
+          setCustomIds("");
+          onSessionChange?.({ customIds: "", customCtxSizes: null });
+        }
         break;
       }
-      case "model":    setModel(next(modelChoices, model)); break;
-      case "runs":     setRuns(next(ALL_RUNS_VALUES, runs)); break;
-      case "rotate":   setKeepDownloads(!keepDownloads); break;
-      case "prefer":   setPreferSpeed(!preferSpeed); break;
-      case "polling":  setMinimalPolling(!minimalPolling); break;
+      case "model": {
+        const nextModel = next(modelChoices, model);
+        setModel(nextModel);
+        onSessionChange?.({ model: nextModel });
+        break;
+      }
+      case "runs": {
+        const nextRuns = next(ALL_RUNS_VALUES, runs);
+        setRuns(nextRuns);
+        onSessionChange?.({ runs: nextRuns });
+        break;
+      }
+      case "rotate": {
+        const nextRetention = next(DOWNLOAD_RETENTION_VALUES, downloadRetention);
+        setDownloadRetention(nextRetention);
+        onSessionChange?.({ downloadRetention: nextRetention });
+        break;
+      }
+      case "prefer": {
+        const nextPrefer = !preferSpeed;
+        setPreferSpeed(nextPrefer);
+        onSessionChange?.({ preferSpeed: nextPrefer });
+        break;
+      }
+      case "polling": {
+        const nextPolling = !minimalPolling;
+        setMinimalPolling(nextPolling);
+        onSessionChange?.({ minimalPolling: nextPolling });
+        break;
+      }
       case "run": startRun(); break;
       case "cancel": onCancel(); break;
     }
   };
+
+  function normalizedModelFolder(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === "<CURRENT_PATH>") return currentPath;
+    return resolve(trimmed);
+  }
+
+  function saveModelFolder(path: string, created: boolean) {
+    const count = countGgufModels(path);
+    const names = scanLocalModelNames(path);
+    updateLocalConfigField("scan_paths", [path]);
+    setModelFolder(path);
+    if (!fetchCatalog && model && !names.includes(model)) {
+      setModel(null);
+      onSessionChange?.({ modelFolder: path, model: null });
+    } else {
+      onSessionChange?.({ modelFolder: path });
+    }
+    traceAction({
+      flow: "guided run",
+      action: "model folder",
+      status: "completed",
+      message: `guided run > model folder selected (${count} model${count === 1 ? "" : "s"} found)`,
+      details: {
+        modelFolder: "<model_folder_dir>",
+        modelCount: count,
+        created,
+      },
+    });
+    setPhase({ kind: "modelFolderSaved", path, count, created });
+  }
+
+  function chooseModelFolder() {
+    if (process.platform !== "win32") {
+      setModelFolderDraft(modelFolderDisplay);
+      setPhase({ kind: "modelFolderInput" });
+      return;
+    }
+    const picked = pickFolderSync({
+      description: "Select the folder containing local .gguf models",
+      initialDir: destination,
+    });
+    if (!picked) {
+      traceAction({
+        flow: "guided run",
+        action: "model folder",
+        status: "cancelled",
+        message: "guided run > model folder picker cancelled",
+      });
+      return;
+    }
+    saveModelFolder(picked, false);
+  }
 
   useInput((input, key) => {
     // The custom phase delegates all input handling to CustomBenchView
     // (which has its own useInput inside) so we MUST not also consume
     // keystrokes here — otherwise the picker can't toggle.
     if (phase.kind === "custom") return;
+    if (phase.kind === "modelFolderInput") {
+      if (key.escape) { setPhase({ kind: "form" }); return; }
+      if (key.return) {
+        if (!modelFolderDraft.trim()) {
+          setPhase({ kind: "modelFolderInput", error: "Type or paste a folder path, or press esc to cancel." });
+          return;
+        }
+        const nextFolder = normalizedModelFolder(modelFolderDraft);
+        if (!existsSync(nextFolder)) {
+          traceAction({
+            flow: "guided run",
+            action: "model folder",
+            status: "selected",
+            message: "guided run > model folder missing; asking to create",
+            details: { modelFolder: "<model_folder_dir>" },
+          });
+          setPhase({ kind: "modelFolderCreate", path: nextFolder });
+          return;
+        }
+        try {
+          if (!statSync(nextFolder).isDirectory()) {
+            setPhase({ kind: "modelFolderInput", error: "That path exists but is not a folder." });
+            return;
+          }
+        } catch {
+          setPhase({ kind: "modelFolderInput", error: "Cannot read that path. Check permissions or choose another folder." });
+          return;
+        }
+        saveModelFolder(nextFolder, false);
+        return;
+      }
+      if (key.backspace || key.delete || input === "\u007f") {
+        setModelFolderDraft(v => v.slice(0, -1));
+        setPhase({ kind: "modelFolderInput" });
+        return;
+      }
+      if (input && !key.ctrl && !key.meta) {
+        setModelFolderDraft(v => v + input);
+        setPhase({ kind: "modelFolderInput" });
+      }
+      return;
+    }
+    if (phase.kind === "modelFolderCreate") {
+      if (key.escape || input === "q" || input === "n" || input === "N") {
+        traceAction({
+          flow: "guided run",
+          action: "model folder create",
+          status: "cancelled",
+          message: "guided run > model folder create cancelled",
+          details: { modelFolder: "<model_folder_dir>" },
+        });
+        setPhase({ kind: "modelFolderInput" });
+        return;
+      }
+      if (key.return || input === "y" || input === "Y") {
+        try {
+          mkdirSync(phase.path, { recursive: true });
+          traceAction({
+            flow: "guided run",
+            action: "model folder create",
+            status: "completed",
+            message: "guided run > model folder create completed",
+            details: { modelFolder: "<model_folder_dir>" },
+          });
+          saveModelFolder(phase.path, true);
+        } catch (error) {
+          traceAction({
+            flow: "guided run",
+            action: "model folder create",
+            status: "failed",
+            message: "guided run > model folder create failed",
+            details: { modelFolder: "<model_folder_dir>", error: error instanceof Error ? error.message : String(error) },
+          });
+          setPhase({ kind: "modelFolderInput", error: "Could not create that folder. Check the path or permissions." });
+        }
+      }
+      return;
+    }
+    if (phase.kind === "modelFolderSaved") {
+      setPhase({ kind: "form" });
+      return;
+    }
     if (phase.kind === "llamaSource") {
       if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
       if (key.upArrow || input === "k") { setLlamaSourceCursor(c => Math.max(0, c - 1)); return; }
@@ -454,6 +803,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
             details: { path: picked.path, label: picked.label },
           });
           setLlamaDecision(decision);
+          onSessionChange?.({ llamaDecision: decision });
           startAfterLlamaSetup(decision);
         }
       }
@@ -524,6 +874,57 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
     );
   }
 
+  if (phase.kind === "modelFolderInput") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="cyan">model folder</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>Paste or type the folder that contains local .gguf files.</Text>
+          <Text dimColor>Catalog downloads are also stored here when you choose to keep them.</Text>
+          <Text dimColor>Use <Text color="cyan">&lt;CURRENT_PATH&gt;</Text> for the folder where calibr was launched.</Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          <Text>path: <Text color="cyan">{modelFolderDraft || "(empty)"}</Text></Text>
+          {phase.error && <Text color="red">{phase.error}</Text>}
+        </Box>
+        <Box marginTop={1}><Text dimColor>enter saves | backspace edits | esc cancels</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "modelFolderCreate") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="yellow">model folder does not exist</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>calibr could not find this folder:</Text>
+          <Text color="cyan">{phase.path}</Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text>Create it now? <Text color="cyan">[y/n]</Text></Text>
+        </Box>
+        <Box marginTop={1}><Text dimColor>enter/y creates | n/q/esc back</Text></Box>
+      </Box>
+    );
+  }
+
+  if (phase.kind === "modelFolderSaved") {
+    return (
+      <Box flexDirection="column">
+        <Text bold color="green">model folder saved</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text>folder: <Text color="cyan">{phase.path}</Text></Text>
+          <Text>
+            In the path provided, we found <Text color="cyan">{phase.count}</Text>{" "}
+            model{phase.count === 1 ? "" : "s"} available.
+          </Text>
+          {phase.created && <Text dimColor>The folder was created because it did not exist.</Text>}
+        </Box>
+        <Box marginTop={1}><Text dimColor>press any key to return</Text></Box>
+      </Box>
+    );
+  }
+
   if (phase.kind === "llamaDownloadVersion") {
     return (
       <Box flexDirection="column">
@@ -589,7 +990,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
           ) : (
             <Text color="red">
               Not enough free space on {destination}: need {formatBytes(phase.required)},
-              have {formatBytes(phase.available)}. Free up space or change scan_paths[0].
+              have {formatBytes(phase.available)}. Free up space or change the model folder.
             </Text>
           )}
         </Box>
@@ -608,6 +1009,7 @@ export function AllOptionsView({ onRun, onCancel }: Props) {
         onSubmit={(idList, ctxSizes) => {
           setCustomIds(idList);
           setCustomCtxSizes(ctxSizes && ctxSizes.length > 0 ? ctxSizes : null);
+          onSessionChange?.({ customIds: idList, customCtxSizes: ctxSizes && ctxSizes.length > 0 ? ctxSizes : null });
           // After picking, go straight to the disk gate; the user already
           // accepted the form's other choices when they hit '> start all'.
           runGate(idList);

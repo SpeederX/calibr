@@ -43,6 +43,17 @@ Describe "Download manifest helpers" {
         if (Test-Path $tmp) { Remove-Item $tmp -Force }
     }
 
+    It "Remove-DownloadManifestEntry drops only the matching model_path" {
+        $tmp = _newTempDownloads
+        Add-DownloadManifestEntry -CatalogId "a" -Model "A" -ModelPath "C:\models\A.gguf"
+        Add-DownloadManifestEntry -CatalogId "b" -Model "B" -ModelPath "C:\models\B.gguf"
+        Remove-DownloadManifestEntry -ModelPath "c:\models\a.gguf"
+        $m = @(Get-DownloadManifest)
+        Assert-Equal 1 $m.Count
+        Assert-Equal "C:\models\B.gguf" $m[0].model_path
+        if (Test-Path $tmp) { Remove-Item $tmp -Force }
+    }
+
     It "Test-DownloadedByCalibr returns true for tracked paths and false otherwise" {
         $tmp = _newTempDownloads
         Add-DownloadManifestEntry -CatalogId "x" -Model "X" -ModelPath "D:\mine\foo.gguf"

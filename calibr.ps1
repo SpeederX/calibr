@@ -101,13 +101,15 @@ param(
     # 0 means "use bench.runs_per_config from config" (default 3).
     [int]$Runs = 0,
 
-    # Used by bench (and `all`): opt out of post-bench rotation. By default,
-    # when a model's .gguf was downloaded by calibr (recorded in the download
-    # manifest at data/downloads.json) and every config for that model
-    # finished successfully, the .gguf and its auto-paired mmproj are deleted
-    # to keep peak working-set bounded to one model. -KeepDownloads disables
-    # the cleanup so files survive the bench. User-owned files (those not in
-    # the manifest) are never touched regardless of this flag.
+    # Used by bench (and `all`): what to do with models downloaded during the
+    # current run. cleanup deletes each calibr-downloaded model after its bench;
+    # keep-all keeps them in the model folder; keep-top-1/3 keeps only the best
+    # current winners according to the same winner rule as the report. User-owned
+    # files (those not in the download manifest) are never touched.
+    [ValidateSet("cleanup", "keep-all", "keep-top-3", "keep-top-1")]
+    [string]$DownloadRetention = "cleanup",
+
+    # Legacy alias for old scripts. Prefer -DownloadRetention keep-all.
     [switch]$KeepDownloads,
 
     # Used by 'reset': pick which buckets of runtime state to wipe. Each

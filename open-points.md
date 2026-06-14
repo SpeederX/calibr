@@ -91,6 +91,19 @@ Add an opt-in mode that fills KV cache to known levels before timing
 generation. This reveals attention-scaling cost at high context sizes, which
 the current mostly-empty-cache benchmark hides.
 
+### Multimodal throughput benchmark mode
+
+Multimodal entries currently carry and use their paired `mmproj` when present,
+but calibr does not yet run a dedicated comparison track for multimodal
+overhead.
+
+Needed:
+
+- baseline load/inference timing with and without `--mmproj` for the same model
+- image-processing speed tests across a few fixed input sizes
+- audio-processing speed tests when the model exposes an audio path
+- report these as throughput/latency numbers only, not quality or fidelity
+
 ---
 
 ## Model acquisition and advanced modes

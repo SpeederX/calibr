@@ -796,6 +796,162 @@ function Select-PlanForBench {
     })
 }
 
+function Get-DownloadRetentionPolicy {
+    if ($KeepDownloads) { return "keep-all" }
+    if ($DownloadRetention) { return $DownloadRetention }
+    return "cleanup"
+}
+
+function Get-RetentionCandidates {
+    if ($null -eq $script:_downloadRetentionCandidates) {
+        $script:_downloadRetentionCandidates = @{}
+    }
+    return $script:_downloadRetentionCandidates
+}
+
+function Add-RetentionCandidate {
+    param(
+        [Parameter(Mandatory)][string]$ModelPath,
+        [string]$ModelName = "",
+        [string]$MmprojPath = ""
+    )
+    $candidates = Get-RetentionCandidates
+    if (-not $candidates.ContainsKey($ModelPath)) {
+        $candidates[$ModelPath] = @{
+            modelPath    = $ModelPath
+            modelName    = $ModelName
+            mmprojPath   = $MmprojPath
+            lastDecision = ""
+        }
+    }
+}
+
+function Get-TopRetainedDownloadPaths {
+    param([Parameter(Mandatory)][int]$TopN)
+    $keep = @{}
+    $candidates = Get-RetentionCandidates
+    if ($candidates.Count -eq 0) { return $keep }
+
+    $cfg = Get-Config
+    $confirmMib = if ($cfg.wddm_detection -and $cfg.wddm_detection.shared_delta_confirm_mib) {
+        [int]$cfg.wddm_detection.shared_delta_confirm_mib
+    } else { 500 }
+
+    $bestByPath = @{}
+    foreach ($jsonFile in (Get-ChildItem $CALIBR_RESULTS_DIR -Filter "*.json" -ErrorAction SilentlyContinue)) {
+        try {
+            $r = Get-Content $jsonFile.FullName -Raw | ConvertFrom-Json
+        } catch { continue }
+        if (-not $r.ok -or -not $r.model_path) { continue }
+        if (-not $candidates.ContainsKey([string]$r.model_path)) { continue }
+        $path = [string]$r.model_path
+        if (Test-IsBetterWinner -candidate $r -current $bestByPath[$path] -preferSpeed:$PreferSpeed -sharedConfirmMib $confirmMib) {
+            $bestByPath[$path] = $r
+        }
+    }
+
+    $ranked = @($bestByPath.GetEnumerator() | Sort-Object `
+        @{ Expression = { if ($PreferSpeed) { 0 } elseif ([int]$_.Value.shared_peak_mib -le $confirmMib) { 1 } else { 0 } }; Descending = $true }, `
+        @{ Expression = { if ($null -ne $_.Value.eval_tps) { [double]$_.Value.eval_tps } else { -1 } }; Descending = $true })
+
+    foreach ($entry in @($ranked | Select-Object -First $TopN)) {
+        $keep[[string]$entry.Key] = $true
+    }
+    return $keep
+}
+
+function Remove-DownloadedArtifacts {
+    param(
+        [Parameter(Mandatory)][string]$ModelPath,
+        [string]$MmprojPath = "",
+        $filtered,
+        [hashtable]$modelStatus,
+        [ref]$rotatedRef,
+        [string]$Reason = ""
+    )
+
+    if (Test-Path -LiteralPath $ModelPath) {
+        try {
+            Remove-Item -LiteralPath $ModelPath -Force -ErrorAction Stop
+            $suffix = if ($Reason) { " ($Reason)" } else { "" }
+            Write-Host ("[rotate] deleted {0}{1}" -f $ModelPath, $suffix) -ForegroundColor DarkCyan
+            Remove-DownloadManifestEntry -ModelPath $ModelPath
+            if ($rotatedRef) { $rotatedRef.Value++ }
+        } catch {
+            Write-Host ("[rotate] FAILED to delete {0}: {1}" -f $ModelPath, $_.Exception.Message) -ForegroundColor Red
+            return $false
+        }
+    }
+
+    if ($MmprojPath) {
+        $stillNeeded = $false
+        foreach ($other in $filtered) {
+            if ($other.model_path -eq $ModelPath) { continue }
+            if ($other.mmproj_path -ieq $MmprojPath) {
+                $otherSt = $modelStatus[$other.model_path]
+                if ($otherSt -and -not $otherSt.rotated) {
+                    $stillNeeded = $true
+                    break
+                }
+            }
+        }
+        foreach ($candidate in (Get-RetentionCandidates).Values) {
+            if ($candidate.modelPath -eq $ModelPath) { continue }
+            if ($candidate.mmprojPath -and $candidate.mmprojPath -ieq $MmprojPath -and (Test-Path -LiteralPath $candidate.modelPath)) {
+                $stillNeeded = $true
+                break
+            }
+        }
+        if (-not $stillNeeded -and (Test-Path -LiteralPath $MmprojPath)) {
+            try {
+                Remove-Item -LiteralPath $MmprojPath -Force -ErrorAction Stop
+                Write-Host ("[rotate] deleted {0} (mmproj)" -f $MmprojPath) -ForegroundColor DarkCyan
+            } catch {
+                Write-Host ("[rotate] FAILED to delete mmproj {0}: {1}" -f $MmprojPath, $_.Exception.Message) -ForegroundColor Red
+            }
+        }
+    }
+
+    $parentDir = [System.IO.Path]::GetDirectoryName($ModelPath)
+    if ($parentDir -and (Test-Path -LiteralPath $parentDir)) {
+        try {
+            $info = New-Object System.IO.DirectoryInfo($parentDir)
+            if ($info.GetFileSystemInfos().Length -eq 0) {
+                $info.Delete()
+            }
+        } catch { }
+    }
+    return $true
+}
+
+function Invoke-TopRetentionPrune {
+    param(
+        [Parameter(Mandatory)][int]$TopN,
+        $filtered,
+        [hashtable]$modelStatus,
+        [ref]$rotatedRef,
+        [ref]$keptRef
+    )
+    $candidates = Get-RetentionCandidates
+    if ($candidates.Count -eq 0) { return }
+    $top = Get-TopRetainedDownloadPaths -TopN $TopN
+    foreach ($path in @($candidates.Keys)) {
+        $entry = $candidates[$path]
+        if ($top.ContainsKey($path)) {
+            if ($entry.lastDecision -ne "kept") {
+                Write-Host ("[rotate] kept {0} (top {1})" -f $path, $TopN) -ForegroundColor DarkGray
+                Remove-DownloadManifestEntry -ModelPath $path
+                $keptRef.Value++
+                $entry.lastDecision = "kept"
+            }
+            continue
+        }
+        if (Remove-DownloadedArtifacts -ModelPath $path -MmprojPath $entry.mmprojPath -filtered $filtered -modelStatus $modelStatus -rotatedRef $rotatedRef -Reason "outside top $TopN") {
+            $candidates.Remove($path)
+        }
+    }
+}
+
 function Invoke-RotationCheck {
     # Called once per config-iteration in Invoke-Bench. If $item's model_path
     # has reached its expected config count, deletes the .gguf and possibly
@@ -811,8 +967,8 @@ function Invoke-RotationCheck {
     #   - keeping a file that's never going to be benched again wastes disk
     #     for nothing (the original peak-bounded promise of rotation)
     #
-    # The only reasons we KEEP are still:
-    #   - $KeepDownloads flag set (user opted out explicitly)
+    # The only reasons we KEEP are still explicit:
+    #   - retention policy says keep-all / keep-top-1 / keep-top-3
     #   - file is not in the download manifest (user-owned; never touched)
     #
     # mmproj is deleted only when no other not-yet-rotated model in $filtered
@@ -832,71 +988,28 @@ function Invoke-RotationCheck {
     if ($st.rotated) { return }
     $st.rotated = $true
 
-    if ($KeepDownloads) {
-        Write-Host ("[rotate] kept {0} (-KeepDownloads)" -f $mp) -ForegroundColor DarkGray
-        $keptRef.Value++
-        return
-    }
     if (-not (Test-DownloadedByCalibr -Path $mp)) {
         # Silent for user-owned files; printing for every model would spam.
         $keptRef.Value++
         return
     }
 
-    # Delete model file.
-    if (Test-Path -LiteralPath $mp) {
-        try {
-            Remove-Item -LiteralPath $mp -Force -ErrorAction Stop
-            Write-Host ("[rotate] deleted {0}" -f $mp) -ForegroundColor DarkCyan
-            $rotatedRef.Value++
-        } catch {
-            Write-Host ("[rotate] FAILED to delete {0}: {1}" -f $mp, $_.Exception.Message) -ForegroundColor Red
-            return
-        }
-    } else {
-        # File already gone (e.g. user moved it mid-bench). Nothing to do.
+    $policy = Get-DownloadRetentionPolicy
+    if ($policy -eq "keep-all") {
+        Write-Host ("[rotate] kept {0} (keep-all)" -f $mp) -ForegroundColor DarkGray
+        Remove-DownloadManifestEntry -ModelPath $mp
+        $keptRef.Value++
+        return
     }
 
-    # Maybe delete mmproj. Only if no other not-yet-rotated model in $filtered
-    # still references the same projector path.
-    if ($st.mmprojPath) {
-        $stillNeeded = $false
-        foreach ($other in $filtered) {
-            if ($other.model_path -eq $mp) { continue }
-            if ($other.mmproj_path -ieq $st.mmprojPath) {
-                $otherSt = $modelStatus[$other.model_path]
-                if ($otherSt -and -not $otherSt.rotated) {
-                    $stillNeeded = $true
-                    break
-                }
-            }
-        }
-        if (-not $stillNeeded -and (Test-Path -LiteralPath $st.mmprojPath)) {
-            try {
-                Remove-Item -LiteralPath $st.mmprojPath -Force -ErrorAction Stop
-                Write-Host ("[rotate] deleted {0} (mmproj)" -f $st.mmprojPath) -ForegroundColor DarkCyan
-            } catch {
-                Write-Host ("[rotate] FAILED to delete mmproj {0}: {1}" -f $st.mmprojPath, $_.Exception.Message) -ForegroundColor Red
-            }
-        }
+    if ($policy -eq "keep-top-1" -or $policy -eq "keep-top-3") {
+        Add-RetentionCandidate -ModelPath $mp -ModelName $st.modelName -MmprojPath $st.mmprojPath
+        $topN = if ($policy -eq "keep-top-1") { 1 } else { 3 }
+        Invoke-TopRetentionPrune -TopN $topN -filtered $filtered -modelStatus $modelStatus -rotatedRef $rotatedRef -keptRef $keptRef
+        return
     }
 
-    # Cleanup the now-empty parent directory the .gguf lived in. Use
-    # System.IO.Path.GetDirectoryName instead of Split-Path: PS 5.1's
-    # Split-Path -LiteralPath -Parent triggers a parameter-set ambiguity.
-    # We use DirectoryInfo for the empty-check + delete to make the
-    # 'only if empty' intent explicit and to avoid Remove-Item's own
-    # parameter-set quirks on directories. If anything is still in the
-    # dir (user files, sibling .gguf, hidden files), we leave it alone.
-    $parentDir = [System.IO.Path]::GetDirectoryName($mp)
-    if ($parentDir -and (Test-Path -LiteralPath $parentDir)) {
-        try {
-            $info = New-Object System.IO.DirectoryInfo($parentDir)
-            if ($info.GetFileSystemInfos().Length -eq 0) {
-                $info.Delete()
-            }
-        } catch { }
-    }
+    [void](Remove-DownloadedArtifacts -ModelPath $mp -MmprojPath $st.mmprojPath -filtered $filtered -modelStatus $modelStatus -rotatedRef $rotatedRef)
 }
 
 function Invoke-Bench {
@@ -1105,7 +1218,7 @@ function Invoke-Bench {
         $reasons = @($abandoned.Values | Sort-Object -Unique)
         Write-Host ("   reason: {0}" -f ($reasons -join '; ')) -ForegroundColor DarkYellow
     }
-    if ($rotatedCount -gt 0 -or ($keptCount -gt 0 -and -not $KeepDownloads)) {
+    if ($rotatedCount -gt 0 -or $keptCount -gt 0) {
         Write-Host ("   files: {0} downloaded and deleted - {1} kept" -f $rotatedCount, $keptCount) -ForegroundColor DarkCyan
     }
     Write-Host $bar -ForegroundColor Cyan

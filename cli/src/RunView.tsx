@@ -52,7 +52,7 @@ const SAMPLE_DONE_RE = /^\s*\[sample-done\s+(\d+)\/(\d+)\]\s+(.+?)\s+elapsed_ms=
 // Examples:
 //   [rotate] deleted C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf
 //   [rotate] deleted C:\models\Q\mmproj-F16.gguf (mmproj)
-//   [rotate] kept C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf (-KeepDownloads)
+//   [rotate] kept C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf (keep-all)
 //   [rotate] kept C:\models\Q\Qwen3.5-9B-Q4_K_M.gguf (1 failed)
 //   [rotate] FAILED to delete C:\models\...: <message>
 const ROTATE_DELETE_RE = /^\s*\[rotate\]\s+deleted\s+(.+?)\s*$/;

@@ -77,10 +77,12 @@ export const CALIBR_PLAN = join(CALIBR_DATA_DIR, "plan.json");
 export const CALIBR_RESULTS_DIR = join(CALIBR_DATA_DIR, "results");
 export const CALIBR_LOGS_DIR = join(CALIBR_DATA_DIR, "logs");
 export const CALIBR_ACTION_TRACE = join(CALIBR_LOGS_DIR, "action-trace.jsonl");
+export const CALIBR_ACTION_TRACE_LOG = join(CALIBR_LOGS_DIR, "action-trace.log");
 export const CALIBR_REPORT = join(CALIBR_DATA_DIR, "report.html");
 export const CALIBR_DEFAULT_CFG = join(ENGINE_ROOT, "config.default.json");
 export const CALIBR_LOCAL_CFG = defaultConfigPath();
 export const CALIBR_PS1 = join(ENGINE_ROOT, "calibr.ps1");
+export const CALIBR_TRACE_SESSION_ID = `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${Math.random().toString(36).slice(2, 8)}`;
 
 export type TraceStatus = "started" | "selected" | "completed" | "failed" | "cancelled" | "skipped";
 
@@ -97,19 +99,128 @@ export interface TraceEvent extends TraceContext {
   details?: Record<string, unknown>;
 }
 
+function replaceAllLiteral(value: string, search: string, replacement: string): string {
+  if (!search) return value;
+  return value.split(search).join(replacement);
+}
+
+function redactTraceString(value: string): string {
+  let out = value;
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  const localAppData = process.env.LOCALAPPDATA || "";
+  const appData = process.env.APPDATA || "";
+  const replacements: Array<[string, string]> = [
+    [CALIBR_DATA_DIR, "<CALIBR_DATA_DIR>"],
+    [CALIBR_ROOT, "<CALIBR_ROOT>"],
+    [home, process.platform === "win32" ? "%USERPROFILE%" : "$HOME"],
+    [localAppData, "%LOCALAPPDATA%"],
+    [appData, "%APPDATA%"],
+  ];
+  for (const [needle, label] of replacements.sort((a, b) => b[0].length - a[0].length)) {
+    if (!needle) continue;
+    out = replaceAllLiteral(out, needle, label);
+    if (process.platform === "win32") out = replaceAllLiteral(out, needle.replace(/\\/g, "/"), label);
+  }
+  return out;
+}
+
+function sanitizeTraceValue(value: unknown): unknown {
+  if (typeof value === "string") return redactTraceString(value);
+  if (Array.isArray(value)) return value.map(sanitizeTraceValue);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = sanitizeTraceValue(item);
+    }
+    return out;
+  }
+  return value;
+}
+
+function detailsToText(details: Record<string, unknown>): string {
+  const parts = Object.entries(details)
+    .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    .map(([key, value]) => {
+      const rendered = typeof value === "object" ? JSON.stringify(value) : String(value);
+      return `${key}=${rendered}`;
+    });
+  return parts.join(", ");
+}
+
+function appendHumanTraceLine(event: {
+  ts: string;
+  source: string;
+  sessionId: string;
+  flow: string;
+  action: string;
+  status: string;
+  message: string;
+  details: Record<string, unknown>;
+}): void {
+  const time = event.ts.slice(11, 19);
+  const row = [
+    time.padEnd(10),
+    event.source.padEnd(8).slice(0, 8),
+    event.flow.padEnd(22).slice(0, 22),
+    event.action.padEnd(30).slice(0, 30),
+    event.status.padEnd(10).slice(0, 10),
+    (detailsToText(event.details) || event.message),
+  ].join(" | ");
+  appendFileSync(CALIBR_ACTION_TRACE_LOG, row + "\n", "utf8");
+}
+
+export function traceSessionStart(): void {
+  try {
+    mkdirSync(CALIBR_LOGS_DIR, { recursive: true });
+    const now = new Date().toISOString();
+    const line = "=".repeat(110);
+    const header = [
+      "",
+      line,
+      `SESSION ${CALIBR_TRACE_SESSION_ID} | ${now} | ${process.platform} | data=<CALIBR_DATA_DIR>`,
+      line,
+      "TIME       | SOURCE   | FLOW                   | ACTION                         | STATUS     | DETAILS",
+      "-".repeat(110),
+    ].join("\n");
+    appendFileSync(CALIBR_ACTION_TRACE_LOG, header + "\n", "utf8");
+    traceAction({
+      flow: "session",
+      action: "start",
+      status: "started",
+      message: "session > start",
+      details: { sessionId: CALIBR_TRACE_SESSION_ID, platform: process.platform, dataDir: CALIBR_DATA_DIR },
+    });
+  } catch {
+    // Trace logging must never break app startup.
+  }
+}
+
+export function traceSessionEnd(reason = "user exit"): void {
+  traceAction({
+    flow: "session",
+    action: "end",
+    status: "completed",
+    message: "session > end",
+    details: { sessionId: CALIBR_TRACE_SESSION_ID, reason },
+  });
+}
+
 export function traceAction(event: TraceEvent): void {
   try {
     mkdirSync(CALIBR_LOGS_DIR, { recursive: true });
+    const details = sanitizeTraceValue(event.details ?? {}) as Record<string, unknown>;
     const line = {
       ts: new Date().toISOString(),
       source: event.source ?? "cli",
+      sessionId: CALIBR_TRACE_SESSION_ID,
       flow: event.flow,
       action: event.action,
       status: event.status,
-      message: event.message ?? `${event.flow} > ${event.action} ${event.status}`,
-      details: event.details ?? {},
+      message: redactTraceString(event.message ?? `${event.flow} > ${event.action} ${event.status}`),
+      details,
     };
     appendFileSync(CALIBR_ACTION_TRACE, JSON.stringify(line) + "\n", "utf8");
+    appendHumanTraceLine(line);
   } catch {
     // Trace logging must never break the app path it is trying to observe.
   }
@@ -355,6 +466,32 @@ export function pickFileSync(opts: {
   return out.length > 0 ? out : null;
 }
 
+export function pickFolderSync(opts: {
+  description?: string;
+  initialDir?: string;
+} = {}): string | null {
+  const esc = (s: string) => s.replace(/'/g, "''");
+  const lines = [
+    "Add-Type -AssemblyName System.Windows.Forms | Out-Null",
+    "$dlg = New-Object System.Windows.Forms.FolderBrowserDialog",
+    "$dlg.ShowNewFolderButton = $true",
+  ];
+  if (opts.description) lines.push(`$dlg.Description = '${esc(opts.description)}'`);
+  if (opts.initialDir) {
+    lines.push(`if (Test-Path -LiteralPath '${esc(opts.initialDir)}') { $dlg.SelectedPath = '${esc(opts.initialDir)}' }`);
+  }
+  lines.push("if ($dlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $dlg.SelectedPath }");
+
+  const res = spawnSync(
+    "powershell",
+    ["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", lines.join("; ")],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (res.status !== 0) return null;
+  const out = (res.stdout || "").trim();
+  return out.length > 0 ? out : null;
+}
+
 export interface Status {
   config: Config;
   catalogCount: number;
@@ -536,6 +673,7 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
     ...process.env,
     NO_COLOR: "1",
     CALIBR_DATA_DIR: CALIBR_DATA_DIR,
+    CALIBR_TRACE_SESSION_ID,
     ...(trace ? { CALIBR_TRACE_PARENT: JSON.stringify(trace) } : {}),
   };
 }
@@ -556,6 +694,17 @@ function injectConfigArg(args: string[]): string[] {
 function injectNonInteractive(args: string[]): string[] {
   if (args.includes("-NonInteractive")) return args;
   return [...args, "-NonInteractive"];
+}
+
+function redactEngineArgsForTrace(args: string[]): string[] {
+  const redacted = [...args];
+  for (let i = 0; i < redacted.length - 1; i++) {
+    if (redacted[i] === "-ScanPath" || redacted[i] === "-Destination") {
+      redacted[i + 1] = "<model_folder_dir>";
+      i++;
+    }
+  }
+  return redacted;
 }
 
 /**
@@ -584,10 +733,11 @@ export function runEngine(args: string[], trace?: TraceContext): EngineRun {
     ...injectNonInteractive(injectConfigArg(args)),
   ];
   const traceContext = trace ?? inferTraceContext(args);
+  const traceArgs = redactEngineArgsForTrace(args);
   traceAction({
     ...traceContext,
     status: "started",
-    details: { ...(traceContext.details ?? {}), args },
+    details: { ...(traceContext.details ?? {}), args: traceArgs },
   });
   const proc = spawn(shell, psArgs, {
     cwd: ENGINE_ROOT,
@@ -603,7 +753,7 @@ export function runEngine(args: string[], trace?: TraceContext): EngineRun {
       traceAction({
         ...traceContext,
         status: exitCode === 0 ? "completed" : "failed",
-        details: { ...(traceContext.details ?? {}), args, exitCode },
+        details: { ...(traceContext.details ?? {}), args: traceArgs, exitCode },
       });
       res(exitCode);
     });
@@ -612,7 +762,7 @@ export function runEngine(args: string[], trace?: TraceContext): EngineRun {
         ...traceContext,
         status: "failed",
         message: `${traceContext.flow} > ${traceContext.action} failed to launch engine`,
-        details: { ...(traceContext.details ?? {}), args, error: error.message },
+        details: { ...(traceContext.details ?? {}), args: traceArgs, error: error.message },
       });
       res(-1);
     });
