@@ -690,7 +690,7 @@ function injectConfigArg(args: string[]): string[] {
 // (stdin isn't wired through Ink), so a prompt would hang forever. Any
 // confirmation the engine would have asked for is collected by the CLI
 // up front (see AllOptionsView's pre-flight gate). Idempotent so callers
-// that pre-set the flag (e.g. ENGINE_COMMANDS init) don't double it.
+// that pre-set the flag don't double it.
 function injectNonInteractive(args: string[]): string[] {
   if (args.includes("-NonInteractive")) return args;
   return [...args, "-NonInteractive"];
@@ -714,9 +714,9 @@ function redactEngineArgsForTrace(args: string[]): string[] {
 function inferTraceContext(args: string[]): TraceContext {
   const verb = args[0] ?? "unknown";
   return {
-    flow: "advanced tools",
+    flow: "engine command",
     action: verb,
-    message: `advanced tools > ${verb}`,
+    message: `engine command > ${verb}`,
     details: { args },
   };
 }
@@ -950,24 +950,6 @@ export function openReport(): boolean {
   });
   return ok;
 }
-
-export interface EngineCommand {
-  id: string;
-  label: string;
-  description: string;
-  args: string[];
-}
-
-export const ENGINE_COMMANDS: EngineCommand[] = [
-  { id: "status",   label: "status",   description: "show current state",                   args: ["status"] },
-  { id: "init",     label: "init",     description: "detect hardware, write config.json",   args: ["init", "-NonInteractive"] },
-  { id: "discover", label: "discover", description: "scan scan_paths for .gguf files",      args: ["discover"] },
-  { id: "plan",     label: "plan",     description: "expand catalog into a test plan",      args: ["plan"] },
-  { id: "bench",    label: "bench",    description: "run pending bench configs",            args: ["bench"] },
-  { id: "report",   label: "report",   description: "build HTML report + .bat launchers",   args: ["report"] },
-  { id: "all",      label: "all",      description: "discover -> plan -> bench -> report",  args: ["all"] },
-  { id: "reset",    label: "reset",    description: "wipe runtime state (results, downloads, ...) with confirm", args: ["reset"] },
-];
 
 // ---------------------------------------------------------------------------
 // Model catalog (curated GGUF download list shipped with the engine).

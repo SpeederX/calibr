@@ -8,7 +8,7 @@ Current baseline:
 - npm package line: `0.1.7`.
 - `dev` contains the Phase-1 CLI, engine split, mirrored tests, expanded
   presets, report redesign, guided llama.cpp auto-fetch, Linux support,
-  `doctor`, the guided-run / advanced-tools menu split, and readiness badges.
+  `doctor`, the guided-run main menu, and readiness badges.
 - Public-facing docs stay in `README.md` and `cli/README.md`.
 - Process rules live in `AGENTS.md`.
 
@@ -38,7 +38,6 @@ that no longer map to the current guided-run product.
 
 Targets:
 
-- dead CLI paths hidden behind advanced tools
 - stale command flags kept only for old prototype workflows
 - duplicated model/catalog/filter behavior across CLI screens
 - old report/backlog documentation that increases context without guiding
@@ -192,7 +191,8 @@ Recently shipped and removed from the TODO queue:
 - Engine modularization plus mirrored PowerShell tests.
 - Report UI redesign.
 - llama.cpp auto-fetch and guided setup prompt.
-- Main-menu guided run / advanced tools split with setup badges.
+- Main-menu guided run with setup badges.
+- Dead CLI paths hidden behind the old advanced-tools screen.
 - Linux port, dependency checks, GPU-readiness doctor path, and diagnostic
   export.
 - npm trusted-publishing release path.
