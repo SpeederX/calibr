@@ -99,18 +99,18 @@ Winning configurations land in `data/bats/{model}.bat` on Windows (double-click
 to launch) or `data/bats/{model}.sh` on Linux (an executable `chmod +x` script)
 — either way, llama-server runs with the optimized flags.
 
-Don't have any `.gguf` files yet? Pick `guided run`, keep `model catalog: yes`,
+Don't have any `.gguf` files yet? Pick `guided run`, keep `source: catalog downloads`,
 choose the llama.cpp setup when prompted, and let calibr walk the curated set
 one model at a time:
 download -> bench -> cleanup -> next model -> report.
 
-Already have local `.gguf` files? In `guided run`, set `model folder` to that
-directory, then set `model catalog: no - load from local folder`. The default
-model folder is `<CURRENT_PATH>`, the folder where you launched `calibr`. When
+Already have local `.gguf` files? In `guided run`, set `local folder` to that
+directory, then set `source: local folder`. The default local folder is
+`<CURRENT_PATH>`, the folder where you launched `calibr`. When
 you save a folder, calibr stores it in config, checks whether it exists, offers
 to create it if needed, and reports how many `.gguf` models it found. In this
-mode, `model filter` lists the local models found in that folder. Files in the
-model folder are user-owned: cleanup applies only to files downloaded during
+mode, `model` lists the local models found in that folder. Files in the
+local folder are user-owned: cleanup applies only to files downloaded during
 the current run.
 
 ## What calibr recommends

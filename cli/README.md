@@ -100,8 +100,8 @@ A typical first session:
    automatically; multiple binaries open a picker. Typed build tags are saved
    as the preferred auto-fetch build, and **configure llama path** can reuse or
    delete cached auto-fetched builds.
-2. **guided run** -> configure: leave `model catalog: yes`, start with the default
-   starter `low` preset, choose the llama.cpp setup when prompted, and leave
+2. **guided run** -> configure: leave `source: catalog downloads`, start with the default
+   starter `low` scope, choose the llama.cpp setup when prompted, and leave
    `auto-cleanup: yes`. The CLI shows the peak disk requirement and free space
    before it downloads catalog models. After you accept, the engine downloads
    each model, benches it, cleans it up, and moves to the next. Switch
@@ -112,17 +112,18 @@ A typical first session:
    report in your browser, `r` to re-run the selected config with `-Force`, or
    `q` to go back.
 
-Once the starter run works, repeat `guided run` and switch `which models` to
-`middle`, `high`, `ultra`, or `all` for a broader recommendation set.
+Once the starter run works, repeat `guided run` and switch `scope` to
+`middle`, `high`, `ultra`, `all`, or `single model` for a broader or narrower
+recommendation set.
 
 For sub-tasks (re-bench one model, change run count):
 
-4. Prefer repeating **guided run** and changing the visible fields. `model
+4. Prefer repeating **guided run** and changing the visible fields. `local
    folder` defaults to `<CURRENT_PATH>`, the folder where you launched
-   `calibr`; change it to your local model directory, then set `model catalog:
-   no - load from local folder` to bench existing `.gguf` files there. When you
+   `calibr`; change it to your local model directory, then set `source: local
+   folder` to bench existing `.gguf` files there. When you
    save a folder, calibr offers to create it if missing and reports how many
-   `.gguf` models it found. In local-folder mode, `model filter` cycles through
+   `.gguf` models it found. In local-folder mode, `model` cycles through
    those local models. Those files are user-owned and are never deleted by
    cleanup. Guided-run field choices stay in memory while this `calibr` session
    is open; restarting `calibr` returns non-config fields to defaults.

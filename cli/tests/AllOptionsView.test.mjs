@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAllArgs, countGgufModels, modelNameFromGgufFileName, scanLocalModelNames } from "../dist/AllOptionsView.js";
+import { buildAllArgs, catalogModelNamesForScope, countGgufModels, modelNameFromGgufFileName, scanLocalModelNames } from "../dist/AllOptionsView.js";
 
 const base = {
   decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",
@@ -35,6 +35,25 @@ test("model + runs together", () => {
 
 test("preset 'all' emits no -Preset", () => {
   assert.deepEqual(buildAllArgs({ ...base, currentPreset: "all" }).args, ["all", "-FetchCatalog"]);
+});
+
+test("single model scope emits only the selected model", () => {
+  assert.deepEqual(buildAllArgs({ ...base, currentPreset: "single", model: "Gemma-4" }).args,
+    ["all", "-FetchCatalog", "-Model", "Gemma-4"]);
+});
+
+test("catalog model choices can be narrowed by preset scope", () => {
+  const catalog = [
+    { id: "low-a-q4", model: "Low A" },
+    { id: "high-b-q4", model: "High B" },
+    { id: "high-b-q8", model: "High B" },
+  ];
+  const presets = {
+    low: { label: "Low", models: ["low-*"] },
+    high: { label: "High", models: ["high-*"] },
+  };
+  assert.deepEqual(catalogModelNamesForScope(catalog, presets, "low"), ["Low A"]);
+  assert.deepEqual(catalogModelNamesForScope(catalog, presets, "high"), ["High B"]);
 });
 
 test("custom ids used when no model is fixed", () => {

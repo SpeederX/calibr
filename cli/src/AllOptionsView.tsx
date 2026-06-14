@@ -18,10 +18,14 @@ import {
   pickFolderSync,
   traceAction,
   updateLocalConfigField,
+  type CatalogEntry,
   type LlamaServerCandidate,
+  type Preset,
   type TraceContext,
 } from "./engine.js";
 import { CustomBenchView } from "./CustomBenchView.js";
+
+const SINGLE_MODEL_SCOPE = "single";
 
 interface Props {
   onRun: (args: string[], label: string, trace?: TraceContext) => void;
@@ -106,6 +110,34 @@ export function scanLocalModelNames(root: string): string[] {
   return [...names].sort();
 }
 
+export function catalogModelNamesForScope(
+  catalog: CatalogEntry[],
+  presets: Record<string, Preset>,
+  scope: string,
+): string[] {
+  const entries = (() => {
+    if (scope === "all" || scope === SINGLE_MODEL_SCOPE || scope === "custom") return catalog;
+    const preset = presets[scope];
+    if (!preset) return catalog;
+    if (preset.models === "*") return catalog;
+    if (Array.isArray(preset.models)) return filterCatalog(catalog, { catalogId: preset.models.join(",") });
+    return catalog;
+  })();
+  return [...new Set(entries.map(e => e.model).filter(Boolean))].sort();
+}
+
+function compactPath(path: string, max = 58): string {
+  if (path.length <= max) return path;
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length >= 2) {
+    const tail = `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+    const prefix = /^[A-Za-z]:/.test(normalized) ? normalized.slice(0, 2) : "";
+    return `${prefix}/.../${tail}`;
+  }
+  return `...${path.slice(Math.max(0, path.length - max + 3))}`;
+}
+
 export function countGgufModels(root: string): number {
   if (!root.trim() || !existsSync(root)) return 0;
   const stack = [root];
@@ -176,7 +208,7 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
     args.push("-Model", o.model); parts.push(`-Model "${o.model}"`);
   } else if (o.fetchCatalog && o.customIds) {
     args.push("-CatalogId", o.customIds); parts.push(`-CatalogId "${o.customIds}"`);
-  } else if (o.fetchCatalog && o.currentPreset !== "all" && o.currentPreset !== "custom") {
+  } else if (o.fetchCatalog && o.currentPreset !== "all" && o.currentPreset !== "custom" && o.currentPreset !== SINGLE_MODEL_SCOPE) {
     args.push("-Preset", o.currentPreset); parts.push(`-Preset ${o.currentPreset}`);
   }
   if (o.contextSizes && o.contextSizes.length > 0) {
@@ -260,25 +292,17 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
 
   const catalog = useMemo(readModelCatalog, []);
   const destination = modelFolder.trim() || currentPath;
-  const modelFolderDisplay = configuredModelFolder || modelFolder !== currentPath ? destination : "<CURRENT_PATH>";
+  const modelFolderDisplay = configuredModelFolder || modelFolder !== currentPath ? compactPath(destination) : "<CURRENT_PATH>";
   const localModels = useMemo<string[]>(() => scanLocalModelNames(destination), [destination]);
-  // Model filter spans every known model: discovered (on disk) ∪ curated.
-  const models = useMemo<string[]>(() => {
-    if (!fetchCatalog) return localModels;
-    const names = new Set<string>(readDiscoveredModelNames());
-    for (const e of catalog) if (e?.model) names.add(e.model);
-    return [...names].sort();
-  }, [catalog, fetchCatalog, localModels]);
-  const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
   const runsDefault = useMemo<number>(() => {
     const v = cfg?.bench?.runs_per_config;
     return typeof v === "number" && v > 0 ? v : 3;
   }, [cfg]);
   const llamaConfigured = Boolean(cfg.llama_server_exe && existsSync(cfg.llama_server_exe));
   const llamaLabel = (() => {
-    if (llamaConfigured) return `configured (${cfg.llama_server_exe})`;
+    if (llamaConfigured) return `configured (${compactPath(cfg.llama_server_exe ?? "")})`;
     if (llamaDecision?.kind === "download") return llamaDecision.build ? `download ${llamaDecision.build}` : "download latest";
-    if (llamaDecision?.kind === "local") return `use local (${llamaDecision.path})`;
+    if (llamaDecision?.kind === "local") return `use local (${compactPath(llamaDecision.path)})`;
     return "choose when missing";
   })();
   const cachedCount = useMemo(cachedResultsCount, []);
@@ -291,7 +315,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     // Keep 'all' as a non-custom fallback even if default_bench_presets.json is
     // missing/unreadable. A broken preset file should not dump a first-time
     // user straight into CustomBenchView.
-    const builtin = ["all", "low", "middle", "high", "ultra"].filter(n => n === "all" || presets[n]);
+    const builtin = ["all", SINGLE_MODEL_SCOPE, "low", "middle", "high", "ultra"].filter(n => n === "all" || n === SINGLE_MODEL_SCOPE || presets[n]);
     const extras = Object.keys(presets).filter(n => !builtin.includes(n)).sort();
     return [...builtin, ...extras, "custom"];
   }, [presets]);
@@ -301,8 +325,25 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     const starterIdx = presetNames.indexOf("low");
     return starterIdx >= 0 ? starterIdx : 0;
   });
-  const currentPreset = presetNames[presetIdx];
+  const currentPreset = presetNames[presetIdx] ?? "all";
+  const singleModelMode = fetchCatalog && currentPreset === SINGLE_MODEL_SCOPE;
+  const scopedCatalogModels = useMemo<string[]>(
+    () => catalogModelNamesForScope(catalog, presets, currentPreset),
+    [catalog, presets, currentPreset],
+  );
+  // In catalog mode, model selection is only enabled for the explicit single-model scope.
+  // In local-folder mode, it lists local .gguf models found in the selected folder.
+  const models = useMemo<string[]>(() => {
+    if (!fetchCatalog) return localModels;
+    if (currentPreset !== SINGLE_MODEL_SCOPE) return [];
+    const names = new Set<string>(scopedCatalogModels);
+    for (const name of readDiscoveredModelNames()) names.add(name);
+    return [...names].sort();
+  }, [currentPreset, fetchCatalog, localModels, scopedCatalogModels]);
+  const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
+  const modelRequired = singleModelMode && model === null;
   const presetCount = (() => {
+    if (currentPreset === SINGLE_MODEL_SCOPE) return models.length;
     if (currentPreset === "custom") return null;
     const p = presets[currentPreset];
     if (!p) return null;
@@ -310,6 +351,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     return Array.isArray(p.models) ? p.models.length : 0;
   })();
   const presetLabel = (() => {
+    if (currentPreset === SINGLE_MODEL_SCOPE) return "single model";
     if (currentPreset === "custom") return "custom (pick models)";
     const p = presets[currentPreset];
     if (!p) return currentPreset;
@@ -317,16 +359,16 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   })();
 
   const rows = [
-    { kind: "llama"    as const, label: `llama.cpp:       ${llamaLabel}` },
-    { kind: "folder"   as const, label: `model folder:    ${modelFolderDisplay}` },
-    { kind: "fetch"    as const, label: `model catalog:   ${fetchCatalog ? "yes — fetch curated models from HuggingFace before bench" : "no  — load from local folder"}` },
-    { kind: "preset"   as const, label: `which models:    ${presetLabel}`, disabled: !fetchCatalog || model !== null },
-    { kind: "model"    as const, label: `model filter:    ${model === null ? "all (use 'which models')" : model}` },
+    { kind: "llama"    as const, label: `llama.cpp:       ${llamaLabel}`, disabled: llamaConfigured },
+    { kind: "folder"   as const, label: `local folder:    ${modelFolderDisplay}` },
+    { kind: "fetch"    as const, label: `source:          ${fetchCatalog ? "catalog downloads" : "local folder"}` },
+    { kind: "preset"   as const, label: `scope:           ${presetLabel}`, disabled: !fetchCatalog },
+    { kind: "model"    as const, label: `model:           ${model === null ? (singleModelMode ? "choose one" : fetchCatalog ? "not used" : "all local models") : model}`, disabled: fetchCatalog && !singleModelMode },
     { kind: "runs"     as const, label: `runs per config: ${runs === 0 ? `default (${runsDefault} from config)` : String(runs)}` },
     { kind: "rotate"   as const, label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
     { kind: "polling"  as const, label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
-    { kind: "run"      as const, label: "> start all" },
+    { kind: "run"      as const, label: modelRequired ? "> start all   (choose a model first)" : "> start all", disabled: modelRequired },
     { kind: "cancel"   as const, label: "  cancel" },
   ];
 
@@ -510,25 +552,30 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
 
   const activate = (i: number) => {
     const row = rows[i];
+    if ((row as { disabled?: boolean }).disabled) return;
     switch (row.kind) {
       case "llama":    setLlamaSourceCursor(0); setPhase({ kind: "llamaSource" }); break;
       case "folder":   chooseModelFolder(); break;
       case "fetch": {
         const nextFetch = !fetchCatalog;
+        const nextModel = nextFetch ? null : (model && localModels.includes(model) ? model : null);
         setFetchCatalog(nextFetch);
-        onSessionChange?.({ fetchCatalog: nextFetch, model: nextFetch ? model : (model && localModels.includes(model) ? model : null) });
-        if (!nextFetch && model && !localModels.includes(model)) setModel(null);
+        if (nextModel !== model) setModel(nextModel);
+        onSessionChange?.({ fetchCatalog: nextFetch, model: nextModel });
         break;
       }
       case "preset": {
-        if (!fetchCatalog || model !== null) break;   // disabled when a model is fixed
+        if (!fetchCatalog) break;
         const nextIdx = (presetIdx + 1) % presetNames.length;
         setPresetIdx(nextIdx);
-        onSessionChange?.({ currentPreset: presetNames[nextIdx] });
+        const nextPreset = presetNames[nextIdx] ?? "all";
+        const nextModel = nextPreset === SINGLE_MODEL_SCOPE ? model : null;
+        if (nextModel !== model) setModel(nextModel);
+        onSessionChange?.({ currentPreset: nextPreset, model: nextModel });
         // Stepping off 'custom' clears any prior custom selection so
         // subsequent runs use the named preset's expansion, not the
         // stale picked-ids list.
-        if (presetNames[nextIdx] !== "custom" && customIds) {
+        if (nextPreset !== "custom" && customIds) {
           setCustomIds("");
           onSessionChange?.({ customIds: "", customCtxSizes: null });
         }
