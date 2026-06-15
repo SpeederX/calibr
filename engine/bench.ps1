@@ -288,17 +288,18 @@ function Invoke-TsBenchRequest {
     )
     $node   = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
     $script = $env:CALIBR_TS_BENCH_SCRIPT
-    # stream=true: the TS runner times the SSE stream to report a real
-    # time-to-first-content-token (mapped into ttft_sec below). prompt/eval
-    # tok/s still come from the `timings` object llama-server emits in the
-    # final streamed chunk, so the metric mapping in Invoke-OneBenchRun is
-    # unchanged. If a llama.cpp build omits stream timings, prompt_tps/eval_tps
-    # come back null — that is the one thing to check during UAT.
+    # stream=false: the winner is picked on eval_tps, so throughput is measured
+    # with an uninterrupted (non-streamed) decode for a clean, stable timing -
+    # exactly what the PowerShell path did. Per-token SSE flushing can add jitter
+    # to the decode timing, which is undesirable for a recommendation metric.
+    # Real time-to-first-token (ttfr_ms / e2e_ttft_ms) is a separate streamed
+    # latency measurement handled in the step-9 latency pass, so it never
+    # perturbs the throughput number that drives the recommendation.
     $payload = [ordered]@{
         baseUrl      = "http://127.0.0.1:$Port"
         prompt       = $Prompt
         maxTokens    = $MaxTokens
-        stream       = $true
+        stream       = $false
         cachePrompt  = $false
         reasoningOff = [bool]$ReasoningOff
         timeoutMs    = 900000
