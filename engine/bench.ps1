@@ -58,6 +58,24 @@ function Get-Median {
     return $sorted[[int]([math]::Floor(($sorted.Count - 1) / 2))]
 }
 
+function Resolve-FitStatus {
+    # Newer llama.cpp builds may stop printing the historical
+    # "successfully/failed to fit params" lines. When that happens, infer the
+    # useful report label from the signals calibr already trusts: a successful
+    # run with confirmed shared-memory spill did not fit cleanly in VRAM;
+    # otherwise it did.
+    param(
+        [string]$Status,
+        [bool]$Ok,
+        [int]$SharedPeakMib,
+        [int]$SharedConfirmMib = 500
+    )
+    if ($Status -eq "success" -or $Status -eq "failed_but_running") { return $Status }
+    if (-not $Ok) { return $Status }
+    if ($SharedPeakMib -gt $SharedConfirmMib) { return "failed_but_running" }
+    return "success"
+}
+
 function New-AggregatedBenchResult {
     # Combine N per-run hashtables (from Invoke-OneBenchRun) plus the
     # planning $item metadata into a single top-level successful result.
@@ -121,7 +139,7 @@ function New-AggregatedBenchResult {
         compute_cuda_mib = $first.compute_cuda_mib
         compute_host_mib = $first.compute_host_mib
         layers_offloaded = $first.layers_offloaded
-        fit_status       = $first.fit_status
+        fit_status       = Resolve-FitStatus -Status $first.fit_status -Ok $true -SharedPeakMib $sharedPeakMed -SharedConfirmMib $confirmThresh
 
         # Median over runs for varying metrics
         vram_peak_mib    = $vramPeakMed
@@ -600,6 +618,7 @@ function Invoke-OneBenchRun {
     $run.wddm_flag_high_vram  = ($satRatio -gt $cfg.wddm_detection.vram_saturation_threshold)
     $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
     $run.wddm_flag_shared_pos = ($run.shared_peak_mib -gt $confirmThresh)
+    $run.fit_status = Resolve-FitStatus -Status $run.fit_status -Ok $run.ok -SharedPeakMib $run.shared_peak_mib -SharedConfirmMib $confirmThresh
 
     Write-Host "[phase] run_complete"
     return $run

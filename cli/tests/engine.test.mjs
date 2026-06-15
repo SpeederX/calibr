@@ -63,3 +63,32 @@ test("traceAction writes JSONL and human log with redacted paths", () => {
   assert.match(human, /<CALIBR_DATA_DIR>/);
   assert.doesNotMatch(human, new RegExp(dataDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
+
+test("groupByModel applies the same near-tie winner rule as the report", () => {
+  const cfg = { wddm_detection: { shared_delta_confirm_mib: 500 } };
+  const groups = engine.groupByModel([
+    {
+      id: "small-fast",
+      model: "Qwen",
+      variant: "Q4",
+      ok: true,
+      eval_tps: 100,
+      shared_peak_mib: 0,
+      vram_peak_mib: 2400,
+      extra_args: "--ctx-size 16384",
+    },
+    {
+      id: "large-near",
+      model: "Qwen",
+      variant: "Q4",
+      ok: true,
+      eval_tps: 97,
+      shared_peak_mib: 0,
+      vram_peak_mib: 2600,
+      extra_args: "--ctx-size 65536",
+    },
+  ], cfg);
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].winner.id, "large-near");
+});

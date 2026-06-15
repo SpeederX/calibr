@@ -135,6 +135,17 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 800 $r.shared_peak_mib
         Assert-True $r.wddm_flag_shared_pos
     }
+    It "infers fit_status from WDDM spill when llama.cpp does not report fit lines" {
+        $safe = _run 0 7000 40 410.0 40.0
+        $safe.fit_status = "unknown"
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs @($safe)
+        Assert-Equal "success" $r.fit_status
+
+        $spill = _run 0 7000 800 410.0 40.0
+        $spill.fit_status = "unknown"
+        $r2 = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs @($spill)
+        Assert-Equal "failed_but_running" $r2.fit_status
+    }
     It "carries the full per-run array in `runs` for audit" {
         $runs = @((_run 0 7000 30 410.0 40.0), (_run 1 7200 50 430.0 42.0), (_run 2 7100 40 420.0 41.0))
         $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs

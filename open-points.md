@@ -41,12 +41,13 @@ validated against the PowerShell path. State + the decisions taken:
   chunks for `ttfr_ms` / `e2e_ttft_ms`. Unit-tested with injected fetch/clock
   (no live llama-server needed).
 - `cli/src/benchRunnerCli.ts`: Node entrypoint the engine shells out to.
-- Opt-in via `CALIBR_TS_BENCH=1`: the EngineAdapter (`cli/src/engine.ts`)
-  injects `CALIBR_NODE` + `CALIBR_TS_BENCH_SCRIPT`; `engine/bench.ps1`
-  (`Invoke-TsBenchRequest`) delegates the chat/completions call over stdin and
-  maps the returned llama.cpp `timings` through the existing pipeline.
-  `Invoke-RestMethod` stays as the fallback. Validated: TS reproduced the
-  PowerShell prompt_tps/eval_tps within run-to-run noise.
+- Default-on from the CLI, opt-out with `CALIBR_TS_BENCH=0`: the
+  EngineAdapter (`cli/src/engine.ts`) injects `CALIBR_NODE` +
+  `CALIBR_TS_BENCH_SCRIPT`; `engine/bench.ps1` (`Invoke-TsBenchRequest`)
+  delegates the chat/completions call over stdin and maps the returned
+  llama.cpp `timings` through the existing pipeline. `Invoke-RestMethod` stays
+  as the standalone/fallback path. Validated: TS reproduced the PowerShell
+  prompt_tps/eval_tps within run-to-run noise.
 
 Decision — decouple throughput from latency:
 
@@ -58,12 +59,11 @@ Decision — decouple throughput from latency:
   latency measurement (see the metric glossary / latency pass) and must not
   perturb the throughput number.
 
-Next (step 8) — make TS the default without a manual flag:
+Remaining:
 
-- The EngineAdapter always injects the node + script paths; `bench.ps1` uses
-  the TS path when Node + script are available, auto-falling back to PowerShell
-  otherwise (keeps standalone `calibr.ps1` working). Keep an opt-OUT
-  (`CALIBR_TS_BENCH=0`). Do NOT delete the PowerShell request path.
+- Add the dedicated streamed latency pass for true `ttfr_ms` / `e2e_ttft_ms`
+  without perturbing throughput/winner measurements.
+- Do NOT delete the PowerShell request path.
 
 ### Engine pruning before deeper migration
 
@@ -310,18 +310,6 @@ Validate on a Linux machine because the Windows workspace cannot reproduce the
 ---
 
 ## Engine and benchmark correctness
-
-### Winner tie-band (stop near-tied configs flip-flopping)
-
-Observed on a 4B model fully in VRAM: context-sweep configs (16k/32k/65k) are
-near-tied in `eval_tps`, so the winner picker (strict max `eval_tps` among safe
-configs) flips between runs on sub-tok/s noise even with median-of-3.
-
-Proposed: add a tolerance band (~5%). When safe configs are within the band on
-`eval_tps`, break the tie by a stable, useful secondary key — prefer larger
-usable context, then lower shared/VRAM peak (more headroom). Apply the same
-rule in both winner pickers: the engine ranking (`engine/bench.ps1` /
-`engine/report.ps1`) and the CLI's `beats()` in `cli/src/engine.ts`.
 
 ### Disk read as a per-model cold-load datum
 

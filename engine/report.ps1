@@ -23,7 +23,35 @@ function Test-IsBetterWinner {
     $curSafe = ([int]$current.shared_peak_mib   -le $sharedConfirmMib)
     if ($cSafe -and -not $curSafe) { return $true }
     if (-not $cSafe -and $curSafe) { return $false }
-    return ([double]$candidate.eval_tps -gt [double]$current.eval_tps)
+
+    $cEval = if ($null -ne $candidate.eval_tps) { [double]$candidate.eval_tps } else { -1 }
+    $curEval = if ($null -ne $current.eval_tps) { [double]$current.eval_tps } else { -1 }
+    $bestEval = [Math]::Max($cEval, $curEval)
+    if ($bestEval -gt 0 -and ([Math]::Abs($cEval - $curEval) / $bestEval) -gt 0.05) {
+        return ($cEval -gt $curEval)
+    }
+
+    $cCtx = Get-ResultCtxSize $candidate
+    $curCtx = Get-ResultCtxSize $current
+    if ($cCtx -ne $curCtx) { return ($cCtx -gt $curCtx) }
+
+    $cShared = if ($null -ne $candidate.shared_peak_mib) { [int]$candidate.shared_peak_mib } else { [int]::MaxValue }
+    $curShared = if ($null -ne $current.shared_peak_mib) { [int]$current.shared_peak_mib } else { [int]::MaxValue }
+    if ($cShared -ne $curShared) { return ($cShared -lt $curShared) }
+
+    $cVram = if ($null -ne $candidate.vram_peak_mib) { [int]$candidate.vram_peak_mib } else { [int]::MaxValue }
+    $curVram = if ($null -ne $current.vram_peak_mib) { [int]$current.vram_peak_mib } else { [int]::MaxValue }
+    if ($cVram -ne $curVram) { return ($cVram -lt $curVram) }
+
+    return ($cEval -gt $curEval)
+}
+
+function Get-ResultCtxSize {
+    param($result)
+    if ($result.extra_args -and ($result.extra_args -match '--ctx-size\s+(\d+)')) {
+        return [int]$Matches[1]
+    }
+    return 0
 }
 
 function Get-ResultDerivedFields {
@@ -47,10 +75,8 @@ function Get-ResultDerivedFields {
     $vramPeak = if ($null -ne $result.vram_peak_mib) { [int]$result.vram_peak_mib } else { 0 }
     $headroom = [Math]::Max(0, $vramTotal - $vramPeak)
 
-    $ctxSize = $null
-    if ($result.extra_args -and ($result.extra_args -match '--ctx-size\s+(\d+)')) {
-        $ctxSize = [int]$Matches[1]
-    }
+    $ctxSize = Get-ResultCtxSize $result
+    if ($ctxSize -eq 0) { $ctxSize = $null }
 
     return @{
         time_total_sec = $timeTotal

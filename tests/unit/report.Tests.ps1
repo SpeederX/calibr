@@ -4,7 +4,15 @@
 
 Describe "Test-IsBetterWinner" {
     # Shorthand for building a candidate.
-    function _r { param($eval, $shared) [PSCustomObject]@{ eval_tps = $eval; shared_peak_mib = $shared } }
+    function _r {
+        param($eval, $shared, $ctx = 0, $vram = 1000)
+        [PSCustomObject]@{
+            eval_tps = $eval
+            shared_peak_mib = $shared
+            vram_peak_mib = $vram
+            extra_args = if ($ctx -gt 0) { "--ctx-size $ctx" } else { "" }
+        }
+    }
 
     It "accepts any candidate when current is null" {
         Assert-True (Test-IsBetterWinner -candidate (_r 30 0) -current $null)
@@ -24,6 +32,25 @@ Describe "Test-IsBetterWinner" {
             $current   = _r 30 0
             $candidate = _r 40 0
             Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "uses the tie-band to prefer larger context for near-equal safe configs" {
+            $current   = _r 100 0 16384
+            $candidate = _r 97 0 65536
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "does not let the tie-band override a clearly faster safe config" {
+            $current   = _r 100 0 16384
+            $candidate = _r 90 0 65536
+            Assert-False (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "breaks near-equal same-context ties by lower shared memory, then lower VRAM" {
+            $current   = _r 100 20 32768 2400
+            $candidate = _r 98 10 32768 2600
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+
+            $current2   = _r 100 10 32768 2400
+            $candidate2 = _r 98 10 32768 2200
+            Assert-True (Test-IsBetterWinner -candidate $candidate2 -current $current2)
         }
         It "picks the higher eval_tps when both are paging" {
             $current   = _r 30 1000

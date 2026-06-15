@@ -616,7 +616,29 @@ export function classifyResult(r: Result, threshold: number): ResultStatus {
 function beats(a: Result, b: Result, threshold: number): boolean {
   const sa = isSafe(a, threshold), sb = isSafe(b, threshold);
   if (sa !== sb) return sa;
-  return (a.eval_tps ?? -1) > (b.eval_tps ?? -1);
+  const aEval = a.eval_tps ?? -1;
+  const bEval = b.eval_tps ?? -1;
+  const bestEval = Math.max(aEval, bEval);
+  if (bestEval > 0 && Math.abs(aEval - bEval) / bestEval > 0.05) return aEval > bEval;
+
+  const aCtx = parseCtxSize(a.extra_args);
+  const bCtx = parseCtxSize(b.extra_args);
+  if (aCtx !== bCtx) return aCtx > bCtx;
+
+  const aShared = a.shared_peak_mib ?? Number.MAX_SAFE_INTEGER;
+  const bShared = b.shared_peak_mib ?? Number.MAX_SAFE_INTEGER;
+  if (aShared !== bShared) return aShared < bShared;
+
+  const aVram = a.vram_peak_mib ?? Number.MAX_SAFE_INTEGER;
+  const bVram = b.vram_peak_mib ?? Number.MAX_SAFE_INTEGER;
+  if (aVram !== bVram) return aVram < bVram;
+
+  return aEval > bEval;
+}
+
+function parseCtxSize(extraArgs?: string): number {
+  const m = extraArgs?.match(/--ctx-size\s+(\d+)/);
+  return m ? Number(m[1]) : 0;
 }
 
 export interface ModelGroup {
@@ -674,12 +696,11 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
     NO_COLOR: "1",
     CALIBR_DATA_DIR: CALIBR_DATA_DIR,
     CALIBR_TRACE_SESSION_ID,
-    // Opt-in: when the user sets CALIBR_TS_BENCH=1, the adapter wires the node
-    // executable and the compiled TS bench runner so engine/bench.ps1 can
-    // delegate the chat/completions request to it. Off by default → the engine
-    // keeps using its own Invoke-RestMethod path. The user only sets one var;
-    // the adapter resolves the paths it already owns.
-    ...(process.env.CALIBR_TS_BENCH === "1"
+    // Default-on from the CLI: wire the compiled TS bench runner so
+    // engine/bench.ps1 can delegate chat/completions to it. Opt out with
+    // CALIBR_TS_BENCH=0. Standalone calibr.ps1 keeps using PowerShell unless
+    // these adapter-owned vars are provided.
+    ...(process.env.CALIBR_TS_BENCH !== "0"
       ? {
           CALIBR_TS_BENCH: "1",
           CALIBR_TS_BENCH_SCRIPT: join(__dirname, "benchRunnerCli.js"),
