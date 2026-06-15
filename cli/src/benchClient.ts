@@ -103,6 +103,20 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// Optional request deadline shared by both runners. Returns a signal to thread
+// into fetch (when AbortController exists) plus a clear() the caller runs in a
+// finally, so a completed request never leaves a dangling timer.
+function makeAbort(timeoutMs?: number): { signal?: AbortSignal; clear: () => void } {
+  if (!timeoutMs || typeof AbortController === "undefined") return { clear: () => {} };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
 export function metricsFromLlamaTimings(timings: LlamaTimings | null | undefined): BenchTimingMetrics {
   const promptN = finiteNumber(timings?.prompt_n);
   const promptPerSecond = finiteNumber(timings?.prompt_per_second);
@@ -173,7 +187,7 @@ function completionUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`;
 }
 
-async function responseText(resp: FetchResponseLike): Promise<string> {
+async function responseText(resp: { text?(): Promise<string> }): Promise<string> {
   if (!resp.text) return "";
   try {
     return await resp.text();
@@ -190,19 +204,14 @@ export async function runNonStreamingChatCompletion(
 
   const now = opts.nowMs ?? (() => Date.now());
   const started = now();
-  const controller = opts.timeoutMs && typeof AbortController !== "undefined"
-    ? new AbortController()
-    : null;
-  const timeout = controller
-    ? setTimeout(() => controller.abort(), opts.timeoutMs)
-    : null;
+  const abort = makeAbort(opts.timeoutMs);
 
   try {
     const resp = await fetchImpl(completionUrl(opts.baseUrl), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...opts.request, stream: false }),
-      ...(controller ? { signal: controller.signal } : {}),
+      ...(abort.signal ? { signal: abort.signal } : {}),
     });
     const totalMs = round(now() - started, 2);
     if (!resp.ok) {
@@ -235,10 +244,10 @@ export async function runNonStreamingChatCompletion(
       body: null,
       timings: null,
       metrics: metricsFromLlamaTimings(null),
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
     };
   } finally {
-    if (timeout) clearTimeout(timeout);
+    abort.clear();
   }
 }
 
@@ -274,4 +283,135 @@ export function analyzeChatCompletionStream(chunks: TimedStreamChunk[], startMs 
     content_chunk_count: contentChunkCount,
     timings,
   };
+}
+
+// A streamed body is either an async-iterable of byte/text parts (Node's
+// `fetch().body`, or a test generator) or a ReadableStream exposing getReader().
+type StreamBody =
+  | AsyncIterable<Uint8Array | string>
+  | { getReader(): { read(): Promise<{ value?: Uint8Array | string; done: boolean }> } };
+
+interface StreamFetchResponseLike {
+  ok: boolean;
+  status: number;
+  body?: StreamBody | null;
+  text?(): Promise<string>;
+}
+
+type StreamFetchLike = (url: string, init: {
+  method: "POST";
+  headers: Record<string, string>;
+  body: string;
+  signal?: AbortSignal;
+}) => Promise<StreamFetchResponseLike>;
+
+export interface RunStreamingChatCompletionOptions {
+  baseUrl: string;
+  request: ChatCompletionRequest;
+  fetchImpl?: StreamFetchLike;
+  nowMs?: () => number;
+  timeoutMs?: number;
+}
+
+export interface StreamingChatCompletionResult {
+  ok: boolean;
+  status: number;
+  total_request_ms: number;
+  content: string;
+  latency: StreamLatencyMetrics;
+  metrics: BenchTimingMetrics;
+  error?: string;
+}
+
+function emptyLatency(): StreamLatencyMetrics {
+  return { ttfr_ms: null, e2e_ttft_ms: null, response_chunk_count: 0, content_chunk_count: 0, timings: null };
+}
+
+// Normalize both body shapes to a single async iterator so the runner does not
+// branch on whether it got a generator (tests) or a ReadableStream (real fetch).
+async function* readStreamParts(body: StreamBody): AsyncGenerator<Uint8Array | string> {
+  if (typeof (body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === "function") {
+    for await (const part of body as AsyncIterable<Uint8Array | string>) yield part;
+    return;
+  }
+  const reader = (body as { getReader?: () => { read(): Promise<{ value?: Uint8Array | string; done: boolean }> } }).getReader?.();
+  if (!reader) return;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    if (value !== undefined) yield value;
+  }
+}
+
+export async function runStreamingChatCompletion(
+  opts: RunStreamingChatCompletionOptions,
+): Promise<StreamingChatCompletionResult> {
+  const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as unknown as StreamFetchLike | undefined);
+  if (!fetchImpl) throw new Error("fetch is not available in this runtime");
+
+  const now = opts.nowMs ?? (() => Date.now());
+  const started = now();
+  const abort = makeAbort(opts.timeoutMs);
+
+  const fail = (status: number, error: string): StreamingChatCompletionResult => ({
+    ok: false,
+    status,
+    total_request_ms: round(now() - started, 2),
+    content: "",
+    latency: emptyLatency(),
+    metrics: metricsFromLlamaTimings(null),
+    error,
+  });
+
+  try {
+    const resp = await fetchImpl(completionUrl(opts.baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify({ ...opts.request, stream: true }),
+      ...(abort.signal ? { signal: abort.signal } : {}),
+    });
+
+    if (!resp.ok) return fail(resp.status, await responseText(resp) || `HTTP ${resp.status}`);
+    if (!resp.body) return fail(resp.status, "response had no readable stream body");
+
+    // Timestamp each parsed chunk as it lands. SSE events can be split across
+    // transport parts, so buffer until a newline before emitting a chunk; that
+    // way analyzeChatCompletionStream never sees a half-written `data:` line.
+    const decoder = typeof TextDecoder !== "undefined" ? new TextDecoder() : null;
+    const chunks: TimedStreamChunk[] = [];
+    let buffer = "";
+
+    for await (const part of readStreamParts(resp.body)) {
+      buffer += typeof part === "string" ? part : decoder ? decoder.decode(part, { stream: true }) : "";
+      const newlineAt = buffer.lastIndexOf("\n");
+      if (newlineAt === -1) continue;
+      chunks.push({ atMs: round(now() - started, 2), text: buffer.slice(0, newlineAt + 1) });
+      buffer = buffer.slice(newlineAt + 1);
+    }
+    if (decoder) buffer += decoder.decode();
+    if (buffer.length > 0) chunks.push({ atMs: round(now() - started, 2), text: buffer });
+
+    const totalMs = round(now() - started, 2);
+    const latency = analyzeChatCompletionStream(chunks, 0);
+
+    let content = "";
+    for (const chunk of chunks) {
+      for (const event of parseSseDataLines(chunk.text)) {
+        if (event.kind === "json") content += extractContentDelta(event.value);
+      }
+    }
+
+    return {
+      ok: true,
+      status: resp.status,
+      total_request_ms: totalMs,
+      content,
+      latency,
+      metrics: metricsFromLlamaTimings(latency.timings),
+    };
+  } catch (error) {
+    return fail(0, errorMessage(error));
+  } finally {
+    abort.clear();
+  }
 }

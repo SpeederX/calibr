@@ -6,7 +6,12 @@ import {
   metricsFromLlamaTimings,
   parseSseDataLines,
   runNonStreamingChatCompletion,
+  runStreamingChatCompletion,
 } from "../dist/benchClient.js";
+
+async function* streamParts(parts) {
+  for (const part of parts) yield part;
+}
 
 test("buildChatCompletionRequest mirrors the llama.cpp chat endpoint shape", () => {
   assert.deepEqual(buildChatCompletionRequest({
@@ -160,4 +165,98 @@ test("runNonStreamingChatCompletion reports transport errors", async () => {
   assert.equal(result.status, 0);
   assert.match(result.error ?? "", /network down/);
   assert.equal(result.metrics.prompt_tps, null);
+});
+
+test("runStreamingChatCompletion times first response/content and assembles streamed text", async () => {
+  const calls = [];
+  // now() order: start, one per emitted chunk (4: role, content, content+timings, DONE), total.
+  const nowValues = [1000, 1110, 1145, 1210, 1212, 1215];
+  const result = await runStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080/",
+    request: buildChatCompletionRequest({ prompt: "hello", maxTokens: 16, stream: false }),
+    nowMs: () => nowValues.shift() ?? 1215,
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        body: streamParts([
+          'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":" there"}}],"timings":{"prompt_n":5,"prompt_per_second":50,"prompt_ms":40,"predicted_n":8,"predicted_per_second":24.5,"predicted_ms":320}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 200);
+  assert.equal(result.total_request_ms, 215);
+  assert.equal(result.latency.ttfr_ms, 110);
+  assert.equal(result.latency.e2e_ttft_ms, 145);
+  assert.equal(result.latency.response_chunk_count, 3);
+  assert.equal(result.latency.content_chunk_count, 2);
+  assert.equal(result.content, "hi there");
+  assert.equal(result.metrics.prompt_tps, 50);
+  assert.equal(result.metrics.eval_tps, 24.5);
+  assert.equal(calls[0].url, "http://127.0.0.1:18080/v1/chat/completions");
+  assert.equal(JSON.parse(calls[0].init.body).stream, true);
+});
+
+test("runStreamingChatCompletion buffers SSE events split across stream parts", async () => {
+  const nowValues = [0, 50, 90, 120];
+  const result = await runStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080",
+    request: buildChatCompletionRequest({ prompt: "hi", maxTokens: 8 }),
+    nowMs: () => nowValues.shift() ?? 120,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      body: streamParts([
+        'data: {"choices":[{"delta":{"content":"par',
+        'tial"}}]}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.content, "partial");
+  assert.equal(result.latency.content_chunk_count, 1);
+});
+
+test("runStreamingChatCompletion reports HTTP errors", async () => {
+  const result = await runStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080",
+    request: buildChatCompletionRequest({ prompt: "hello", maxTokens: 16 }),
+    nowMs: () => 100,
+    fetchImpl: async () => ({
+      ok: false,
+      status: 503,
+      body: null,
+      text: async () => "unavailable",
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 503);
+  assert.equal(result.error, "unavailable");
+  assert.equal(result.latency.ttfr_ms, null);
+  assert.equal(result.content, "");
+});
+
+test("runStreamingChatCompletion reports transport errors", async () => {
+  const result = await runStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080",
+    request: buildChatCompletionRequest({ prompt: "hello", maxTokens: 16 }),
+    nowMs: () => 100,
+    fetchImpl: async () => {
+      throw new Error("connection refused");
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 0);
+  assert.match(result.error ?? "", /connection refused/);
 });
