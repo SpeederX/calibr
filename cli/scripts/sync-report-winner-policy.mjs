@@ -13,7 +13,8 @@ const start = "// BEGIN GENERATED WINNER POLICY";
 const end = "// END GENERATED WINNER POLICY";
 
 const html = readFileSync(templatePath, "utf8");
-const generated = createReportWinnerPolicySource();
+const newline = html.includes("\r\n") ? "\r\n" : "\n";
+const generated = createReportWinnerPolicySource().replace(/\n/g, newline);
 
 let next;
 let found = false;
