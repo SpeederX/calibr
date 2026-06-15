@@ -698,8 +698,8 @@ function renderBars() {
     const fillClasses = fillClass;
     const fillStyle = 'width:' + pctVal + '%;' + fillStyleOf(d);
     const modeCls = ' mode-' + STATE.bars;
-    const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM+' + d.shared_peak_mib + 'MiB]</span>' :
-                  d.wddm_flag_high_vram  ? ' <span class="wddm">[WDDM?' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
+    const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM +' + d.shared_peak_mib + 'MiB]</span>' :
+                  d.wddm_flag_high_vram  ? ' <span class="wddm">[VRAM ' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
     const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
     const winCls = isWinnerId(d.id) ? ' is-winner' : '';
     el.insertAdjacentHTML('beforeend',

@@ -78,6 +78,11 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'scatter-dot\.is-winner')    "scatter winner styling missing"
         Assert-True ($tpl -match 'bar-row\.is-winner')        "bars winner styling missing"
     }
+    It "uses readable memory-risk badges in metric bars" {
+        Assert-False ($tpl -match 'WDDM\?')                   "ambiguous WDDM? badge should not be rendered"
+        Assert-True  ($tpl.Contains("[WDDM +"))               "confirmed WDDM shared-memory badge missing"
+        Assert-True  ($tpl.Contains("[VRAM "))                "high-VRAM saturation badge missing"
+    }
 }
 
 Describe "Invoke-Report end-to-end on canned data" {

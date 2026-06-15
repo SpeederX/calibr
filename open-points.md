@@ -101,6 +101,17 @@ Suggested buckets:
 Track `prompt_ms`, `prompt_tps`, memory deltas, and whether the model remains
 usable under the longer prefill load.
 
+### Sweep visibility and advanced profiles
+
+The current sweep ranges are configurable in `config.json`, but guided run does
+not expose them. Add a compact advanced/profile view before widening the sweep
+surface:
+
+- context/KV candidates from `context_candidates`
+- MoE CPU split values from `planning.moecpu_sweep`
+- GPU offload values from `planning.offload_sweep`
+- MTP/speculative decoding flags once the benchmark client supports them
+
 ### MTP / speculative decoding support
 
 Unsloth documents llama.cpp MTP support around `--spec-type draft-mtp` and
