@@ -329,13 +329,19 @@ function Invoke-TsBenchRequest {
         reasoningOff = [bool]$ReasoningOff
         timeoutMs    = 900000
     } | ConvertTo-Json -Compress -Depth 5
-    # Pass the request over stdin so the prompt never has to survive
-    # native-argument quoting.
-    $out  = $payload | & $node $script --stdin
-    $text = (@($out) -join "`n").Trim()
-    if (-not $text) { return [pscustomobject]@{ ok = $false; error = 'ts bench runner produced no output' } }
-    try { return ($text | ConvertFrom-Json) }
-    catch { return [pscustomobject]@{ ok = $false; error = "ts bench runner returned non-JSON: $($text.Substring(0, [Math]::Min(200, $text.Length)))" } }
+    # Use a UTF-8 temp file instead of stdin. Windows PowerShell can pipe
+    # native-process stdin as UTF-16, which made Node read invalid JSON.
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-bench-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $out  = & $node $script --json-file $payloadPath
+        $text = (@($out) -join "`n").Trim()
+        if (-not $text) { return [pscustomobject]@{ ok = $false; error = 'ts bench runner produced no output' } }
+        try { return ($text | ConvertFrom-Json) }
+        catch { return [pscustomobject]@{ ok = $false; error = "ts bench runner returned non-JSON: $($text.Substring(0, [Math]::Min(200, $text.Length)))" } }
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Resolve-TsBenchRunnerScript {

@@ -4,10 +4,11 @@
 // GPU/RAM snapshots. This process only performs the single chat/completions
 // request and prints one JSON line that bench.ps1 maps into a run record.
 //
-// Contract (stdin or --json <payload>): a JSON object
+// Contract (stdin, --json <payload>, or --json-file <path>): a JSON object
 //   { baseUrl, prompt, maxTokens, stream?, cachePrompt?, reasoningOff?, timeoutMs? }
 // Output (stdout, one line): BenchRunnerOutput. The `timings` field mirrors
 // llama.cpp's shape so the engine's existing metric mapping is untouched.
+import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
   buildChatCompletionRequest,
@@ -116,7 +117,21 @@ function failure(error: string): BenchRunnerOutput {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const jsonIdx = argv.indexOf("--json");
-  const raw = jsonIdx >= 0 ? (argv[jsonIdx + 1] ?? "") : await readStdin();
+  const jsonFileIdx = argv.indexOf("--json-file");
+  let raw = "";
+  if (jsonIdx >= 0) {
+    raw = argv[jsonIdx + 1] ?? "";
+  } else if (jsonFileIdx >= 0) {
+    const path = argv[jsonFileIdx + 1] ?? "";
+    try {
+      raw = await readFile(path, "utf8");
+    } catch (error) {
+      process.stdout.write(JSON.stringify(failure(`could not read payload file: ${error instanceof Error ? error.message : String(error)}`)) + "\n");
+      return;
+    }
+  } else {
+    raw = await readStdin();
+  }
 
   let payload: BenchRunnerPayload;
   try {

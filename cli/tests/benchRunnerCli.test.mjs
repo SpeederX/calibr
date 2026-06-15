@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { runFromPayload } from "../dist/benchRunnerCli.js";
 
 async function* streamParts(parts) {
@@ -95,4 +99,28 @@ test("runFromPayload surfaces transport errors as ok:false", async () => {
   assert.equal(out.ok, false);
   assert.equal(out.mode, "stream");
   assert.match(out.error ?? "", /connection refused/);
+});
+
+test("CLI entrypoint reads payload from --json-file as UTF-8 JSON", () => {
+  const dir = mkdtempSync(join(tmpdir(), "calibr-runner-json-"));
+  const payloadPath = join(dir, "payload.json");
+  writeFileSync(payloadPath, JSON.stringify({
+    baseUrl: "http://127.0.0.1:1",
+    prompt: "ciao",
+    maxTokens: 1,
+    stream: false,
+  }), "utf8");
+
+  try {
+    const proc = spawnSync(process.execPath, [join(process.cwd(), "dist", "benchRunnerCli.js"), "--json-file", payloadPath], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+    assert.equal(proc.status, 0);
+    const out = JSON.parse(proc.stdout.trim());
+    assert.equal(out.ok, false);
+    assert.notEqual(out.error, "invalid payload json");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
