@@ -112,6 +112,7 @@ Describe "Invoke-Report end-to-end on canned data" {
         timestamp="2026-04-26T12:00:00"
         # Phase F additions: extended metrics + paths for client-side bat generation
         ttft_sec=0.42; gpu_power_peak_w=120.0; gpu_temp_peak_c=65; gpu_util_avg_pct=92
+        prompt_ms=310.0; ttfr_ms=120.0; e2e_ttft_ms=420.0; total_request_ms=3360.0; latency_total_request_ms=520.0
         ram_used_peak_mib=1024; ram_baseline_mib=512
         model_path="C:\fake\model.gguf"; mmproj_path=$null
     }
@@ -162,6 +163,10 @@ Describe "Invoke-Report end-to-end on canned data" {
         }
         It "embeds the extended metrics for the scoring profiles (Phase F)" {
             Assert-True ($html -match '"ttft_sec"')           "DATA missing ttft_sec"
+            Assert-True ($html -match '"prompt_ms"')          "DATA missing prompt_ms"
+            Assert-True ($html -match '"ttfr_ms"')            "DATA missing ttfr_ms"
+            Assert-True ($html -match '"e2e_ttft_ms"')        "DATA missing e2e_ttft_ms"
+            Assert-True ($html -match '"total_request_ms"')   "DATA missing total_request_ms"
             Assert-True ($html -match '"gpu_power_peak_w"')   "DATA missing gpu_power_peak_w"
             Assert-True ($html -match '"gpu_temp_peak_c"')    "DATA missing gpu_temp_peak_c"
             Assert-True ($html -match '"gpu_util_avg_pct"')   "DATA missing gpu_util_avg_pct"

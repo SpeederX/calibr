@@ -243,6 +243,12 @@ function Invoke-Report {
         # $null so the JS side renders '-' for missing values without crashing
         # the scorers (efficiency divides by gpu_power_peak_w; null is safe).
         $ttft   = if ($null -ne $r.ttft_sec)           { [double]$r.ttft_sec } else { $null }
+        $promptMs = if ($null -ne $r.prompt_ms)        { [double]$r.prompt_ms } else { $null }
+        $ttfrMs = if ($null -ne $r.ttfr_ms)            { [double]$r.ttfr_ms } else { $null }
+        $e2eTtftMs = if ($null -ne $r.e2e_ttft_ms)     { [double]$r.e2e_ttft_ms } else { $null }
+        $totalReqMs = if ($null -ne $r.total_request_ms) { [double]$r.total_request_ms } else { $null }
+        $latencyTotalMs = if ($null -ne $r.latency_total_request_ms) { [double]$r.latency_total_request_ms } else { $null }
+        $latencyErr = if ($null -ne $r.latency_error)  { [string]$r.latency_error } else { $null }
         $gpuPw  = if ($null -ne $r.gpu_power_peak_w)   { [double]$r.gpu_power_peak_w } else { $null }
         $gpuTc  = if ($null -ne $r.gpu_temp_peak_c)    { [int]$r.gpu_temp_peak_c } else { $null }
         $gpuUt  = if ($null -ne $r.gpu_util_avg_pct)   { [int]$r.gpu_util_avg_pct } else { $null }
@@ -290,6 +296,12 @@ function Invoke-Report {
             # Extended metrics (added v1.2): used by the all-results table and
             # by the 'efficiency' scoring profile in the new report UI.
             ttft_sec=$ttft
+            prompt_ms=$promptMs
+            ttfr_ms=$ttfrMs
+            e2e_ttft_ms=$e2eTtftMs
+            total_request_ms=$totalReqMs
+            latency_total_request_ms=$latencyTotalMs
+            latency_error=$latencyErr
             gpu_power_peak_w=$gpuPw
             gpu_temp_peak_c=$gpuTc
             gpu_util_avg_pct=$gpuUt

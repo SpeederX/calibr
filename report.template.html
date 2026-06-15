@@ -102,16 +102,20 @@
   .bar-row.bar-row-ann { grid-template-columns: minmax(360px, 520px) minmax(280px, 1fr) 112px minmax(260px, 420px); }
   .bar-row.mode-vram,
   .bar-row.mode-memory,
-  .bar-row.mode-disk { grid-template-columns: minmax(340px, 520px) minmax(420px, 1fr) minmax(520px, max-content); }
+  .bar-row.mode-disk,
+  .bar-row.mode-latency { grid-template-columns: minmax(340px, 520px) minmax(420px, 1fr) minmax(520px, max-content); }
   .bar-row.mode-vram .val,
   .bar-row.mode-memory .val,
-  .bar-row.mode-disk .val { display: none; }
+  .bar-row.mode-disk .val,
+  .bar-row.mode-latency .val { display: none; }
   .bar-row.mode-vram .ann,
   .bar-row.mode-memory .ann,
-  .bar-row.mode-disk .ann { justify-content: end; }
+  .bar-row.mode-disk .ann,
+  .bar-row.mode-latency .ann { justify-content: end; }
   .bar-row.mode-vram .ann { display: grid; grid-template-columns: 90px 90px 110px 128px; }
   .bar-row.mode-memory .ann { display: grid; grid-template-columns: 104px 90px 110px 92px 92px 90px; }
   .bar-row.mode-disk .ann { display: grid; grid-template-columns: 118px 90px 110px; }
+  .bar-row.mode-latency .ann { display: grid; grid-template-columns: 104px 104px 104px 118px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-row.is-winner .name::before { content: '★ '; color: var(--c-win); }
   .bar-row .track { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
@@ -193,6 +197,7 @@
         <p><b>B. Near the cliff:</b> VRAM is almost saturated. Small changes in context, KV type, background apps, or MoE routing can push the run over the edge.</p>
         <p><b>C. Spill / paging:</b> Windows WDDM starts using shared system RAM. The model may still load, but token/s can drop hard because data crosses CPU/RAM/PCIe instead of staying in VRAM.</p>
         <p><b>MoE note:</b> MoE can show the same pressure when experts do not fit cleanly. CPU expert offload may be intentional, but it is still a latency tradeoff.</p>
+        <p><b>Latency fields:</b> TTFR is first streamed server response; e2e TTFT is first visible content token; prompt ms is llama.cpp prefill time; request ms is the measured request wall time.</p>
       </span>
     </span>
   </div>
@@ -203,6 +208,7 @@
     <div class="tab" data-bars="vram">VRAM peak</div>
     <div class="tab" data-bars="memory">VRAM + RAM</div>
     <div class="tab" data-bars="disk">Disk read</div>
+    <div class="tab" data-bars="latency">Latency</div>
   </div>
   <div class="tab-content"><div id="bars"></div></div>
 
@@ -217,6 +223,7 @@
       <thead><tr>
         <th>ID</th><th>Level</th><th>Model</th><th>Config</th>
         <th class="num">TTFT s</th>
+        <th class="num">TTFR ms</th><th class="num">Prompt ms</th>
         <th class="num">Prompt t/s</th><th class="num">Eval t/s</th>
         <th class="num">VRAM</th><th class="num">Shared</th>
         <th class="num">RAM Δ</th>
@@ -704,6 +711,21 @@ function diskUsageNote(d) {
   return metricChip('disk', fmt1(d.disk_read_peak_mb_s) + ' MB/s') + throughputNote(d);
 }
 
+function latencyMs(d) {
+  if (d.e2e_ttft_ms != null) return +d.e2e_ttft_ms;
+  if (d.ttfr_ms != null) return +d.ttfr_ms;
+  if (d.prompt_ms != null) return +d.prompt_ms;
+  if (d.ttft_sec != null) return (+d.ttft_sec) * 1000;
+  return 0;
+}
+
+function latencyNote(d) {
+  return metricChip('TTFR', d.ttfr_ms != null ? fmt1(d.ttfr_ms) + ' ms' : '-') +
+         metricChip('e2e TTFT', d.e2e_ttft_ms != null ? fmt1(d.e2e_ttft_ms) + ' ms' : '-') +
+         metricChip('prompt', d.prompt_ms != null ? fmt1(d.prompt_ms) + ' ms' : '-') +
+         metricChip('request', d.latency_total_request_ms != null ? fmt1(d.latency_total_request_ms) + ' ms' : (d.total_request_ms != null ? fmt1(d.total_request_ms) + ' ms' : '-'));
+}
+
 function totalThroughput(d) {
   return (+d.prompt_tps || 0) + (+d.eval_tps || 0);
 }
@@ -762,6 +784,13 @@ function renderBars() {
   } else if (STATE.bars === 'disk') {
     field = 'disk_read_peak_mb_s'; unit = 'MB/s'; annotate = diskUsageNote; fillClass = 'memory';
     valueOf = d => +d.disk_read_peak_mb_s || 0;
+    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
+    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
+    fillStyleOf = () => '';
+    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
+  } else if (STATE.bars === 'latency') {
+    field = 'e2e_ttft_ms'; unit = 'ms'; annotate = latencyNote; fillClass = 'memory';
+    valueOf = latencyMs;
     maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
     pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
     fillStyleOf = () => '';
@@ -1020,6 +1049,8 @@ function renderAllTable() {
         '<td>' + escapeHtml(d.model) + '</td>' +
         '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + escapeHtml(d.extra_args) + '</td>' +
         '<td class="num">' + (d.ttft_sec != null ? (+d.ttft_sec).toFixed(2) : '-') + '</td>' +
+        '<td class="num">' + (d.ttfr_ms != null ? (+d.ttfr_ms).toFixed(1) : '-') + '</td>' +
+        '<td class="num">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_tps ? (+d.prompt_tps).toFixed(1) : '-') + '</td>' +
         '<td class="num"><b>' + (d.eval_tps ? (+d.eval_tps).toFixed(1) : '-') + '</b></td>' +
         '<td class="num">' + d.vram_peak_mib + '</td>' +

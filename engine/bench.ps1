@@ -100,6 +100,11 @@ function New-AggregatedBenchResult {
     # power, temp, ram are max-over-runs (peaks are what matter for thermal
     # / pressure analysis, not the typical reading).
     $ttftMed       = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.ttft_sec })),         3)
+    $promptMsRaw   = Get-Median -values @($runs | ForEach-Object { $_.prompt_ms })
+    $ttfrMsRaw     = Get-Median -values @($runs | ForEach-Object { $_.ttfr_ms })
+    $e2eTtftMsRaw  = Get-Median -values @($runs | ForEach-Object { $_.e2e_ttft_ms })
+    $totalReqRaw   = Get-Median -values @($runs | ForEach-Object { $_.total_request_ms })
+    $latReqRaw     = Get-Median -values @($runs | ForEach-Object { $_.latency_total_request_ms })
     $utilAvgMed    = [int](Get-Median   -values @($runs | ForEach-Object { $_.gpu_util_avg_pct }))
     $powerPeakMax  = [math]::Round((@($runs | ForEach-Object { $_.gpu_power_peak_w }) | Measure-Object -Maximum).Maximum, 1)
     $tempPeakMax   = [int]((@($runs | ForEach-Object { $_.gpu_temp_peak_c })  | Measure-Object -Maximum).Maximum)
@@ -150,6 +155,11 @@ function New-AggregatedBenchResult {
         # Extended metrics: medians for ttft/util (typical), maxes for
         # power/temp/ram/disk (peaks are what matter).
         ttft_sec             = $ttftMed
+        prompt_ms            = if ($null -ne $promptMsRaw)  { [math]::Round($promptMsRaw, 2) } else { $null }
+        ttfr_ms              = if ($null -ne $ttfrMsRaw)    { [math]::Round($ttfrMsRaw, 2) } else { $null }
+        e2e_ttft_ms          = if ($null -ne $e2eTtftMsRaw) { [math]::Round($e2eTtftMsRaw, 2) } else { $null }
+        total_request_ms     = if ($null -ne $totalReqRaw)  { [math]::Round($totalReqRaw, 2) } else { $null }
+        latency_total_request_ms = if ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
         gpu_util_avg_pct     = $utilAvgMed
         gpu_power_peak_w     = $powerPeakMax
         gpu_temp_peak_c      = $tempPeakMax
@@ -302,22 +312,20 @@ function Invoke-TsBenchRequest {
         [int]$Port,
         [string]$Prompt,
         [int]$MaxTokens,
-        [switch]$ReasoningOff
+        [switch]$ReasoningOff,
+        [switch]$Stream
     )
     $node   = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
     $script = $env:CALIBR_TS_BENCH_SCRIPT
-    # stream=false: the winner is picked on eval_tps, so throughput is measured
-    # with an uninterrupted (non-streamed) decode for a clean, stable timing -
-    # exactly what the PowerShell path did. Per-token SSE flushing can add jitter
-    # to the decode timing, which is undesirable for a recommendation metric.
-    # Real time-to-first-token (ttfr_ms / e2e_ttft_ms) is a separate streamed
-    # latency measurement handled in the step-9 latency pass, so it never
-    # perturbs the throughput number that drives the recommendation.
+    # The caller chooses stream=false for throughput and stream=true for the
+    # dedicated latency pass. Keeping those requests separate prevents SSE
+    # flushing jitter from changing eval_tps, while still collecting TTFR /
+    # e2e TTFT when the TypeScript client is available.
     $payload = [ordered]@{
         baseUrl      = "http://127.0.0.1:$Port"
         prompt       = $Prompt
         maxTokens    = $MaxTokens
-        stream       = $false
+        stream       = [bool]$Stream
         cachePrompt  = $false
         reasoningOff = [bool]$ReasoningOff
         timeoutMs    = 900000
@@ -460,6 +468,12 @@ function Invoke-OneBenchRun {
         # Extended metrics (added in v0.1.3). Defaults are sensible
         # null/zero so the schema stays uniform across all runs.
         ttft_sec             = $null   # set after the bench POST returns
+        prompt_ms            = $null
+        ttfr_ms              = $null
+        e2e_ttft_ms          = $null
+        total_request_ms     = $null
+        latency_total_request_ms = $null
+        latency_error        = $null
         gpu_power_peak_w     = [math]::Round($peakPower, 1)
         gpu_temp_peak_c      = $peakTemp
         gpu_util_avg_pct     = if ($utilCount -gt 0) { [int]($utilSum / $utilCount) } else { 0 }
@@ -505,7 +519,7 @@ function Invoke-OneBenchRun {
         if ($item.reasoning_mode -eq "off") { $reqBody["enable_thinking"] = $false }
         $body = $reqBody | ConvertTo-Json -Compress -Depth 5
         Write-Host "[phase] sending_prompt"
-        $tsTtftMs = $null
+        $requestStart = Get-Date
         try {
             if ($env:CALIBR_TS_BENCH -eq '1' -and $env:CALIBR_TS_BENCH_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_BENCH_SCRIPT)) {
                 # Opt-in: the TypeScript bench client issues the request and
@@ -513,15 +527,18 @@ function Invoke-OneBenchRun {
                 # share the metric mapping below.
                 $resp = Invoke-TsBenchRequest -Port $port -Prompt $prompt -MaxTokens $nPred -ReasoningOff:($item.reasoning_mode -eq "off")
                 if (-not $resp.ok) { throw "ts bench runner: $($resp.error)" }
-                if ($null -ne $resp.e2e_ttft_ms)  { $tsTtftMs = [double]$resp.e2e_ttft_ms }
-                elseif ($null -ne $resp.ttfr_ms)  { $tsTtftMs = [double]$resp.ttfr_ms }
+                if ($null -ne $resp.total_request_ms) { $run.total_request_ms = [math]::Round([double]$resp.total_request_ms, 2) }
             } else {
                 $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
+            }
+            if ($null -eq $run.total_request_ms) {
+                $run.total_request_ms = [math]::Round(((Get-Date) - $requestStart).TotalMilliseconds, 2)
             }
             $run.ok = $true
             if ($resp.timings) {
                 $run.prompt_n   = $resp.timings.prompt_n
                 $run.prompt_tps = [math]::Round($resp.timings.prompt_per_second, 2)
+                if ($null -ne $resp.timings.prompt_ms) { $run.prompt_ms = [math]::Round([double]$resp.timings.prompt_ms, 2) }
                 $run.eval_n     = $resp.timings.predicted_n
                 # eval_tps guard: when the model emits ~1 token (e.g. it hits
                 # EOS immediately on a bare prompt), predicted_ms rounds to 0
@@ -536,20 +553,39 @@ function Invoke-OneBenchRun {
                 } else {
                     $run.eval_tps = $null   # unmeasured: too few tokens to time
                 }
-                # Time-to-first-token: prefer the TS bench client's measured
-                # streamed TTFT when present (CALIBR_TS_BENCH). Otherwise fall
-                # back to prompt_ms (total time spent processing the input
-                # prompt). The first generated token comes out immediately
-                # after, so prompt_ms is effectively the felt latency before
-                # the model responds; it dominates total time for long prompts
-                # because prompt eval is O(N^2) in input length.
-                if ($null -ne $tsTtftMs) {
-                    $run.ttft_sec = [math]::Round($tsTtftMs / 1000, 3)
-                } elseif ($null -ne $resp.timings.prompt_ms) {
-                    $run.ttft_sec = [math]::Round([double]$resp.timings.prompt_ms / 1000, 3)
+                if ($env:CALIBR_TS_BENCH -eq '1' -and $env:CALIBR_TS_BENCH_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_BENCH_SCRIPT)) {
+                    try {
+                        # Dedicated latency pass: streamed on purpose, separate
+                        # from the non-streamed throughput request above so
+                        # token/s remains stable. Keep it short; we only need
+                        # first-response and first-content timestamps.
+                        $latTokens = [Math]::Min($nPred, 32)
+                        $latResp = Invoke-TsBenchRequest -Port $port -Prompt $prompt -MaxTokens $latTokens -ReasoningOff:($item.reasoning_mode -eq "off") -Stream
+                        if ($latResp.ok) {
+                            if ($null -ne $latResp.ttfr_ms) { $run.ttfr_ms = [math]::Round([double]$latResp.ttfr_ms, 2) }
+                            if ($null -ne $latResp.e2e_ttft_ms) { $run.e2e_ttft_ms = [math]::Round([double]$latResp.e2e_ttft_ms, 2) }
+                            if ($null -ne $latResp.total_request_ms) { $run.latency_total_request_ms = [math]::Round([double]$latResp.total_request_ms, 2) }
+                        } else {
+                            $run.latency_error = $latResp.error
+                        }
+                    } catch {
+                        $run.latency_error = $_.Exception.Message
+                    }
+                }
+
+                # Legacy report field: prefer the real streamed time-to-first
+                # content when available, otherwise keep the old prompt-ms
+                # approximation so older report views remain meaningful.
+                if ($null -ne $run.e2e_ttft_ms) {
+                    $run.ttft_sec = [math]::Round([double]$run.e2e_ttft_ms / 1000, 3)
+                } elseif ($null -ne $run.prompt_ms) {
+                    $run.ttft_sec = [math]::Round([double]$run.prompt_ms / 1000, 3)
                 }
             }
-        } catch { $run.error = $_.Exception.Message }
+        } catch {
+            $run.total_request_ms = [math]::Round(((Get-Date) - $requestStart).TotalMilliseconds, 2)
+            $run.error = $_.Exception.Message
+        }
 
         # Post-bench snapshot: grabs peaks of GPU/RAM at the moment the model
         # is hottest (the bench POST is synchronous, so we don't poll during
@@ -765,6 +801,12 @@ function Invoke-OneBench {
                 # so the report can render the same columns uniformly
                 # whether ok=true or ok=false.
                 ttft_sec             = $r.ttft_sec
+                prompt_ms            = $r.prompt_ms
+                ttfr_ms              = $r.ttfr_ms
+                e2e_ttft_ms          = $r.e2e_ttft_ms
+                total_request_ms     = $r.total_request_ms
+                latency_total_request_ms = $r.latency_total_request_ms
+                latency_error        = $r.latency_error
                 gpu_power_peak_w     = $r.gpu_power_peak_w
                 gpu_temp_peak_c      = $r.gpu_temp_peak_c
                 gpu_util_avg_pct     = $r.gpu_util_avg_pct
