@@ -272,6 +272,42 @@ function Get-DiskReadBytesPerSec {
     } catch { return 0 }
 }
 
+function Invoke-TsBenchRequest {
+    # Opt-in (CALIBR_TS_BENCH=1): hand the chat/completions request to the
+    # TypeScript bench client (dist/benchRunnerCli.js) instead of
+    # Invoke-RestMethod. The CLI/EngineAdapter injects CALIBR_NODE and
+    # CALIBR_TS_BENCH_SCRIPT. The runner returns the same llama.cpp `timings`
+    # shape (plus optional streamed ttfr_ms / e2e_ttft_ms), so the metric
+    # mapping in Invoke-OneBenchRun stays identical. Returns a PSCustomObject
+    # with .ok plus either .timings or .error.
+    param(
+        [int]$Port,
+        [string]$Prompt,
+        [int]$MaxTokens,
+        [switch]$ReasoningOff
+    )
+    $node   = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $script = $env:CALIBR_TS_BENCH_SCRIPT
+    # stream=false for now: a clean parity check against the PowerShell path.
+    # Flip to $true to start collecting real streamed TTFT once validated.
+    $payload = [ordered]@{
+        baseUrl      = "http://127.0.0.1:$Port"
+        prompt       = $Prompt
+        maxTokens    = $MaxTokens
+        stream       = $false
+        cachePrompt  = $false
+        reasoningOff = [bool]$ReasoningOff
+        timeoutMs    = 900000
+    } | ConvertTo-Json -Compress -Depth 5
+    # Pass the request over stdin so the prompt never has to survive
+    # native-argument quoting.
+    $out  = $payload | & $node $script --stdin
+    $text = (@($out) -join "`n").Trim()
+    if (-not $text) { return [pscustomobject]@{ ok = $false; error = 'ts bench runner produced no output' } }
+    try { return ($text | ConvertFrom-Json) }
+    catch { return [pscustomobject]@{ ok = $false; error = "ts bench runner returned non-JSON: $($text.Substring(0, [Math]::Min(200, $text.Length)))" } }
+}
+
 function Invoke-OneBenchRun {
     # Execute one warmup-then-bench cycle for $item: spawn llama-server,
     # wait for ready, optional warmup, bench, parse stderr, tear down.
@@ -446,8 +482,19 @@ function Invoke-OneBenchRun {
         if ($item.reasoning_mode -eq "off") { $reqBody["enable_thinking"] = $false }
         $body = $reqBody | ConvertTo-Json -Compress -Depth 5
         Write-Host "[phase] sending_prompt"
+        $tsTtftMs = $null
         try {
-            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
+            if ($env:CALIBR_TS_BENCH -eq '1' -and $env:CALIBR_TS_BENCH_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_BENCH_SCRIPT)) {
+                # Opt-in: the TypeScript bench client issues the request and
+                # returns the same llama.cpp `timings` shape, so both paths
+                # share the metric mapping below.
+                $resp = Invoke-TsBenchRequest -Port $port -Prompt $prompt -MaxTokens $nPred -ReasoningOff:($item.reasoning_mode -eq "off")
+                if (-not $resp.ok) { throw "ts bench runner: $($resp.error)" }
+                if ($null -ne $resp.e2e_ttft_ms)  { $tsTtftMs = [double]$resp.e2e_ttft_ms }
+                elseif ($null -ne $resp.ttfr_ms)  { $tsTtftMs = [double]$resp.ttfr_ms }
+            } else {
+                $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
+            }
             $run.ok = $true
             if ($resp.timings) {
                 $run.prompt_n   = $resp.timings.prompt_n
@@ -466,13 +513,16 @@ function Invoke-OneBenchRun {
                 } else {
                     $run.eval_tps = $null   # unmeasured: too few tokens to time
                 }
-                # Time-to-first-token: llama.cpp reports prompt_ms (total
-                # time spent processing the input prompt). The first
-                # generated token comes out immediately after, so prompt_ms
-                # is effectively the felt latency before the model
-                # responds. Dominates total time for long prompts because
-                # prompt eval is O(N^2) in input length.
-                if ($null -ne $resp.timings.prompt_ms) {
+                # Time-to-first-token: prefer the TS bench client's measured
+                # streamed TTFT when present (CALIBR_TS_BENCH). Otherwise fall
+                # back to prompt_ms (total time spent processing the input
+                # prompt). The first generated token comes out immediately
+                # after, so prompt_ms is effectively the felt latency before
+                # the model responds; it dominates total time for long prompts
+                # because prompt eval is O(N^2) in input length.
+                if ($null -ne $tsTtftMs) {
+                    $run.ttft_sec = [math]::Round($tsTtftMs / 1000, 3)
+                } elseif ($null -ne $resp.timings.prompt_ms) {
                     $run.ttft_sec = [math]::Round([double]$resp.timings.prompt_ms / 1000, 3)
                 }
             }

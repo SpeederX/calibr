@@ -674,6 +674,18 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
     NO_COLOR: "1",
     CALIBR_DATA_DIR: CALIBR_DATA_DIR,
     CALIBR_TRACE_SESSION_ID,
+    // Opt-in: when the user sets CALIBR_TS_BENCH=1, the adapter wires the node
+    // executable and the compiled TS bench runner so engine/bench.ps1 can
+    // delegate the chat/completions request to it. Off by default → the engine
+    // keeps using its own Invoke-RestMethod path. The user only sets one var;
+    // the adapter resolves the paths it already owns.
+    ...(process.env.CALIBR_TS_BENCH === "1"
+      ? {
+          CALIBR_TS_BENCH: "1",
+          CALIBR_TS_BENCH_SCRIPT: join(__dirname, "benchRunnerCli.js"),
+          CALIBR_NODE: process.execPath,
+        }
+      : {}),
     ...(trace ? { CALIBR_TRACE_PARENT: JSON.stringify(trace) } : {}),
   };
 }
