@@ -257,46 +257,14 @@ function renderOverallStats() {
     VIEW.length + ' bench configs in view, ' + VIEW.filter(d => d.ok).length + ' ok.';
 }
 
-// ===========================================================================
-// SCORERS — winner-picking strategies.
-//
-// Each scorer returns a number (higher = better). Configs that "disqualify"
-// under a scorer return -Infinity so they drop out of the winner pool. The
-// 'overall' scorer normalizes against global anchors so its weights are
-// comparable across runs of very different hardware.
-// ===========================================================================
-const CONFIRM_MIB = (CFG.wddm_detection && CFG.wddm_detection.shared_delta_confirm_mib)
-  ? +CFG.wddm_detection.shared_delta_confirm_mib : 500;
-
-const isSafe = d => (+d.shared_peak_mib || 0) <= CONFIRM_MIB;
-
-// Anchors are recomputed from the filtered slice at each rerender so
-// the 'overall' scorer normalizes against the currently-visible data,
-// not against stale rows from older sessions the user has scoped out.
-function computeAnchors(slice) {
-  const ok = slice.filter(d => d.ok);
-  const evalMax = Math.max(1, ...ok.map(d => +d.eval_tps || 0));
-  const effs = ok.filter(d => +d.gpu_power_peak_w > 0)
-                 .map(d => (+d.eval_tps) / (+d.gpu_power_peak_w));
-  const effMax = effs.length > 0 ? Math.max(1, ...effs) : 1;
-  return { evalMax, effMax };
-}
-let ANCHORS = computeAnchors(DATA);
-
-// Data-scope filter (added v0.1.6). Each result is now stamped with
-// bench_session_started_at + llama_server_version; the report defaults
-// to showing only the most recent session so stale failures from older
-// llama builds don't pollute the picture. Toggle to 'all' to see
-// everything in data/results/.
 function filterByScope(data, scope) {
   if (scope === 'all') return data;
-  // 'latest': pick max session timestamp, return all entries that share it.
   let latest = '';
   for (const d of data) {
     const ts = d.bench_session_started_at || '';
     if (ts > latest) latest = ts;
   }
-  if (!latest) return data;  // no session metadata → can't filter, show all
+  if (!latest) return data;
   return data.filter(d => (d.bench_session_started_at || '') === latest);
 }
 
@@ -305,7 +273,6 @@ function describeScope(data, scope) {
   if (scope === 'all') {
     return `${data.length} configs across ${sessions.size || '?'} session${sessions.size === 1 ? '' : 's'}.`;
   }
-  // 'latest': find the session ts of the visible slice + its llama version
   const slice = filterByScope(data, 'latest');
   const ts = slice[0]?.bench_session_started_at || '';
   const ver = slice[0]?.llama_server_version || 'unknown';
@@ -313,99 +280,156 @@ function describeScope(data, scope) {
   return `${slice.length} configs from session started ${tsHuman} on llama-server ${ver}. Toggle "all sessions" to include older runs.`;
 }
 
+// ===========================================================================
+// SCORERS — winner-picking strategies.
+//
+// Each scorer returns a number (higher = better). Configs that "disqualify"
+// under a scorer return -Infinity so they drop out of the winner pool. The
+// 'overall' scorer normalizes against global anchors so its weights are
+// comparable across runs of very different hardware.
+// ===========================================================================
+// BEGIN GENERATED WINNER POLICY - source: cli/src/winnerPolicy.ts
+const DEFAULT_CONFIRM_MIB = 500;
+const DEFAULT_TIE_BAND_PCT = 0.05;
+const CONFIRM_MIB = (CFG.wddm_detection && CFG.wddm_detection.shared_delta_confirm_mib)
+  ? +CFG.wddm_detection.shared_delta_confirm_mib : DEFAULT_CONFIRM_MIB;
+
+function finiteNumber(value, fallback = 0) {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function ctxValue(result) {
+    if (result.ctx_size !== null && result.ctx_size !== undefined)
+        return finiteNumber(result.ctx_size);
+    const match = String(result.extra_args ?? "").match(/--ctx-size\s+(\d+)/);
+    return match ? Number(match[1]) : 0;
+}
+
+function isSafe(result, confirmMib = DEFAULT_CONFIRM_MIB) {
+    return finiteNumber(result.shared_peak_mib) <= confirmMib;
+}
+
+function computeAnchors(results) {
+    const ok = results.filter((r) => r.ok);
+    const evalMax = Math.max(1, ...ok.map((r) => finiteNumber(r.eval_tps)));
+    const effs = ok
+        .filter((r) => finiteNumber(r.gpu_power_peak_w) > 0)
+        .map((r) => finiteNumber(r.eval_tps) / finiteNumber(r.gpu_power_peak_w));
+    const effMax = effs.length > 0 ? Math.max(1, ...effs) : 1;
+    return { evalMax, effMax };
+}
+
+function winnerScore(result, profile, options = {}) {
+    const evalTps = finiteNumber(result.eval_tps);
+    const power = finiteNumber(result.gpu_power_peak_w);
+    const anchors = options.anchors ?? { evalMax: 1, effMax: 1 };
+    switch (profile) {
+        case "speed":
+            return evalTps;
+        case "efficiency":
+            return power > 0 ? evalTps / power : -Infinity;
+        case "safety":
+            return evalTps;
+        case "overall": {
+            const speedPart = evalTps / Math.max(1, anchors.evalMax);
+            const safetyPart = isSafe(result, options.confirmMib ?? DEFAULT_CONFIRM_MIB) ? 1 : 0;
+            const efficiencyPart = power > 0
+                ? (evalTps / power) / Math.max(1, anchors.effMax)
+                : 0;
+            return 0.5 * speedPart + 0.3 * safetyPart + 0.2 * efficiencyPart;
+        }
+    }
+}
+
+function lowerMemoryTieBreak(candidate, current) {
+    const candidateShared = finiteNumber(candidate.shared_peak_mib);
+    const currentShared = finiteNumber(current.shared_peak_mib);
+    if (candidateShared !== currentShared)
+        return candidateShared < currentShared;
+    const candidateVram = finiteNumber(candidate.vram_peak_mib, Number.MAX_SAFE_INTEGER);
+    const currentVram = finiteNumber(current.vram_peak_mib, Number.MAX_SAFE_INTEGER);
+    if (candidateVram !== currentVram)
+        return candidateVram < currentVram;
+    return finiteNumber(candidate.eval_tps, -1) > finiteNumber(current.eval_tps, -1);
+}
+
+function isBetterWinner(candidate, current, profile, options = {}) {
+    if (!current)
+        return true;
+    if (profile !== "safety") {
+        return winnerScore(candidate, profile, options) > winnerScore(current, profile, options);
+    }
+    const confirmMib = options.confirmMib ?? DEFAULT_CONFIRM_MIB;
+    const candidateSafe = isSafe(candidate, confirmMib);
+    const currentSafe = isSafe(current, confirmMib);
+    if (candidateSafe !== currentSafe)
+        return candidateSafe;
+    const candidateEval = finiteNumber(candidate.eval_tps, -1);
+    const currentEval = finiteNumber(current.eval_tps, -1);
+    const bestEval = Math.max(candidateEval, currentEval);
+    const tieBandPct = options.tieBandPct ?? DEFAULT_TIE_BAND_PCT;
+    if (bestEval > 0 && Math.abs(candidateEval - currentEval) / bestEval > tieBandPct) {
+        return candidateEval > currentEval;
+    }
+    const candidateCtx = ctxValue(candidate);
+    const currentCtx = ctxValue(current);
+    if (candidateCtx !== currentCtx)
+        return candidateCtx > currentCtx;
+    return lowerMemoryTieBreak(candidate, current);
+}
+
+function groupWinners(results, profile, options = {}) {
+    const byModel = {};
+    const fallbacks = {};
+    for (const result of results) {
+        if (!result.ok)
+            continue;
+        const model = String(result.model ?? result.id ?? "");
+        if (!model)
+            continue;
+        const score = winnerScore(result, profile, options);
+        if (score > -Infinity && isBetterWinner(result, byModel[model], profile, options)) {
+            byModel[model] = { ...result, _score: score };
+        }
+        const speedScore = winnerScore(result, "speed", options);
+        if (isBetterWinner(result, fallbacks[model], "speed", options)) {
+            fallbacks[model] = { ...result, _score: speedScore };
+        }
+    }
+    for (const [model, fallback] of Object.entries(fallbacks)) {
+        if (!byModel[model])
+            byModel[model] = { ...fallback, _fallback: true };
+    }
+    return byModel;
+}
+
 const SCORERS = {
   speed: {
     label: 'Speed',
     desc: 'Raw highest eval tokens/s. Ignores power, WDDM paging, and near-tie context preference.',
-    score: d => +d.eval_tps || 0,
+    score: d => winnerScore(d, 'speed', { confirmMib: CONFIRM_MIB, anchors: ANCHORS }),
   },
   efficiency: {
     label: 'Efficiency',
     desc: 'Tokens per watt. Best perf/W (requires GPU power data).',
-    score: d => (+d.gpu_power_peak_w > 0) ? (+d.eval_tps / +d.gpu_power_peak_w) : -Infinity,
+    score: d => winnerScore(d, 'efficiency', { confirmMib: CONFIRM_MIB, anchors: ANCHORS }),
   },
   safety: {
     label: 'Safety-balanced',
     desc: 'Safe configs first; within 5% eval speed, prefer larger context, then lower shared/VRAM use.',
-    score: d => isSafe(d) ? (+d.eval_tps || 0) : -Infinity,
-    better: betterBalancedWinner,
+    score: d => winnerScore(d, 'safety', { confirmMib: CONFIRM_MIB, anchors: ANCHORS }),
   },
   overall: {
     label: 'Overall',
     desc: 'Weighted: 50% speed + 30% safety (no paging) + 20% efficiency. Normalized against the run\'s best of each.',
-    score: d => {
-      const sp  = (+d.eval_tps || 0) / ANCHORS.evalMax;
-      const safe = isSafe(d) ? 1 : 0;
-      const eff = (+d.gpu_power_peak_w > 0)
-                  ? ((+d.eval_tps / +d.gpu_power_peak_w) / ANCHORS.effMax)
-                  : 0;
-      return 0.5 * sp + 0.3 * safe + 0.2 * eff;
-    },
+    score: d => winnerScore(d, 'overall', { confirmMib: CONFIRM_MIB, anchors: ANCHORS }),
   },
 };
 
-function ctxValue(d) {
-  if (d.ctx_size != null) return +d.ctx_size || 0;
-  const m = (d.extra_args || '').match(/--ctx-size\s+(\d+)/);
-  return m ? +m[1] : 0;
-}
-
-function lowerMemoryTieBreak(a, b) {
-  const as = +a.shared_peak_mib || 0, bs = +b.shared_peak_mib || 0;
-  if (as !== bs) return as < bs;
-  const av = +a.vram_peak_mib || Number.MAX_SAFE_INTEGER;
-  const bv = +b.vram_peak_mib || Number.MAX_SAFE_INTEGER;
-  if (av !== bv) return av < bv;
-  return (+a.eval_tps || -1) > (+b.eval_tps || -1);
-}
-
-function betterBalancedWinner(candidate, current) {
-  if (!current) return true;
-  const cs = isSafe(candidate), bs = isSafe(current);
-  if (cs !== bs) return cs;
-
-  const ce = +candidate.eval_tps || -1;
-  const be = +current.eval_tps || -1;
-  const best = Math.max(ce, be);
-  if (best > 0 && Math.abs(ce - be) / best > 0.05) return ce > be;
-
-  const cc = ctxValue(candidate), bc = ctxValue(current);
-  if (cc !== bc) return cc > bc;
-  return lowerMemoryTieBreak(candidate, current);
-}
-
-// Pick one winning config per model under the selected scorer. Returns a map
-// { modelName: {...config, _score, _fallback?} }. If the scorer disqualifies
-// every config of a model (e.g. efficiency on a model with no power data),
-// we silently fall back to the speed winner and flag _fallback for the UI.
 function computeWinners(filter) {
-  const scorer = SCORERS[filter];
-  const speed  = SCORERS.speed;
-  const byModel = {};
-  const fallbacks = {};
-  for (const d of VIEW) {
-    if (!d.ok) continue;
-    const s = scorer.score(d);
-    if (s > -Infinity) {
-      if (!byModel[d.model] || (scorer.better ? scorer.better(d, byModel[d.model]) : s > byModel[d.model]._score)) {
-        byModel[d.model] = Object.assign({}, d, { _score: s });
-      }
-    }
-    // Always track a speed-winner so we have something to fall back on.
-    const ss = speed.score(d);
-    if (!fallbacks[d.model] || ss > fallbacks[d.model]._score) {
-      fallbacks[d.model] = Object.assign({}, d, { _score: ss });
-    }
-  }
-  // Backfill: models with no scorer-eligible winner get the speed winner +
-  // _fallback flag so the UI can mark them ("speed fallback").
-  for (const m of Object.keys(fallbacks)) {
-    if (!byModel[m]) {
-      byModel[m] = Object.assign({}, fallbacks[m], { _fallback: true });
-    }
-  }
-  return byModel;
+  return groupWinners(VIEW, filter, { confirmMib: CONFIRM_MIB, anchors: ANCHORS });
 }
+// END GENERATED WINNER POLICY
 
 // Lookup helper for the engine's pre-generated .bat (one per model, safety-
 // first winner). Returns the WINNERS entry by model name, or null.
@@ -441,6 +465,7 @@ function lvlColor(level) {
 // (not DATA) so latest-session view shows a clean slice. Recomputed at the
 // top of rerender(); ANCHORS recomputes alongside it.
 let VIEW = DATA;
+let ANCHORS = computeAnchors(DATA);
 let currentWinners = {};
 const isWinnerId = id => Object.values(currentWinners).some(w => w.id === id);
 

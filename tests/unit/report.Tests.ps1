@@ -91,6 +91,26 @@ Describe "Test-IsBetterWinner" {
             Assert-True (Test-IsBetterWinner -candidate $candidate -current $current -sharedConfirmMib 50)
         }
     }
+
+    Describe "shared winner-policy fixture parity" {
+        $casesPath = Join-Path $PSScriptRoot "..\fixtures\winner-policy-cases.json"
+        $cases = Get-Content -LiteralPath $casesPath -Raw | ConvertFrom-Json
+        foreach ($case in $cases) {
+            It $case.name {
+                $winner = $null
+                foreach ($candidate in $case.candidates) {
+                    $args = @{
+                        candidate        = $candidate
+                        current          = $winner
+                        sharedConfirmMib = 500
+                    }
+                    if ($case.profile -eq "speed") { $args.preferSpeed = $true }
+                    if (Test-IsBetterWinner @args) { $winner = $candidate }
+                }
+                Assert-Equal $case.expected $winner.id
+            }
+        }
+    }
 }
 
 Describe "Get-ResultDerivedFields" {

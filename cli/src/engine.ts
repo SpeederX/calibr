@@ -2,6 +2,7 @@ import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { groupWinners, isSafe as winnerIsSafe, type WinnerWithMeta } from "./winnerPolicy.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -597,7 +598,7 @@ function sharedConfirmMib(cfg: Config): number {
 }
 
 export function isSafe(r: Result, threshold: number): boolean {
-  return (r.shared_peak_mib ?? 0) <= threshold;
+  return winnerIsSafe(r, threshold);
 }
 
 export type ResultStatus = "safe" | "wddm" | "high" | "fail" | "noload" | "na";
@@ -611,34 +612,6 @@ export function classifyResult(r: Result, threshold: number): ResultStatus {
   if (r.unsupported_architecture) return "na";
   if (r.ready === false) return "noload";
   return "fail";
-}
-
-function beats(a: Result, b: Result, threshold: number): boolean {
-  const sa = isSafe(a, threshold), sb = isSafe(b, threshold);
-  if (sa !== sb) return sa;
-  const aEval = a.eval_tps ?? -1;
-  const bEval = b.eval_tps ?? -1;
-  const bestEval = Math.max(aEval, bEval);
-  if (bestEval > 0 && Math.abs(aEval - bEval) / bestEval > 0.05) return aEval > bEval;
-
-  const aCtx = parseCtxSize(a.extra_args);
-  const bCtx = parseCtxSize(b.extra_args);
-  if (aCtx !== bCtx) return aCtx > bCtx;
-
-  const aShared = a.shared_peak_mib ?? Number.MAX_SAFE_INTEGER;
-  const bShared = b.shared_peak_mib ?? Number.MAX_SAFE_INTEGER;
-  if (aShared !== bShared) return aShared < bShared;
-
-  const aVram = a.vram_peak_mib ?? Number.MAX_SAFE_INTEGER;
-  const bVram = b.vram_peak_mib ?? Number.MAX_SAFE_INTEGER;
-  if (aVram !== bVram) return aVram < bVram;
-
-  return aEval > bEval;
-}
-
-function parseCtxSize(extraArgs?: string): number {
-  const m = extraArgs?.match(/--ctx-size\s+(\d+)/);
-  return m ? Number(m[1]) : 0;
 }
 
 export interface ModelGroup {
@@ -662,8 +635,8 @@ export function groupByModel(results: Result[], cfg?: Config): ModelGroup[] {
   for (const [model, configs] of groups) {
     const oks = configs.filter(c => c.ok);
     if (oks.length === 0) continue;
-    let winner = oks[0];
-    for (const c of oks.slice(1)) if (beats(c, winner, threshold)) winner = c;
+    const winnerMap = groupWinners(oks, "safety", { confirmMib: threshold });
+    const winner = winnerMap[model] as WinnerWithMeta<Result>;
     out.push({
       model,
       series: winner.series,
