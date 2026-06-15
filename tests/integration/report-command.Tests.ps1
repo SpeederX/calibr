@@ -83,6 +83,13 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True  ($tpl.Contains("[WDDM +"))               "confirmed WDDM shared-memory badge missing"
         Assert-True  ($tpl.Contains("[VRAM "))                "high-VRAM saturation badge missing"
     }
+    It "explains VRAM cliff and WDDM spill near the memory bars" {
+        Assert-True ($tpl -match 'VRAM and WDDM explanation') "memory tooltip affordance missing"
+        Assert-True ($tpl -match 'Fully in VRAM')             "fully-in-VRAM case missing"
+        Assert-True ($tpl -match 'Near the cliff')            "near-cliff case missing"
+        Assert-True ($tpl -match 'Spill / paging')            "spill case missing"
+        Assert-True ($tpl -match 'MoE note')                  "MoE memory note missing"
+    }
 }
 
 Describe "Invoke-Report end-to-end on canned data" {
