@@ -602,7 +602,7 @@ function Invoke-All {
 function Invoke-SampleFetchBench {
     # Walk curated samples one at a time: download -> discover -> plan -> bench
     # just that model -> rotation deletes it. Keeps peak disk bounded to one
-    # model. Shared by 'all -FetchCatalog' and 'bench -Fetch'.
+    # model. Used by 'all -FetchCatalog'.
     param([object[]]$Samples)
     $savedCatalogId = $script:CatalogId
     $savedModel     = $script:Model
@@ -636,47 +636,6 @@ function Invoke-SampleFetchBench {
     }
     $script:CatalogId = $savedCatalogId
     $script:Model     = $savedModel
-}
-
-# ============================================================================
-# SUBCOMMAND: bench -Fetch (download + bench a curated level, no report)
-# ============================================================================
-function Invoke-BenchByLevel {
-    # 'bench -Fetch [-Level X] [-Model Y]': download the curated models of the
-    # level (and/or matching -Model) that aren't on disk, then bench each
-    # (interleaved + rotated, so peak disk stays ~one model). Unlike guided run
-    # it does NOT build the final report - that's guided run's job.
-    $samples = Get-ModelCatalog
-    if ($Level) {
-        $presetObj = Get-Preset -Name $Level
-        if ($null -eq $presetObj) {
-            $known = ((Get-PresetCatalog).Keys | Sort-Object) -join ', '
-            throw "Level/preset '$Level' not found. Known: $known"
-        }
-        $samples = Select-CatalogByPreset -catalog $samples -preset $presetObj
-        if ($null -ne $presetObj.max_ctx) { $script:_presetMaxCtx = [int]$presetObj.max_ctx }
-    }
-    if ($Model) { $samples = $samples | Where-Object { $_.model -match $Model } }
-    $samples = @($samples)
-    if ($samples.Count -eq 0) {
-        Write-Host "No curated models match the current -Level / -Model. Nothing to fetch + bench." -ForegroundColor Yellow
-        return
-    }
-
-    # Point scan_paths at the download destination if the user hasn't set one,
-    # else the per-sample discover would throw 'scan_paths is empty'.
-    $cfgInit = Get-Config
-    $scanEmpty = (-not $cfgInit.scan_paths -or $cfgInit.scan_paths.Count -eq 0)
-    $cliEmpty  = (-not $script:ScanPath  -or $script:ScanPath.Count  -eq 0)
-    if ($scanEmpty -and $cliEmpty) {
-        $defaultDl = if ($Destination) { $Destination } else { $CALIBR_DOWNLOADED_MODELS_DIR }
-        $script:ScanPath = @($defaultDl)
-        Write-Host "[bench] No scan_paths configured. Will scan $defaultDl." -ForegroundColor Cyan
-    }
-
-    Write-Host ""
-    Write-Host ("=== bench -Fetch : {0} curated model(s), download + bench, rotated ===" -f $samples.Count) -ForegroundColor Cyan
-    Invoke-SampleFetchBench -Samples $samples
 }
 
 # ============================================================================
@@ -731,14 +690,10 @@ function Invoke-Help {
             Examples = @( "calibr plan", "calibr plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "calibr bench [-Model <regex>] [-Level {low,middle,high,ultra}] [-Fetch] [-Id <wildcard>] [-Force] [-DryRun] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
+            Usage    = "calibr bench [-Model <regex>] [-Level {low,middle,high,ultra}] [-Id <wildcard>] [-Force] [-DryRun] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
             Flags    = @(
                 "-Model <regex>    Only run configs whose model name matches"
                 "-Level <level>    Only run configs for that hardware level (low|middle|high|ultra)"
-                "-Fetch            Download the curated models of -Level (and/or -Model) that"
-                "                  aren't on disk, then bench each (interleaved + rotated, so"
-                "                  peak disk stays ~one model). No final report (use 'all' or"
-                "                  'report' for that)."
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
                 "-DryRun           List configs that would run, don't execute"
@@ -752,7 +707,6 @@ function Invoke-Help {
                 "calibr bench"
                 "calibr bench -Model Qwen3.5-9B"
                 "calibr bench -Level low -Force"
-                "calibr bench -Level low -Fetch"
                 "calibr bench -DownloadRetention keep-top-3"
             )
         }

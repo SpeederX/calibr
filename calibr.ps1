@@ -55,10 +55,6 @@ param(
     [switch]$Force,
     [switch]$NonInteractive,
 
-    # Used by bench: download the curated models of -Level (and/or -Model) that
-    # aren't on disk, then bench each (interleaved + rotated). No final report.
-    [switch]$Fetch,
-
     # Used by plan/bench/all: restrict the context sweep to these ctx sizes
     # (CSV, e.g. "16384,32768"). Overrides config.context_candidates. Drives
     # CustomBenchView v2's ctx-checkbox selection.
@@ -202,7 +198,7 @@ switch ($Command) {
     "init"               { Invoke-Init }
     "discover"           { Invoke-Discover }
     "plan"               { Invoke-Plan }
-    "bench"              { if ($Fetch) { Invoke-BenchByLevel } else { Invoke-Bench } }
+    "bench"              { Invoke-Bench }
     "report"             { Invoke-Report }
     "status"             { Invoke-Status }
     "config"             { Invoke-Config }

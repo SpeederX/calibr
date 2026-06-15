@@ -193,6 +193,7 @@ Recently shipped and removed from the TODO queue:
 - llama.cpp auto-fetch and guided setup prompt.
 - Main-menu guided run with setup badges.
 - Dead CLI paths hidden behind the old advanced-tools screen.
+- Legacy `bench -Fetch` path; guided catalog runs now use `all -FetchCatalog`.
 - Linux port, dependency checks, GPU-readiness doctor path, and diagnostic
   export.
 - npm trusted-publishing release path.
