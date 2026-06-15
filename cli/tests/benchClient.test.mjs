@@ -5,6 +5,7 @@ import {
   buildChatCompletionRequest,
   metricsFromLlamaTimings,
   parseSseDataLines,
+  runNonStreamingChatCompletion,
 } from "../dist/benchClient.js";
 
 test("buildChatCompletionRequest mirrors the llama.cpp chat endpoint shape", () => {
@@ -82,4 +83,81 @@ test("analyzeChatCompletionStream measures first response and first content sepa
     predicted_ms: 500,
     predicted_per_second: 24,
   });
+});
+
+test("runNonStreamingChatCompletion posts a non-streaming request and extracts llama timings", async () => {
+  const calls = [];
+  const nowValues = [100, 175];
+  const result = await runNonStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080/",
+    request: buildChatCompletionRequest({
+      prompt: "hello",
+      maxTokens: 16,
+      stream: true,
+      cachePrompt: true,
+    }),
+    nowMs: () => nowValues.shift() ?? 175,
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          timings: {
+            prompt_n: 4,
+            prompt_per_second: 10.111,
+            prompt_ms: 20,
+            predicted_n: 3,
+            predicted_per_second: 30,
+            predicted_ms: 100,
+          },
+        }),
+      };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 200);
+  assert.equal(result.total_request_ms, 75);
+  assert.equal(result.metrics.prompt_tps, 10.11);
+  assert.equal(result.metrics.eval_tps, 30);
+  assert.equal(calls[0].url, "http://127.0.0.1:18080/v1/chat/completions");
+  assert.equal(calls[0].init.method, "POST");
+  assert.equal(calls[0].init.headers["content-type"], "application/json");
+  assert.equal(JSON.parse(calls[0].init.body).stream, false);
+});
+
+test("runNonStreamingChatCompletion reports HTTP errors without parsing metrics", async () => {
+  const result = await runNonStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080",
+    request: buildChatCompletionRequest({ prompt: "hello", maxTokens: 16 }),
+    nowMs: () => 100,
+    fetchImpl: async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+      text: async () => "boom",
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 500);
+  assert.equal(result.error, "boom");
+  assert.equal(result.metrics.eval_tps, null);
+});
+
+test("runNonStreamingChatCompletion reports transport errors", async () => {
+  const result = await runNonStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080",
+    request: buildChatCompletionRequest({ prompt: "hello", maxTokens: 16 }),
+    nowMs: () => 100,
+    fetchImpl: async () => {
+      throw new Error("network down");
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 0);
+  assert.match(result.error ?? "", /network down/);
+  assert.equal(result.metrics.prompt_tps, null);
 });

@@ -45,6 +45,38 @@ export interface StreamLatencyMetrics {
   timings: LlamaTimings | null;
 }
 
+export interface NonStreamingChatCompletionResult {
+  ok: boolean;
+  status: number;
+  total_request_ms: number;
+  body: unknown | null;
+  timings: LlamaTimings | null;
+  metrics: BenchTimingMetrics;
+  error?: string;
+}
+
+interface FetchResponseLike {
+  ok: boolean;
+  status: number;
+  json(): Promise<unknown>;
+  text?(): Promise<string>;
+}
+
+type FetchLike = (url: string, init: {
+  method: "POST";
+  headers: Record<string, string>;
+  body: string;
+  signal?: AbortSignal;
+}) => Promise<FetchResponseLike>;
+
+export interface RunNonStreamingChatCompletionOptions {
+  baseUrl: string;
+  request: ChatCompletionRequest;
+  fetchImpl?: FetchLike;
+  nowMs?: () => number;
+  timeoutMs?: number;
+}
+
 type ParsedSseData =
   | { kind: "done" }
   | { kind: "json"; value: unknown }
@@ -135,6 +167,79 @@ function extractContentDelta(value: unknown): string {
 function extractTimings(value: unknown): LlamaTimings | null {
   if (!isRecord(value)) return null;
   return isRecord(value.timings) ? value.timings as LlamaTimings : null;
+}
+
+function completionUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`;
+}
+
+async function responseText(resp: FetchResponseLike): Promise<string> {
+  if (!resp.text) return "";
+  try {
+    return await resp.text();
+  } catch {
+    return "";
+  }
+}
+
+export async function runNonStreamingChatCompletion(
+  opts: RunNonStreamingChatCompletionOptions,
+): Promise<NonStreamingChatCompletionResult> {
+  const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as unknown as FetchLike | undefined);
+  if (!fetchImpl) throw new Error("fetch is not available in this runtime");
+
+  const now = opts.nowMs ?? (() => Date.now());
+  const started = now();
+  const controller = opts.timeoutMs && typeof AbortController !== "undefined"
+    ? new AbortController()
+    : null;
+  const timeout = controller
+    ? setTimeout(() => controller.abort(), opts.timeoutMs)
+    : null;
+
+  try {
+    const resp = await fetchImpl(completionUrl(opts.baseUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...opts.request, stream: false }),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    const totalMs = round(now() - started, 2);
+    if (!resp.ok) {
+      return {
+        ok: false,
+        status: resp.status,
+        total_request_ms: totalMs,
+        body: null,
+        timings: null,
+        metrics: metricsFromLlamaTimings(null),
+        error: await responseText(resp) || `HTTP ${resp.status}`,
+      };
+    }
+
+    const body = await resp.json();
+    const timings = extractTimings(body);
+    return {
+      ok: true,
+      status: resp.status,
+      total_request_ms: totalMs,
+      body,
+      timings,
+      metrics: metricsFromLlamaTimings(timings),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      total_request_ms: round(now() - started, 2),
+      body: null,
+      timings: null,
+      metrics: metricsFromLlamaTimings(null),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 export function analyzeChatCompletionStream(chunks: TimedStreamChunk[], startMs = 0): StreamLatencyMetrics {
