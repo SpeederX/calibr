@@ -107,6 +107,11 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match "STATE\.bars === 'disk'")      "disk bar grouping branch missing"
         Assert-True ($tpl -match 'peak disk')                   "disk group summary missing"
     }
+    It "surfaces eval run stability in the Eval tokens/s tab" {
+        Assert-True ($tpl -match 'function evalRunNote')         "eval run note helper missing"
+        Assert-True ($tpl -match 'first_eval_tps')               "first eval metric missing"
+        Assert-True ($tpl -match 'eval_spread_pct')              "eval spread metric missing"
+    }
 }
 
 Describe "Invoke-Report end-to-end on canned data" {
@@ -131,6 +136,11 @@ Describe "Invoke-Report end-to-end on canned data" {
         ttft_sec=0.42; gpu_power_peak_w=120.0; gpu_temp_peak_c=65; gpu_util_avg_pct=92
         prompt_ms=310.0; ttfr_ms=120.0; e2e_ttft_ms=420.0; total_request_ms=3360.0; latency_total_request_ms=520.0
         ram_used_peak_mib=1024; ram_baseline_mib=512
+        runs=@(
+            @{ eval_tps=45.0 },
+            @{ eval_tps=50.0 },
+            @{ eval_tps=55.0 }
+        )
         model_path="C:\fake\model.gguf"; mmproj_path=$null
     }
     $cannedResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 (Join-Path $tmpData "results\T001_canned.json")
@@ -188,6 +198,9 @@ Describe "Invoke-Report end-to-end on canned data" {
             Assert-True ($html -match '"gpu_temp_peak_c"')    "DATA missing gpu_temp_peak_c"
             Assert-True ($html -match '"gpu_util_avg_pct"')   "DATA missing gpu_util_avg_pct"
             Assert-True ($html -match '"ram_used_peak_mib"')  "DATA missing ram_used_peak_mib"
+            Assert-True ($html -match '"first_eval_tps"')     "DATA missing first_eval_tps"
+            Assert-True ($html -match '"repeat_eval_tps"')    "DATA missing repeat_eval_tps"
+            Assert-True ($html -match '"eval_spread_pct"')    "DATA missing eval_spread_pct"
         }
         It "embeds paths for client-side .bat generation (Phase F)" {
             Assert-True ($html -match '"model_path"')         "DATA missing model_path"

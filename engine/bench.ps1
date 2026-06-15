@@ -95,6 +95,12 @@ function New-AggregatedBenchResult {
     $sharedPeakMed = [int](Get-Median -values @($runs | ForEach-Object { $_.shared_peak_mib }))
     $promptTpsMed  = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.prompt_tps })), 2)
     $evalTpsMed    = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.eval_tps })),   2)
+    $evalSamples    = @($runs | ForEach-Object { $_.eval_tps } | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    $firstEvalRaw   = if ($evalSamples.Count -gt 0) { $evalSamples[0] } else { $null }
+    $repeatEvalRaw  = if ($evalSamples.Count -gt 1) { Get-Median -values @($evalSamples | Select-Object -Skip 1) } else { $null }
+    $evalMinRaw     = if ($evalSamples.Count -gt 0) { ($evalSamples | Measure-Object -Minimum).Minimum } else { $null }
+    $evalMaxRaw     = if ($evalSamples.Count -gt 0) { ($evalSamples | Measure-Object -Maximum).Maximum } else { $null }
+    $evalSpreadPct  = if ($evalSamples.Count -gt 1 -and $evalTpsMed -gt 0) { [math]::Round((($evalMaxRaw - $evalMinRaw) / $evalTpsMed) * 100, 1) } else { 0.0 }
 
     # Extended-metric medians/aggregates. ttft and util are median over runs;
     # power, temp, ram are max-over-runs (peaks are what matter for thermal
@@ -151,6 +157,12 @@ function New-AggregatedBenchResult {
         shared_peak_mib  = $sharedPeakMed
         prompt_tps       = $promptTpsMed
         eval_tps         = $evalTpsMed
+        run_count        = $runs.Count
+        first_eval_tps   = if ($null -ne $firstEvalRaw)  { [math]::Round($firstEvalRaw, 2) } else { $null }
+        repeat_eval_tps  = if ($null -ne $repeatEvalRaw) { [math]::Round($repeatEvalRaw, 2) } else { $null }
+        eval_min_tps     = if ($null -ne $evalMinRaw)    { [math]::Round($evalMinRaw, 2) } else { $null }
+        eval_max_tps     = if ($null -ne $evalMaxRaw)    { [math]::Round($evalMaxRaw, 2) } else { $null }
+        eval_spread_pct  = $evalSpreadPct
 
         # Extended metrics: medians for ttft/util (typical), maxes for
         # power/temp/ram/disk (peaks are what matter).

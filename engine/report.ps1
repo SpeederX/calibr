@@ -85,6 +85,59 @@ function Get-ResultDerivedFields {
     }
 }
 
+function Get-ReportMedian {
+    param($values)
+    if ($null -eq $values) { return $null }
+    $nums = @($values | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    if ($nums.Count -eq 0) { return $null }
+    $sorted = $nums | Sort-Object
+    return $sorted[[int]([math]::Floor(($sorted.Count - 1) / 2))]
+}
+
+function Get-ResultRunStats {
+    # Reconstruct first/repeat/spread stats for report rows. New result JSONs
+    # carry these as top-level fields; older N-run JSONs still have `runs`, so
+    # the report can expose variance without re-running the benchmark.
+    param($result)
+
+    $runs = if ($null -ne $result.runs) { @($result.runs) } else { @() }
+    $evalSamples = @($runs | ForEach-Object { $_.eval_tps } | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    if ($evalSamples.Count -eq 0 -and $null -ne $result.eval_tps) {
+        $evalSamples = @([double]$result.eval_tps)
+    }
+
+    $runCount = if ($null -ne $result.run_count) { [int]$result.run_count }
+                elseif ($runs.Count -gt 0) { $runs.Count }
+                elseif ($null -ne $result.eval_tps) { 1 }
+                else { 0 }
+
+    $firstEval = if ($null -ne $result.first_eval_tps) { [double]$result.first_eval_tps }
+                 elseif ($evalSamples.Count -gt 0) { [double]$evalSamples[0] }
+                 else { $null }
+    $repeatEval = if ($null -ne $result.repeat_eval_tps) { [double]$result.repeat_eval_tps }
+                  elseif ($evalSamples.Count -gt 1) { Get-ReportMedian -values @($evalSamples | Select-Object -Skip 1) }
+                  else { $null }
+    $minEval = if ($null -ne $result.eval_min_tps) { [double]$result.eval_min_tps }
+               elseif ($evalSamples.Count -gt 0) { [double](($evalSamples | Measure-Object -Minimum).Minimum) }
+               else { $null }
+    $maxEval = if ($null -ne $result.eval_max_tps) { [double]$result.eval_max_tps }
+               elseif ($evalSamples.Count -gt 0) { [double](($evalSamples | Measure-Object -Maximum).Maximum) }
+               else { $null }
+    $spreadPct = if ($null -ne $result.eval_spread_pct) { [double]$result.eval_spread_pct }
+                 elseif ($evalSamples.Count -gt 1 -and $null -ne $result.eval_tps -and [double]$result.eval_tps -gt 0) {
+                     [math]::Round((($maxEval - $minEval) / [double]$result.eval_tps) * 100, 1)
+                 } else { 0.0 }
+
+    return @{
+        run_count       = $runCount
+        first_eval_tps  = if ($null -ne $firstEval)  { [math]::Round($firstEval, 2) } else { $null }
+        repeat_eval_tps = if ($null -ne $repeatEval) { [math]::Round($repeatEval, 2) } else { $null }
+        eval_min_tps    = if ($null -ne $minEval)    { [math]::Round($minEval, 2) } else { $null }
+        eval_max_tps    = if ($null -ne $maxEval)    { [math]::Round($maxEval, 2) } else { $null }
+        eval_spread_pct = $spreadPct
+    }
+}
+
 function Invoke-Report {
     $cfg = Get-Config
     Write-Host "=== report ===" -ForegroundColor Cyan
@@ -238,6 +291,7 @@ function Invoke-Report {
     $resJson = ($results | ForEach-Object {
         $r = $_
         $derived = Get-ResultDerivedFields -result $r -vramTotal $vramTotal
+        $runStats = Get-ResultRunStats -result $r
         $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
         # Extended metrics may not exist on legacy result JSONs; fall back to
         # $null so the JS side renders '-' for missing values without crashing
@@ -266,6 +320,12 @@ function Invoke-Report {
             reasoning_mode=$r.reasoning_mode; template_note=$r.template_note
             gguf_context_length=$r.gguf_context_length; gguf_architecture=$r.gguf_architecture
             prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
+            run_count=$runStats.run_count
+            first_eval_tps=$runStats.first_eval_tps
+            repeat_eval_tps=$runStats.repeat_eval_tps
+            eval_min_tps=$runStats.eval_min_tps
+            eval_max_tps=$runStats.eval_max_tps
+            eval_spread_pct=$runStats.eval_spread_pct
             vram_peak_mib=([int]$r.vram_peak_mib); shared_peak_mib=([int]$r.shared_peak_mib)
             load_sec=([double]$r.load_sec); layers_offloaded=$r.layers_offloaded
             fit_status=$r.fit_status; wddm_vram_saturation=([double]$r.wddm_vram_saturation)

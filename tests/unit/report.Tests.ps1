@@ -172,6 +172,34 @@ Describe "Get-ResultDerivedFields" {
     }
 }
 
+Describe "Get-ResultRunStats" {
+    It "reconstructs first/repeat/spread from raw runs" {
+        $r = [PSCustomObject]@{
+            eval_tps = 55.0
+            runs = @(
+                [PSCustomObject]@{ eval_tps = 46.0 },
+                [PSCustomObject]@{ eval_tps = 64.0 },
+                [PSCustomObject]@{ eval_tps = 55.0 }
+            )
+        }
+        $s = Get-ResultRunStats -result $r
+        Assert-Equal 3    $s.run_count
+        Assert-Equal 46.0 $s.first_eval_tps
+        Assert-Equal 55.0 $s.repeat_eval_tps
+        Assert-Equal 46.0 $s.eval_min_tps
+        Assert-Equal 64.0 $s.eval_max_tps
+        Assert-Equal 32.7 $s.eval_spread_pct
+    }
+    It "falls back to a single top-level eval value for legacy one-run results" {
+        $r = [PSCustomObject]@{ eval_tps = 35.0 }
+        $s = Get-ResultRunStats -result $r
+        Assert-Equal 1 $s.run_count
+        Assert-Equal 35.0 $s.first_eval_tps
+        Assert-Equal $null $s.repeat_eval_tps
+        Assert-Equal 0.0 $s.eval_spread_pct
+    }
+}
+
 Exit-WithResults
 
 

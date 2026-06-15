@@ -118,6 +118,8 @@
   .bar-row.mode-memory .ann,
   .bar-row.mode-disk .ann,
   .bar-row.mode-latency .ann { justify-content: end; }
+  .bar-row.mode-eval.bar-row-ann { grid-template-columns: minmax(340px, 520px) minmax(280px, 1fr) 112px minmax(270px, 330px); }
+  .bar-row.mode-eval .ann { display: grid; grid-template-columns: 82px 92px 82px; justify-content: end; }
   .bar-row.mode-vram .ann { display: grid; grid-template-columns: 90px 90px 110px 128px; }
   .bar-row.mode-memory .ann { display: grid; grid-template-columns: 104px 90px 110px 92px 92px 90px; }
   .bar-row.mode-disk .ann { display: grid; grid-template-columns: 118px 90px 110px; }
@@ -730,6 +732,13 @@ function diskUsageNote(d) {
   return metricChip('disk', fmt1(d.disk_read_peak_mb_s) + ' MB/s') + throughputNote(d);
 }
 
+function evalRunNote(d) {
+  if ((+d.run_count || 0) <= 1) return metricChip('runs', '1');
+  return metricChip('first', d.first_eval_tps != null ? fmt1(d.first_eval_tps) + 't/s' : '-') +
+         metricChip('repeat', d.repeat_eval_tps != null ? fmt1(d.repeat_eval_tps) + 't/s' : '-') +
+         metricChip('spread', d.eval_spread_pct != null ? fmt1(d.eval_spread_pct) + '%' : '-');
+}
+
 function latencyMs(d) {
   if (d.e2e_ttft_ms != null) return +d.e2e_ttft_ms;
   if (d.ttfr_ms != null) return +d.ttfr_ms;
@@ -773,7 +782,7 @@ function renderBars() {
 
   let sorted, field, maxv, unit, annotate, valueOf, pctOf, fillClass, fillStyleOf;
   if (STATE.bars === 'eval') {
-    field = 'eval_tps'; unit = 't/s'; annotate = null; fillClass = '';
+    field = 'eval_tps'; unit = 't/s'; annotate = evalRunNote; fillClass = '';
     valueOf = d => +d.eval_tps || 0;
     maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
     pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);

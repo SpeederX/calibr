@@ -192,6 +192,21 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 7200 $r.runs[1].vram_peak_mib
         Assert-Equal 7100 $r.runs[2].vram_peak_mib
     }
+    It "derives first/repeat eval stats without dropping the first run" {
+        $runs = @(
+            (_run 0 7000 30 410.0 46.0),
+            (_run 1 7200 50 430.0 64.0),
+            (_run 2 7100 40 420.0 55.0)
+        )
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal 3    $r.run_count
+        Assert-Equal 55.0 $r.eval_tps          # median still includes every run
+        Assert-Equal 46.0 $r.first_eval_tps
+        Assert-Equal 55.0 $r.repeat_eval_tps   # lower median of 55,64
+        Assert-Equal 46.0 $r.eval_min_tps
+        Assert-Equal 64.0 $r.eval_max_tps
+        Assert-Equal 32.7 $r.eval_spread_pct
+    }
     It "handles N=1 (median is the single value; runs array has length one)" {
         $runs = @((_run 0 5500 100 380.0 35.0))
         $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
@@ -200,6 +215,10 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 380.0 $r.prompt_tps
         Assert-Equal 35.0  $r.eval_tps
         Assert-Equal 1 $r.runs.Count
+        Assert-Equal 1 $r.run_count
+        Assert-Equal 35.0 $r.first_eval_tps
+        Assert-Equal $null $r.repeat_eval_tps
+        Assert-Equal 0.0 $r.eval_spread_pct
     }
     It "aggregates extended metrics (median for ttft/util, max for power/temp/ram/disk)" {
         # Hand-build runs with distinct values per dimension so the
