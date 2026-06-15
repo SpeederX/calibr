@@ -138,6 +138,32 @@ function Get-ResultRunStats {
     }
 }
 
+function Invoke-TsReportFields {
+    param($results, [int]$vramTotal)
+    $script = Resolve-TsResultCoreScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $payload = [ordered]@{
+        action       = "report-fields"
+        results      = @($results)
+        vramTotalMib = $vramTotal
+    } | ConvertTo-Json -Compress -Depth 20
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-report-fields-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $out = & $node $script --json-file $payloadPath
+        $text = (@($out) -join "`n").Trim()
+        if (-not $text) { return $null }
+        $resp = $text | ConvertFrom-Json
+        if ($resp.ok -and $null -ne $resp.result) { return @($resp.result) }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-Report {
     $cfg = Get-Config
     Write-Host "=== report ===" -ForegroundColor Cyan
@@ -288,10 +314,14 @@ function Invoke-Report {
     # Build HTML (compact, self-contained)
     $cfgJson = $cfg | ConvertTo-Json -Depth 5 -Compress
     $vramTotal = if ($cfg.hardware -and $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
+    $tsReportFields = Invoke-TsReportFields -results $results -vramTotal $vramTotal
+    $script:_reportFieldIndex = -1
     $resJson = ($results | ForEach-Object {
         $r = $_
-        $derived = Get-ResultDerivedFields -result $r -vramTotal $vramTotal
-        $runStats = Get-ResultRunStats -result $r
+        $script:_reportFieldIndex++
+        $tsFields = if ($tsReportFields -and $tsReportFields.Count -gt $script:_reportFieldIndex) { $tsReportFields[$script:_reportFieldIndex] } else { $null }
+        $derived = if ($tsFields -and $tsFields.derived) { $tsFields.derived } else { Get-ResultDerivedFields -result $r -vramTotal $vramTotal }
+        $runStats = if ($tsFields -and $tsFields.run_stats) { $tsFields.run_stats } else { Get-ResultRunStats -result $r }
         $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
         # Extended metrics may not exist on legacy result JSONs; fall back to
         # $null so the JS side renders '-' for missing values without crashing

@@ -66,6 +66,39 @@ Describe "Resolve-TsBenchRunnerScript" {
     }
 }
 
+Describe "Resolve-TsResultCoreScript" {
+    It "finds the local cli/dist result-core runner for standalone repo runs" {
+        $oldRoot = $script:CALIBR_ROOT
+        $oldFlag = $env:CALIBR_TS_RESULT_CORE
+        $oldScript = $env:CALIBR_TS_RESULT_CORE_SCRIPT
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-result-core-test-$([Guid]::NewGuid().ToString('N'))"
+        $runner = Join-Path $tmpRoot "cli\dist\resultCoreCli.js"
+        New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
+        try {
+            $script:CALIBR_ROOT = $tmpRoot
+            $env:CALIBR_TS_RESULT_CORE = $null
+            $env:CALIBR_TS_RESULT_CORE_SCRIPT = $null
+            Assert-Equal $runner (Resolve-TsResultCoreScript)
+        } finally {
+            $script:CALIBR_ROOT = $oldRoot
+            $env:CALIBR_TS_RESULT_CORE = $oldFlag
+            $env:CALIBR_TS_RESULT_CORE_SCRIPT = $oldScript
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "honors CALIBR_TS_RESULT_CORE=0 as an opt-out" {
+        $oldFlag = $env:CALIBR_TS_RESULT_CORE
+        try {
+            $env:CALIBR_TS_RESULT_CORE = "0"
+            Assert-Equal "" (Resolve-TsResultCoreScript)
+        } finally {
+            $env:CALIBR_TS_RESULT_CORE = $oldFlag
+        }
+    }
+}
+
 Describe "New-AggregatedBenchResult" {
     # Minimal fixtures: planning item + config + N per-run hashtables.
     # The aggregator is pure, so we hand-roll exactly what Invoke-OneBenchRun

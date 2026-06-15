@@ -76,6 +76,53 @@ function Resolve-FitStatus {
     return "success"
 }
 
+function Resolve-TsResultCoreScript {
+    if ($env:CALIBR_TS_RESULT_CORE -eq '0') { return "" }
+    if ($env:CALIBR_TS_RESULT_CORE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_RESULT_CORE_SCRIPT)) {
+        return $env:CALIBR_TS_RESULT_CORE_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\resultCoreCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\resultCoreCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Invoke-TsAggregateBenchResult {
+    param($item, $cfg, $runs)
+    $script = Resolve-TsResultCoreScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $payload = [ordered]@{
+        action  = "aggregate"
+        item    = $item
+        cfg     = $cfg
+        runs    = @($runs)
+        session = @{
+            bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+            bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+            llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+        }
+    } | ConvertTo-Json -Compress -Depth 20
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-result-core-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $out = & $node $script --json-file $payloadPath
+        $text = (@($out) -join "`n").Trim()
+        if (-not $text) { return $null }
+        $resp = $text | ConvertFrom-Json
+        if ($resp.ok -and $null -ne $resp.result) { return $resp.result }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function New-AggregatedBenchResult {
     # Combine N per-run hashtables (from Invoke-OneBenchRun) plus the
     # planning $item metadata into a single top-level successful result.
@@ -85,6 +132,9 @@ function New-AggregatedBenchResult {
     # run-by-run noise. Pure: no I/O, no globals. Tested in
     # tests/unit/bench.Tests.ps1. See spec/n-run-median.md.
     param($item, $cfg, $runs)
+
+    $tsResult = Invoke-TsAggregateBenchResult -item $item -cfg $cfg -runs $runs
+    if ($null -ne $tsResult) { return $tsResult }
 
     $first = $runs[0]
     $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }

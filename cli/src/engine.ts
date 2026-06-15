@@ -683,6 +683,8 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
       ? {
           CALIBR_TS_BENCH: "1",
           CALIBR_TS_BENCH_SCRIPT: join(__dirname, "benchRunnerCli.js"),
+          CALIBR_TS_RESULT_CORE: "1",
+          CALIBR_TS_RESULT_CORE_SCRIPT: join(__dirname, "resultCoreCli.js"),
           CALIBR_NODE: process.execPath,
         }
       : {}),
