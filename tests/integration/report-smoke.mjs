@@ -34,6 +34,14 @@ const DATA = [
     ttft_sec:0.4, gpu_power_peak_w:120, gpu_temp_peak_c:65, gpu_util_avg_pct:92,
     ram_used_peak_mib:1024, ram_baseline_mib:512,
     model_path:"C:\\fake\\m1.gguf", mmproj_path:null },
+  { id:"a2", label:"ctx65k_kv_q8", model:"M1", series:"M", variant:"Q8", level:"low", sweep:"context",
+    prompt_tps:100, eval_tps:48, vram_peak_mib:2500, shared_peak_mib:0, load_sec:2,
+    layers_offloaded:"32/32", fit_status:"success", wddm_vram_saturation:0.3,
+    wddm_flag_high_vram:false, wddm_flag_shared_pos:false, extra_args:"--ctx-size 65536",
+    ok:true, time_total_sec:3.4, headroom_mib:5692, ctx_size:65536, kv_cache_mib:90,
+    ttft_sec:0.4, gpu_power_peak_w:122, gpu_temp_peak_c:65, gpu_util_avg_pct:92,
+    ram_used_peak_mib:1030, ram_baseline_mib:512,
+    model_path:"C:\\fake\\m1.gguf", mmproj_path:null },
   { id:"b", label:"ctx32k_kv_q8", model:"M2", series:"M", variant:"Q4", level:"high", sweep:"moe-cpu",
     prompt_tps:80, eval_tps:40, vram_peak_mib:4096, shared_peak_mib:600, load_sec:3,
     layers_offloaded:"32/32", fit_status:"failed_but_running", wddm_vram_saturation:0.6,
@@ -65,6 +73,7 @@ const CFG = {
 body = body.replace(/%%DATA%%/, JSON.stringify(DATA))
            .replace(/%%WINNERS%%/, JSON.stringify(WINNERS))
            .replace(/%%CFG%%/, JSON.stringify(CFG));
+body += "\nglobalThis.__currentWinners = currentWinners;\nglobalThis.__state = STATE;\n";
 
 // DOM stub. Each "element" is an object that swallows the mutations the
 // template performs. We track innerHTML writes so we can assert at least
@@ -99,6 +108,7 @@ const fakeDoc = {
 
 const sandbox = {
   document: fakeDoc,
+  globalThis: {},
   URL:  { createObjectURL: () => "blob:", revokeObjectURL: () => {} },
   Blob: function () {},
   setTimeout: globalThis.setTimeout,
@@ -124,6 +134,16 @@ const missing  = expected.filter(id => !writes[id]);
 if (missing.length) {
   console.error("FAIL: these containers received no writes:", missing);
   console.error("All writes seen:", writes);
+  process.exit(1);
+}
+
+if (sandbox.globalThis.__state.filter !== "safety") {
+  console.error("FAIL: report should default to the safety-balanced filter");
+  process.exit(1);
+}
+if (sandbox.globalThis.__currentWinners.M1?.id !== "a2") {
+  console.error("FAIL: safety-balanced near-tie should prefer the larger context config");
+  console.error("Winner seen:", sandbox.globalThis.__currentWinners.M1);
   process.exit(1);
 }
 

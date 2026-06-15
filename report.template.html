@@ -316,7 +316,7 @@ function describeScope(data, scope) {
 const SCORERS = {
   speed: {
     label: 'Speed',
-    desc: 'Highest eval tokens/s. Ignores power and WDDM paging.',
+    desc: 'Raw highest eval tokens/s. Ignores power, WDDM paging, and near-tie context preference.',
     score: d => +d.eval_tps || 0,
   },
   efficiency: {
@@ -326,8 +326,9 @@ const SCORERS = {
   },
   safety: {
     label: 'Safety-balanced',
-    desc: 'Fastest config that did not page into shared memory (matches the engine\'s default bat pick).',
+    desc: 'Safe configs first; within 5% eval speed, prefer larger context, then lower shared/VRAM use.',
     score: d => isSafe(d) ? (+d.eval_tps || 0) : -Infinity,
+    better: betterBalancedWinner,
   },
   overall: {
     label: 'Overall',
@@ -343,6 +344,36 @@ const SCORERS = {
   },
 };
 
+function ctxValue(d) {
+  if (d.ctx_size != null) return +d.ctx_size || 0;
+  const m = (d.extra_args || '').match(/--ctx-size\s+(\d+)/);
+  return m ? +m[1] : 0;
+}
+
+function lowerMemoryTieBreak(a, b) {
+  const as = +a.shared_peak_mib || 0, bs = +b.shared_peak_mib || 0;
+  if (as !== bs) return as < bs;
+  const av = +a.vram_peak_mib || Number.MAX_SAFE_INTEGER;
+  const bv = +b.vram_peak_mib || Number.MAX_SAFE_INTEGER;
+  if (av !== bv) return av < bv;
+  return (+a.eval_tps || -1) > (+b.eval_tps || -1);
+}
+
+function betterBalancedWinner(candidate, current) {
+  if (!current) return true;
+  const cs = isSafe(candidate), bs = isSafe(current);
+  if (cs !== bs) return cs;
+
+  const ce = +candidate.eval_tps || -1;
+  const be = +current.eval_tps || -1;
+  const best = Math.max(ce, be);
+  if (best > 0 && Math.abs(ce - be) / best > 0.05) return ce > be;
+
+  const cc = ctxValue(candidate), bc = ctxValue(current);
+  if (cc !== bc) return cc > bc;
+  return lowerMemoryTieBreak(candidate, current);
+}
+
 // Pick one winning config per model under the selected scorer. Returns a map
 // { modelName: {...config, _score, _fallback?} }. If the scorer disqualifies
 // every config of a model (e.g. efficiency on a model with no power data),
@@ -356,7 +387,7 @@ function computeWinners(filter) {
     if (!d.ok) continue;
     const s = scorer.score(d);
     if (s > -Infinity) {
-      if (!byModel[d.model] || s > byModel[d.model]._score) {
+      if (!byModel[d.model] || (scorer.better ? scorer.better(d, byModel[d.model]) : s > byModel[d.model]._score)) {
         byModel[d.model] = Object.assign({}, d, { _score: s });
       }
     }
@@ -389,7 +420,7 @@ const WINNERS_BY_MODEL = (() => {
 // ===========================================================================
 const STATE = {
   scope:   'latest',
-  filter:  'speed',
+  filter:  'safety',
   bars:    'eval',
   levelTab: 'all',
 };
