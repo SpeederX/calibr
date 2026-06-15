@@ -108,9 +108,49 @@ not expose them. Add a compact advanced/profile view before widening the sweep
 surface:
 
 - context/KV candidates from `context_candidates`
-- MoE CPU split values from `planning.moecpu_sweep`
-- GPU offload values from `planning.offload_sweep`
+- MoE CPU split values from `planning.moecpu_sweep`: controls how many MoE
+  expert/FFN layers stay on CPU instead of GPU, trading speed for lower VRAM
+  pressure.
+- GPU offload values from `planning.offload_sweep`: controls `--gpu-layers`,
+  i.e. how many model layers llama.cpp attempts to place on GPU. Values above
+  the model's real layer count are effectively capped by llama.cpp.
 - MTP/speculative decoding flags once the benchmark client supports them
+
+UX rules:
+
+- mark these as advanced controls; users can experiment, but should not change
+  them unless they understand the memory/speed tradeoff
+- keep edits session-only in guided run; after restarting calibr, return to
+  defaults instead of writing local config
+- show the effective default values and a short explanation beside each field
+
+Open design point: make sweep generation dynamic. The current defaults
+(`moecpu_sweep = [28,30,32,34,36]`, `offload_sweep = [20,24,28,32,36]`) are
+too tied to the original test hardware. Better candidates should depend on:
+
+- detected VRAM / UMA budget
+- model file size and estimated fixed overhead
+- GGUF architecture metadata, especially layer count and max context
+- whether the model is dense, MoE, multimodal, or has MTP support
+- previous failure/saturation signals within the same run
+
+### In-run model detail panel
+
+During benchmark runs, expose a compact model-detail panel that is closed by
+default and opened on demand from the CLI. It should help UAT/debugging without
+turning the main progress screen into a wall of text.
+
+Suggested fields:
+
+- model name, variant, tier/scope, GGUF architecture
+- max context from GGUF/catalog
+- layer count when available from GGUF metadata
+- attention/head metadata when available
+- sweep mode chosen by the planner: context, offload, or MoE CPU split
+- current config label and effective llama.cpp flags
+
+Keep this as information only at first. Do not add editing controls inside the
+live benchmark screen until the advanced sweep/profile view exists.
 
 ### MTP / speculative decoding support
 
