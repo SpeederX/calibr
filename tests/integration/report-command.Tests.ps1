@@ -90,6 +90,13 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'Spill / paging')            "spill case missing"
         Assert-True ($tpl -match 'MoE note')                  "MoE memory note missing"
     }
+    It "adds explainers to All results headers" {
+        Assert-True ($tpl -match 'class="th-help"')       "header help affordance missing"
+        Assert-True ($tpl -match 'Time to first streamed response chunk') "TTFR header tooltip missing"
+        Assert-True ($tpl -match 'prompt processing / prefill time')      "Prompt ms tooltip missing"
+        Assert-True ($tpl -match 'Decode throughput')     "Eval t/s tooltip missing"
+        Assert-True ($tpl -match 'WDDM/shared GPU memory') "Shared tooltip missing"
+    }
 }
 
 Describe "Invoke-Report end-to-end on canned data" {

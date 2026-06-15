@@ -23,6 +23,12 @@
   table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
   th, td { padding: 6px 9px; text-align: left; border-bottom: 1px solid var(--c-border); }
   th { background:#242424; color: var(--c-accent); position: sticky; top: 0; }
+  th .th-help { display: inline-flex; align-items: center; justify-content: center;
+                width: 14px; height: 14px; margin-left: 4px; border-radius: 50%;
+                border: 1px solid var(--c-border); color: var(--c-muted);
+                background:#1a1a1a; font: 700 10px/1 Consolas, monospace;
+                cursor: help; vertical-align: middle; }
+  th .th-help:hover { color: var(--c-accent); border-color: var(--c-accent); }
   tr:hover { background: rgba(255,255,255,0.035); }
   td.num { text-align: right; font-family: Consolas, monospace; font-variant-numeric: tabular-nums; }
   .fit-success  { color: var(--c-a); font-weight: 600; }
@@ -221,15 +227,24 @@
   <div class="tab-content">
     <table id="all">
       <thead><tr>
-        <th>ID</th><th>Level</th><th>Model</th><th>Config</th>
-        <th class="num">TTFT s</th>
-        <th class="num">TTFR ms</th><th class="num">Prompt ms</th>
-        <th class="num">Prompt t/s</th><th class="num">Eval t/s</th>
-        <th class="num">VRAM</th><th class="num">Shared</th>
-        <th class="num">RAM Δ</th>
-        <th class="num">GPU W</th><th class="num">GPU °C</th><th class="num">GPU %</th>
-        <th class="num">Disk MB/s</th>
-        <th>Layers</th><th>Fit</th>
+        <th>ID <span class="th-help" title="Stable result id for this model/config combination.">?</span></th>
+        <th>Level <span class="th-help" title="Curated hardware level: low, middle, high, or ultra.">?</span></th>
+        <th>Model <span class="th-help" title="Model name grouped in the report winner list.">?</span></th>
+        <th>Config <span class="th-help" title="llama-server flags used for this benchmark: context, GPU layers, KV cache, threads, and related settings.">?</span></th>
+        <th class="num">TTFT s <span class="th-help" title="Legacy felt-latency field in seconds. Uses streamed e2e TTFT when available; otherwise falls back to prompt prefill time.">?</span></th>
+        <th class="num">TTFR ms <span class="th-help" title="Time to first streamed response chunk. Empty when the latency stream pass was not collected.">?</span></th>
+        <th class="num">Prompt ms <span class="th-help" title="llama.cpp prompt processing / prefill time for the input prompt.">?</span></th>
+        <th class="num">Prompt t/s <span class="th-help" title="Prompt processing throughput: prompt tokens divided by prompt processing time. Higher is better.">?</span></th>
+        <th class="num">Eval t/s <span class="th-help" title="Decode throughput for generated tokens. This is the main speed metric used by winner selection.">?</span></th>
+        <th class="num">VRAM <span class="th-help" title="Peak dedicated GPU memory observed during load/bench, in MiB.">?</span></th>
+        <th class="num">Shared <span class="th-help" title="WDDM/shared GPU memory delta. On Windows, positive values indicate spill into system RAM.">?</span></th>
+        <th class="num">RAM Δ <span class="th-help" title="Peak system RAM increase observed during the run, in MiB.">?</span></th>
+        <th class="num">GPU W <span class="th-help" title="Peak GPU power draw observed during the run.">?</span></th>
+        <th class="num">GPU °C <span class="th-help" title="Peak GPU temperature observed during the run.">?</span></th>
+        <th class="num">GPU % <span class="th-help" title="Average GPU utilization observed while calibr was polling metrics.">?</span></th>
+        <th class="num">Disk MB/s <span class="th-help" title="Peak disk read rate during model load, useful for cold-load and storage bottleneck analysis.">?</span></th>
+        <th>Layers <span class="th-help" title="llama.cpp reported GPU-offloaded layers, when available.">?</span></th>
+        <th>Fit <span class="th-help" title="Whether the run fit cleanly in VRAM, spilled into shared memory, or failed before completion.">?</span></th>
       </tr></thead>
       <tbody></tbody>
     </table>

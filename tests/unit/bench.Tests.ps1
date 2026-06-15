@@ -33,6 +33,39 @@ Describe "Get-Median" {
     }
 }
 
+Describe "Resolve-TsBenchRunnerScript" {
+    It "finds the local cli/dist runner for standalone repo runs" {
+        $oldRoot = $script:CALIBR_ROOT
+        $oldFlag = $env:CALIBR_TS_BENCH
+        $oldScript = $env:CALIBR_TS_BENCH_SCRIPT
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-runner-test-$([Guid]::NewGuid().ToString('N'))"
+        $runner = Join-Path $tmpRoot "cli\dist\benchRunnerCli.js"
+        New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
+        try {
+            $script:CALIBR_ROOT = $tmpRoot
+            $env:CALIBR_TS_BENCH = $null
+            $env:CALIBR_TS_BENCH_SCRIPT = $null
+            Assert-Equal $runner (Resolve-TsBenchRunnerScript)
+        } finally {
+            $script:CALIBR_ROOT = $oldRoot
+            $env:CALIBR_TS_BENCH = $oldFlag
+            $env:CALIBR_TS_BENCH_SCRIPT = $oldScript
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "honors CALIBR_TS_BENCH=0 as an opt-out" {
+        $oldFlag = $env:CALIBR_TS_BENCH
+        try {
+            $env:CALIBR_TS_BENCH = "0"
+            Assert-Equal "" (Resolve-TsBenchRunnerScript)
+        } finally {
+            $env:CALIBR_TS_BENCH = $oldFlag
+        }
+    }
+}
+
 Describe "New-AggregatedBenchResult" {
     # Minimal fixtures: planning item + config + N per-run hashtables.
     # The aggregator is pure, so we hand-roll exactly what Invoke-OneBenchRun

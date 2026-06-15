@@ -301,13 +301,12 @@ function Get-DiskReadBytesPerSec {
 }
 
 function Invoke-TsBenchRequest {
-    # Opt-in (CALIBR_TS_BENCH=1): hand the chat/completions request to the
-    # TypeScript bench client (dist/benchRunnerCli.js) instead of
-    # Invoke-RestMethod. The CLI/EngineAdapter injects CALIBR_NODE and
-    # CALIBR_TS_BENCH_SCRIPT. The runner returns the same llama.cpp `timings`
-    # shape (plus optional streamed ttfr_ms / e2e_ttft_ms), so the metric
-    # mapping in Invoke-OneBenchRun stays identical. Returns a PSCustomObject
-    # with .ok plus either .timings or .error.
+    # Hand the chat/completions request to the TypeScript bench client
+    # (dist/benchRunnerCli.js) instead of Invoke-RestMethod when the runner is
+    # available. The runner returns the same llama.cpp `timings` shape (plus
+    # optional streamed ttfr_ms / e2e_ttft_ms), so the metric mapping in
+    # Invoke-OneBenchRun stays identical. Returns a PSCustomObject with .ok
+    # plus either .timings or .error.
     param(
         [int]$Port,
         [string]$Prompt,
@@ -337,6 +336,25 @@ function Invoke-TsBenchRequest {
     if (-not $text) { return [pscustomobject]@{ ok = $false; error = 'ts bench runner produced no output' } }
     try { return ($text | ConvertFrom-Json) }
     catch { return [pscustomobject]@{ ok = $false; error = "ts bench runner returned non-JSON: $($text.Substring(0, [Math]::Min(200, $text.Length)))" } }
+}
+
+function Resolve-TsBenchRunnerScript {
+    # CLI runs inject CALIBR_TS_BENCH_SCRIPT directly. For local standalone
+    # repo runs (`.\calibr.ps1 bench/all`), fall back to cli/dist so latency
+    # measurements still work after `npm run build`. For packaged npm installs,
+    # calibr.ps1 lives in package/engine while dist lives in package/dist.
+    if ($env:CALIBR_TS_BENCH -eq '0') { return "" }
+    if ($env:CALIBR_TS_BENCH_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_BENCH_SCRIPT)) {
+        return $env:CALIBR_TS_BENCH_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\benchRunnerCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\benchRunnerCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
 }
 
 function Invoke-OneBenchRun {
@@ -521,10 +539,12 @@ function Invoke-OneBenchRun {
         Write-Host "[phase] sending_prompt"
         $requestStart = Get-Date
         try {
-            if ($env:CALIBR_TS_BENCH -eq '1' -and $env:CALIBR_TS_BENCH_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_BENCH_SCRIPT)) {
+            $tsBenchScript = Resolve-TsBenchRunnerScript
+            if ($tsBenchScript) {
                 # Opt-in: the TypeScript bench client issues the request and
                 # returns the same llama.cpp `timings` shape, so both paths
                 # share the metric mapping below.
+                $env:CALIBR_TS_BENCH_SCRIPT = $tsBenchScript
                 $resp = Invoke-TsBenchRequest -Port $port -Prompt $prompt -MaxTokens $nPred -ReasoningOff:($item.reasoning_mode -eq "off")
                 if (-not $resp.ok) { throw "ts bench runner: $($resp.error)" }
                 if ($null -ne $resp.total_request_ms) { $run.total_request_ms = [math]::Round([double]$resp.total_request_ms, 2) }
@@ -553,7 +573,7 @@ function Invoke-OneBenchRun {
                 } else {
                     $run.eval_tps = $null   # unmeasured: too few tokens to time
                 }
-                if ($env:CALIBR_TS_BENCH -eq '1' -and $env:CALIBR_TS_BENCH_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_BENCH_SCRIPT)) {
+                if ($tsBenchScript) {
                     try {
                         # Dedicated latency pass: streamed on purpose, separate
                         # from the non-streamed throughput request above so
