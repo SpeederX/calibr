@@ -97,6 +97,11 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'Decode throughput')     "Eval t/s tooltip missing"
         Assert-True ($tpl -match 'WDDM/shared GPU memory') "Shared tooltip missing"
     }
+    It "falls back to requested gpu layers when llama.cpp does not report actual layers" {
+        Assert-True ($tpl -match 'function layersLabel')       "layersLabel helper missing"
+        Assert-True ($tpl -match 'req '' \+ m\[1\]')           "requested gpu-layers fallback missing"
+        Assert-True ($tpl -match 'requested --gpu-layers')     "layers tooltip should explain requested fallback"
+    }
 }
 
 Describe "Invoke-Report end-to-end on canned data" {

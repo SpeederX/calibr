@@ -90,6 +90,19 @@ test("analyzeChatCompletionStream measures first response and first content sepa
   });
 });
 
+test("analyzeChatCompletionStream treats reasoning_content as generated output", () => {
+  const chunks = [
+    { atMs: 110, text: 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n' },
+    { atMs: 160, text: 'data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}\n\n' },
+    { atMs: 180, text: 'data: [DONE]\n\n' },
+  ];
+
+  const metrics = analyzeChatCompletionStream(chunks, 100);
+  assert.equal(metrics.ttfr_ms, 10);
+  assert.equal(metrics.e2e_ttft_ms, 60);
+  assert.equal(metrics.content_chunk_count, 1);
+});
+
 test("runNonStreamingChatCompletion posts a non-streaming request and extracts llama timings", async () => {
   const calls = [];
   const nowValues = [100, 175];

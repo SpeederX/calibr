@@ -171,9 +171,13 @@ function extractContentDelta(value: unknown): string {
     const delta = choice.delta;
     const message = choice.message;
     const directText = choice.text;
+    const directReasoning = choice.reasoning_content;
     if (isRecord(delta) && typeof delta.content === "string") out += delta.content;
+    else if (isRecord(delta) && typeof delta.reasoning_content === "string") out += delta.reasoning_content;
     else if (isRecord(message) && typeof message.content === "string") out += message.content;
+    else if (isRecord(message) && typeof message.reasoning_content === "string") out += message.reasoning_content;
     else if (typeof directText === "string") out += directText;
+    else if (typeof directReasoning === "string") out += directReasoning;
   }
   return out;
 }
