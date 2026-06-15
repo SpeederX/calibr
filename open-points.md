@@ -31,6 +31,40 @@ Proposed order:
 5. Add MTP/speculative decoding support if it stays small enough for 0.1.8;
    otherwise shift it to 0.1.9.
 
+### TS bench client — current status and decisions
+
+The TypeScript HTTP bench client (migration target #2) is wired opt-in and
+validated against the PowerShell path. State + the decisions taken:
+
+- `cli/src/benchClient.ts`: request builder, llama.cpp timing mapper, SSE
+  parser, non-streaming runner, and a streaming runner that timestamps SSE
+  chunks for `ttfr_ms` / `e2e_ttft_ms`. Unit-tested with injected fetch/clock
+  (no live llama-server needed).
+- `cli/src/benchRunnerCli.ts`: Node entrypoint the engine shells out to.
+- Opt-in via `CALIBR_TS_BENCH=1`: the EngineAdapter (`cli/src/engine.ts`)
+  injects `CALIBR_NODE` + `CALIBR_TS_BENCH_SCRIPT`; `engine/bench.ps1`
+  (`Invoke-TsBenchRequest`) delegates the chat/completions call over stdin and
+  maps the returned llama.cpp `timings` through the existing pipeline.
+  `Invoke-RestMethod` stays as the fallback. Validated: TS reproduced the
+  PowerShell prompt_tps/eval_tps within run-to-run noise.
+
+Decision — decouple throughput from latency:
+
+- The recommendation winner is picked on `eval_tps`, so the throughput request
+  is measured NON-streaming (uninterrupted decode = clean, stable timing).
+  Per-token SSE flushing can add jitter, undesirable for the metric the winner
+  depends on.
+- True time-to-first-token (`ttfr_ms` / `e2e_ttft_ms`) is a SEPARATE streamed
+  latency measurement (see the metric glossary / latency pass) and must not
+  perturb the throughput number.
+
+Next (step 8) — make TS the default without a manual flag:
+
+- The EngineAdapter always injects the node + script paths; `bench.ps1` uses
+  the TS path when Node + script are available, auto-falling back to PowerShell
+  otherwise (keeps standalone `calibr.ps1` working). Keep an opt-OUT
+  (`CALIBR_TS_BENCH=0`). Do NOT delete the PowerShell request path.
+
 ### Engine pruning before deeper migration
 
 Before moving more logic out of PowerShell, remove or isolate legacy branches
@@ -276,6 +310,31 @@ Validate on a Linux machine because the Windows workspace cannot reproduce the
 ---
 
 ## Engine and benchmark correctness
+
+### Winner tie-band (stop near-tied configs flip-flopping)
+
+Observed on a 4B model fully in VRAM: context-sweep configs (16k/32k/65k) are
+near-tied in `eval_tps`, so the winner picker (strict max `eval_tps` among safe
+configs) flips between runs on sub-tok/s noise even with median-of-3.
+
+Proposed: add a tolerance band (~5%). When safe configs are within the band on
+`eval_tps`, break the tie by a stable, useful secondary key — prefer larger
+usable context, then lower shared/VRAM peak (more headroom). Apply the same
+rule in both winner pickers: the engine ranking (`engine/bench.ps1` /
+`engine/report.ps1`) and the CLI's `beats()` in `cli/src/engine.ts`.
+
+### Disk read as a per-model cold-load datum
+
+`disk_read_peak_mb_s` is captured only during the load phase. After the first
+cold load the GGUF sits in the OS page cache, so every later config/run of the
+same model reads ~0 MB/s. The per-row disk number is therefore misleading: only
+the first cold run carries signal (model load-from-disk throughput).
+
+Proposed: treat disk read (and load time) as a PER-MODEL datum, not a
+per-config-row column. The report's disk view should show, per model, the
+cold-load characteristics (load time + cold-load disk throughput) — a more
+honest and more interesting framing. Pairs naturally with `load_sec`, already
+measured per run.
 
 ### CPU + RAM as first-class metrics
 
