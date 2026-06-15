@@ -135,6 +135,10 @@
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
   .bar-row .ann { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; font-family: Consolas, monospace; font-size: 10px; color: var(--c-muted); }
   .bar-row .metric { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; padding: 0 4px; white-space: nowrap; text-align: right; }
+  .bar-model-group { margin: 10px 0 12px; }
+  .bar-model-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 5px;
+                       color: var(--c-text); font-weight: 700; font-size: 12px; }
+  .bar-model-heading .meta { margin: 0; font-weight: 400; }
 
   /* ----- Scatter (now first chart) ----- */
   .scatter-bg-ram   { fill: rgba(255,255,255,0.035); }
@@ -819,7 +823,7 @@ function renderBars() {
     sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
   }
 
-  for (const d of sorted) {
+  const rowHtml = (d) => {
     const value = valueOf(d);
     const pctVal = pctOf(d);
     const fillClasses = fillClass;
@@ -829,7 +833,7 @@ function renderBars() {
                   d.wddm_flag_high_vram  ? ' <span class="wddm">[VRAM ' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
     const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
     const winCls = isWinnerId(d.id) ? ' is-winner' : '';
-    el.insertAdjacentHTML('beforeend',
+    return (
       '<div class="bar-row' + modeCls + (annotate ? ' bar-row-ann' : '') + winCls + '">' +
         '<div class="name"><span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.label) + badge + '</div>' +
         '<div class="track"><div class="fill ' + fillClasses + '" style="' + fillStyle + '"></div></div>' +
@@ -837,6 +841,36 @@ function renderBars() {
         annHtml +
       '</div>'
     );
+  };
+
+  if (STATE.bars === 'disk') {
+    const byModel = {};
+    for (const d of sorted) (byModel[d.model] = byModel[d.model] || []).push(d);
+    const groups = Object.entries(byModel).sort((a, b) => {
+      const aMax = Math.max(...a[1].map(valueOf));
+      const bMax = Math.max(...b[1].map(valueOf));
+      return aMax - bMax || a[0].localeCompare(b[0]);
+    });
+    for (const [model, rows] of groups) {
+      const maxDisk = Math.max(...rows.map(valueOf));
+      const bestEval = Math.max(...rows.map(d => +d.eval_tps || 0));
+      el.insertAdjacentHTML('beforeend',
+        '<div class="bar-model-group">' +
+          '<div class="bar-model-heading">' +
+            '<span>' + escapeHtml(model) + '</span>' +
+            '<span class="meta">' + rows.length + ' config' + (rows.length === 1 ? '' : 's') +
+              ' · peak disk ' + fmt1(maxDisk) + ' MB/s' +
+              ' · best eval ' + fmt1(bestEval) + ' t/s</span>' +
+          '</div>' +
+          rows.map(rowHtml).join('') +
+        '</div>'
+      );
+    }
+    return;
+  }
+
+  for (const d of sorted) {
+    el.insertAdjacentHTML('beforeend', rowHtml(d));
   }
 }
 

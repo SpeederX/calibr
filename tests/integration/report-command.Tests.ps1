@@ -102,6 +102,11 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'req '' \+ m\[1\]')           "requested gpu-layers fallback missing"
         Assert-True ($tpl -match 'requested --gpu-layers')     "layers tooltip should explain requested fallback"
     }
+    It "groups the Disk read bar tab by model" {
+        Assert-True ($tpl -match 'bar-model-group')             "disk bar model group styling missing"
+        Assert-True ($tpl -match "STATE\.bars === 'disk'")      "disk bar grouping branch missing"
+        Assert-True ($tpl -match 'peak disk')                   "disk group summary missing"
+    }
 }
 
 Describe "Invoke-Report end-to-end on canned data" {
