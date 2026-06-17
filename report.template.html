@@ -1084,6 +1084,7 @@ function fitLabel(c) {
         : 'unsupported architecture';
     case 'vram_overflow':  return 'vram overflow on load';
     case 'server_timeout': return 'llama-server timeout';
+    case 'process_vram_unavailable': return 'process VRAM unavailable';
     case 'other':          return 'load failed';
     default:
       // Legacy result JSONs (pre-failure_reason) — best-effort guess.
@@ -1108,6 +1109,7 @@ function failureLabel(reason) {
     case 'unsupported_arch': return 'unsupported architecture (needs newer llama.cpp build)';
     case 'vram_overflow':    return 'ran out of VRAM on load';
     case 'server_timeout':   return 'llama-server never became ready';
+    case 'process_vram_unavailable': return 'process VRAM attribution unavailable';
     case 'other':            return 'load failed';
     default:                 return reason || 'unknown';
   }

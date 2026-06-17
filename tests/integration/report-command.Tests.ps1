@@ -58,6 +58,7 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function noWinnerSummary')         "noWinnerSummary helper missing"
         Assert-True ($tpl -match 'unsupported_arch')                 "unsupported_arch case missing from fitLabel"
         Assert-True ($tpl -match 'unsupported_architecture')         "unsupported_architecture detail missing"
+        Assert-True ($tpl -match 'process_vram_unavailable')         "process_vram_unavailable case missing"
         Assert-True ($tpl -match 'is-failed')                        "is-failed model row modifier missing"
     }
     It "exposes the eval/vram tabbed widget that replaces the old separate bar sections" {

@@ -107,6 +107,9 @@ Describe "Background bench polling" {
         Assert-True ($benchSource -match 'function Stop-BenchMetricPoller') "Stop-BenchMetricPoller missing"
         Assert-True ($benchSource -match 'function Resolve-TsMetricsPollerScript') "TS metrics poller resolver missing"
         Assert-True ($benchSource -match 'function Start-TsBenchMetricPoller') "TS metrics poller launcher missing"
+        Assert-True ($benchSource -match 'function Invoke-TsMetricSample') "TS one-shot metric sampler missing"
+        Assert-True ($benchSource -match 'function Wait-ProcessVramAttribution') "strict process VRAM gate missing"
+        Assert-True ($benchSource -match 'CALIBR_REQUIRE_PROCESS_VRAM') "process VRAM gate should have an explicit opt-out"
         Assert-True ($benchSource -match 'metricsPollerCli\.js') "TS metrics poller entrypoint should be wired"
         Assert-True ($benchSource -match '\$tsPoller = Start-TsBenchMetricPoller') "Start-BenchMetricPoller should try TS first"
         Assert-True ($benchSource -match '\$inferencePoller = if \(-not \$MinimalPolling\)') "poller should honor -MinimalPolling"
@@ -362,6 +365,10 @@ Describe "Get-FailureReason" {
     It "returns 'vram_overflow' on high shared_peak even without fit flag (defensive)" {
         $r = Get-FailureReason -result @{ ok = $false; fit_status = "unknown"; shared_peak_mib = 900; ready = $false; unsupported_architecture = $null } -sharedConfirmMib 500
         Assert-Equal "vram_overflow" $r
+    }
+    It "returns 'process_vram_unavailable' when strict process attribution failed" {
+        $r = Get-FailureReason -result @{ ok = $false; failure_reason = "process_vram_unavailable"; ready = $true; shared_peak_mib = 0 }
+        Assert-Equal "process_vram_unavailable" $r
     }
     It "returns 'server_timeout' when ready was false with low shared_peak" {
         $r = Get-FailureReason -result @{ ok = $false; fit_status = "success"; shared_peak_mib = 50; ready = $false; unsupported_architecture = $null } -sharedConfirmMib 500

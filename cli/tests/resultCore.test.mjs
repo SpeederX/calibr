@@ -136,6 +136,7 @@ test("fit and failure classification match the transitional engine rules", () =>
   assert.equal(getFailureReason({ ok: false, unsupported_architecture: "qwen-new" }), "unsupported_arch");
   assert.equal(getFailureReason({ ok: false, fit_status: "failed_but_running" }), "vram_overflow");
   assert.equal(getFailureReason({ ok: false, shared_peak_mib: 900 }), "vram_overflow");
+  assert.equal(getFailureReason({ ok: false, failure_reason: "process_vram_unavailable", ready: true }), "process_vram_unavailable");
   assert.equal(getFailureReason({ ok: false, ready: false, shared_peak_mib: 0 }), "server_timeout");
   assert.equal(getFailureReason({ ok: false, ready: true, shared_peak_mib: 0 }), "other");
 });
