@@ -105,8 +105,13 @@ Describe "Background bench polling" {
     It "keeps the poller best-effort and wired around the synchronous bench POST" {
         Assert-True ($benchSource -match 'function Start-BenchMetricPoller') "Start-BenchMetricPoller missing"
         Assert-True ($benchSource -match 'function Stop-BenchMetricPoller') "Stop-BenchMetricPoller missing"
+        Assert-True ($benchSource -match 'function Resolve-TsMetricsPollerScript') "TS metrics poller resolver missing"
+        Assert-True ($benchSource -match 'function Start-TsBenchMetricPoller') "TS metrics poller launcher missing"
+        Assert-True ($benchSource -match 'metricsPollerCli\.js') "TS metrics poller entrypoint should be wired"
+        Assert-True ($benchSource -match '\$tsPoller = Start-TsBenchMetricPoller') "Start-BenchMetricPoller should try TS first"
         Assert-True ($benchSource -match '\$inferencePoller = if \(-not \$MinimalPolling\)') "poller should honor -MinimalPolling"
         Assert-True ($benchSource -match 'finally \{\s*\$pollSamples = @\(Stop-BenchMetricPoller') "poller should stop in a finally block"
+        Assert-True ($benchSource -match '\$Poller\.process\.Kill\(\)') "Stop-BenchMetricPoller should terminate TS process pollers"
         Assert-True ($benchSource -match 'process_vram_mib') "process-attributed VRAM sample missing"
         Assert-True ($benchSource -match '\[int\]\$IntervalMs = 150') "POST poller should sample fast runs at 150 ms"
         Assert-True ($benchSource -match 'nvidia-smi 2>\$null') "process VRAM should fall back to parsing standard nvidia-smi output"

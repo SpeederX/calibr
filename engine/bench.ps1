@@ -330,6 +330,9 @@ function Start-BenchMetricPoller {
         [int]$ProcessId,
         [int]$IntervalMs = 150
     )
+    $tsPoller = Start-TsBenchMetricPoller -ProcessId $ProcessId -IntervalMs $IntervalMs
+    if ($tsPoller) { return $tsPoller }
+
     $path = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-bench-poll-{0}.jsonl" -f ([Guid]::NewGuid().ToString("N")))
     try {
         $job = Start-Job -ArgumentList $ProcessId, $IntervalMs, $path, $script:IsWin -ScriptBlock {
@@ -428,7 +431,15 @@ function Stop-BenchMetricPoller {
     param($Poller)
     if (-not $Poller) { return @() }
     try {
-        if ($Poller.job) {
+        if ($Poller.process) {
+            try {
+                if (-not $Poller.process.HasExited) {
+                    $Poller.process.Kill()
+                    $Poller.process.WaitForExit(500) | Out-Null
+                }
+            } catch { }
+            try { $Poller.process.Dispose() } catch { }
+        } elseif ($Poller.job) {
             Stop-Job -Job $Poller.job -ErrorAction SilentlyContinue | Out-Null
             Receive-Job -Job $Poller.job -ErrorAction SilentlyContinue | Out-Null
             Remove-Job -Job $Poller.job -Force -ErrorAction SilentlyContinue | Out-Null
@@ -595,6 +606,58 @@ function Resolve-TsBenchRunnerScript {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
     }
     return ""
+}
+
+function Resolve-TsMetricsPollerScript {
+    if ($env:CALIBR_TS_METRICS -eq '0') { return "" }
+    if ($env:CALIBR_TS_METRICS_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_METRICS_SCRIPT)) {
+        return $env:CALIBR_TS_METRICS_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\metricsPollerCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\metricsPollerCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function ConvertTo-ProcessArgument {
+    param([string]$Value)
+    if ($null -eq $Value) { return '""' }
+    return '"' + ($Value -replace '\\', '\\' -replace '"', '\"') + '"'
+}
+
+function Start-TsBenchMetricPoller {
+    param(
+        [int]$ProcessId,
+        [int]$IntervalMs = 150
+    )
+    $script = Resolve-TsMetricsPollerScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-bench-poll-{0}.jsonl" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $node
+        $psi.Arguments = "{0} --pid {1} --interval-ms {2} --out-file {3}" -f (ConvertTo-ProcessArgument $script), $ProcessId, $IntervalMs, (ConvertTo-ProcessArgument $path)
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p) { return $null }
+        Start-Sleep -Milliseconds 40
+        if ($p.HasExited) {
+            try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { }
+            return $null
+        }
+        return @{ process = $p; path = $path; kind = 'ts' }
+    } catch {
+        try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { }
+        return $null
+    }
 }
 
 function Invoke-OneBenchRun {
