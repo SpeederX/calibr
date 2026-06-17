@@ -99,6 +99,18 @@ Describe "Resolve-TsResultCoreScript" {
     }
 }
 
+Describe "Background bench polling" {
+    $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+
+    It "keeps the poller best-effort and wired around the synchronous bench POST" {
+        Assert-True ($benchSource -match 'function Start-BenchMetricPoller') "Start-BenchMetricPoller missing"
+        Assert-True ($benchSource -match 'function Stop-BenchMetricPoller') "Stop-BenchMetricPoller missing"
+        Assert-True ($benchSource -match '\$inferencePoller = if \(-not \$MinimalPolling\)') "poller should honor -MinimalPolling"
+        Assert-True ($benchSource -match 'finally \{\s*\$pollSamples = @\(Stop-BenchMetricPoller') "poller should stop in a finally block"
+        Assert-True ($benchSource -match 'process_vram_mib') "process-attributed VRAM sample missing"
+    }
+}
+
 Describe "New-AggregatedBenchResult" {
     # Minimal fixtures: planning item + config + N per-run hashtables.
     # The aggregator is pure, so we hand-roll exactly what Invoke-OneBenchRun

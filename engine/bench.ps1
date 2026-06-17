@@ -310,6 +310,113 @@ function Get-GpuProcessMemoryMib {
     }
 }
 
+function Start-BenchMetricPoller {
+    param(
+        [int]$ProcessId,
+        [int]$IntervalMs = 500
+    )
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-bench-poll-{0}.jsonl" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        $job = Start-Job -ArgumentList $ProcessId, $IntervalMs, $path, $script:IsWin -ScriptBlock {
+            param($targetPid, $intervalMs, $outPath, $isWin)
+            function _num($v) {
+                if ($null -eq $v) { return 0 }
+                $s = ([string]$v).Trim()
+                if ($s -match '^-?[\d.]+') { return [double]$Matches[0] }
+                return 0
+            }
+            function _ramAvailMib {
+                if ($isWin) {
+                    try {
+                        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+                        return [int]($os.FreePhysicalMemory / 1024)
+                    } catch { return -1 }
+                }
+                try {
+                    $line = Select-String -Path /proc/meminfo -Pattern '^MemAvailable:\s+(\d+)\s*kB' -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($line) { return [int]([int64]$line.Matches[0].Groups[1].Value / 1024) }
+                } catch { }
+                return -1
+            }
+            while ($true) {
+                $mem = 0; $power = 0.0; $temp = 0; $util = -1; $procMem = -1; $shared = -1
+                try {
+                    $line = (nvidia-smi --query-gpu=memory.used,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader,nounits) -replace '\s',''
+                    $parts = if ($line) { $line -split ',' } else { @() }
+                    if ($parts.Count -ge 4) {
+                        $mem = [int](_num $parts[0])
+                        $power = [double](_num $parts[1])
+                        $temp = [int](_num $parts[2])
+                        $util = [int](_num $parts[3])
+                    }
+                } catch { }
+                try {
+                    $lines = @(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>$null)
+                    $sum = 0; $seen = $false
+                    foreach ($line in $lines) {
+                        $parts = @($line -split ',' | ForEach-Object { $_.Trim() })
+                        if ($parts.Count -lt 3) { continue }
+                        if ($parts[0] -match '^\d+$' -and [int]$parts[0] -eq $targetPid -and $parts[2] -match '(\d+)') {
+                            $sum += [int]$Matches[1]
+                            $seen = $true
+                        }
+                    }
+                    if ($seen) { $procMem = $sum }
+                } catch { }
+                if ($isWin) {
+                    try {
+                        $c = Get-Counter "\GPU Adapter Memory(*)\Shared Usage" -ErrorAction SilentlyContinue -MaxSamples 1
+                        if ($c) {
+                            $total = ($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
+                            $shared = [int]($total / 1MB)
+                        }
+                    } catch { }
+                }
+                $sample = [ordered]@{
+                    at = (Get-Date).ToUniversalTime().ToString('o')
+                    gpu_mem_mib = $mem
+                    gpu_power_w = $power
+                    gpu_temp_c = $temp
+                    gpu_util_pct = $util
+                    process_vram_mib = $procMem
+                    shared_mib = $shared
+                    ram_avail_mib = (_ramAvailMib)
+                }
+                try {
+                    [System.IO.File]::AppendAllText($outPath, (($sample | ConvertTo-Json -Compress) + "`n"), [System.Text.Encoding]::UTF8)
+                } catch { }
+                Start-Sleep -Milliseconds $intervalMs
+            }
+        }
+        return @{ job = $job; path = $path }
+    } catch {
+        return $null
+    }
+}
+
+function Stop-BenchMetricPoller {
+    param($Poller)
+    if (-not $Poller) { return @() }
+    try {
+        if ($Poller.job) {
+            Stop-Job -Job $Poller.job -ErrorAction SilentlyContinue | Out-Null
+            Receive-Job -Job $Poller.job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $Poller.job -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+    } catch { }
+    $samples = @()
+    try {
+        if ($Poller.path -and (Test-Path -LiteralPath $Poller.path)) {
+            foreach ($line in (Get-Content -LiteralPath $Poller.path -ErrorAction SilentlyContinue)) {
+                if (-not $line) { continue }
+                try { $samples += ($line | ConvertFrom-Json) } catch { }
+            }
+            Remove-Item -LiteralPath $Poller.path -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+    return @($samples)
+}
+
 function Get-AvailableMemoryMib {
     # System-wide free RAM in MiB. We use CIM/WMI rather than Get-Counter
     # because perf-counter NAMES are localized on non-English Windows
@@ -660,6 +767,7 @@ function Invoke-OneBenchRun {
         $body = $reqBody | ConvertTo-Json -Compress -Depth 5
         Write-Host "[phase] sending_prompt"
         $requestStart = Get-Date
+        $inferencePoller = if (-not $MinimalPolling) { Start-BenchMetricPoller -ProcessId $p.Id } else { $null }
         try {
             $tsBenchScript = Resolve-TsBenchRunnerScript
             if ($tsBenchScript) {
@@ -727,13 +835,48 @@ function Invoke-OneBenchRun {
         } catch {
             $run.total_request_ms = [math]::Round(((Get-Date) - $requestStart).TotalMilliseconds, 2)
             $run.error = $_.Exception.Message
+        } finally {
+            $pollSamples = @(Stop-BenchMetricPoller -Poller $inferencePoller)
+            foreach ($sample in $pollSamples) {
+                $mem = if ($null -ne $sample.gpu_mem_mib) { [int]$sample.gpu_mem_mib } else { 0 }
+                if ($mem -gt $run.vram_peak_mib)       { $run.vram_peak_mib = $mem }
+                if ($mem -gt $run.vram_total_peak_mib) { $run.vram_total_peak_mib = $mem }
+
+                $procMem = if ($null -ne $sample.process_vram_mib) { [int]$sample.process_vram_mib } else { -1 }
+                if ($procMem -ge 0 -and ($null -eq $run.vram_process_peak_mib -or $procMem -gt $run.vram_process_peak_mib)) {
+                    $run.vram_process_peak_mib = $procMem
+                }
+                if ($procMem -ge 0) {
+                    $external = [Math]::Max(0, $mem - $procMem)
+                    if ($null -eq $run.vram_external_peak_mib -or $external -gt $run.vram_external_peak_mib) {
+                        $run.vram_external_peak_mib = $external
+                    }
+                }
+
+                $pow = if ($null -ne $sample.gpu_power_w) { [double]$sample.gpu_power_w } else { 0.0 }
+                if ($pow -gt $run.gpu_power_peak_w) { $run.gpu_power_peak_w = [math]::Round($pow, 1) }
+                $tmp = if ($null -ne $sample.gpu_temp_c) { [int]$sample.gpu_temp_c } else { 0 }
+                if ($tmp -gt $run.gpu_temp_peak_c) { $run.gpu_temp_peak_c = $tmp }
+                $util = if ($null -ne $sample.gpu_util_pct) { [int]$sample.gpu_util_pct } else { -1 }
+                if ($util -ge 0) { $utilSum += $util; $utilCount++ }
+
+                $sharedNow = if ($null -ne $sample.shared_mib) { [int]$sample.shared_mib } else { -1 }
+                if ($sharedNow -ge 0) {
+                    $delta = $sharedNow - $sharedBaseline
+                    if ($delta -gt $run.shared_peak_mib) { $run.shared_peak_mib = $delta }
+                }
+                $ramNow = if ($null -ne $sample.ram_avail_mib) { [int]$sample.ram_avail_mib } else { -1 }
+                if ($ramBaseline -ge 0 -and $ramNow -ge 0) {
+                    $usedNow = $ramBaseline - $ramNow
+                    if ($usedNow -gt $run.ram_used_peak_mib) { $run.ram_used_peak_mib = [int]$usedNow }
+                }
+            }
+            if ($utilCount -gt 0) { $run.gpu_util_avg_pct = [int]($utilSum / $utilCount) }
         }
 
         # Post-bench snapshot: grabs peaks of GPU/RAM at the moment the model
-        # is hottest (the bench POST is synchronous, so we don't poll during
-        # it; this single snapshot captures the steady-state load right
-        # after). Background-thread polling during the POST would be more
-        # accurate but adds significant complexity for marginal gain.
+        # is still resident. The background poller above covers the synchronous
+        # POST window; this one-shot remains as a final steady-state sample.
         $snap = Get-GpuSnapshot
         # On Linux the streamed radeontop dump can lag behind on a fast bench;
         # take one accurate one-shot read at this peak moment (the server is

@@ -8,6 +8,7 @@ import { ResultsView } from "./ResultsView.js";
 import { AllOptionsView, type GuidedRunSession } from "./AllOptionsView.js";
 import { LlamaPathView } from "./LlamaPathView.js";
 import { DoctorView } from "./DoctorView.js";
+import { PreferencesView } from "./PreferencesView.js";
 
 type Screen =
   | { kind: "menu" }
@@ -15,6 +16,7 @@ type Screen =
   | { kind: "doctor" }
   | { kind: "allOptions" }
   | { kind: "llamaPath" }
+  | { kind: "preferences" }
   | { kind: "run"; args: string[]; label: string; trace?: TraceContext }
   | { kind: "results" };
 
@@ -96,6 +98,12 @@ export function App() {
       description: "choose a llama.cpp server binary",
       badge: readinessBadge(llamaPathIsReady(status)),
       run: () => setScreen({ kind: "llamaPath" }),
+    },
+    {
+      id: "preferences",
+      label: "preferences",
+      description: "user defaults and warnings",
+      run: () => setScreen({ kind: "preferences" }),
     },
     {
       id: "help",
@@ -206,6 +214,14 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <LlamaPathView onCancel={() => setScreen({ kind: "menu" })} />
+      </Box>
+    );
+  }
+
+  if (screen.kind === "preferences") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <PreferencesView onExit={() => setScreen({ kind: "menu" })} />
       </Box>
     );
   }
