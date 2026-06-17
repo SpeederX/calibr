@@ -23,6 +23,9 @@ export function PreferencesView({ onExit }: Props) {
   const initial = useMemo(readInitialWarningPct, []);
   const [warningPct, setWarningPct] = useState<number>(clampPct(initial));
   const [saved, setSaved] = useState(false);
+  const cfg = useMemo(loadConfig, []);
+  const moeSweep = Array.isArray(cfg.planning?.moecpu_sweep) ? cfg.planning.moecpu_sweep.join(", ") : "default";
+  const offloadSweep = Array.isArray(cfg.planning?.offload_sweep) ? cfg.planning.offload_sweep.join(", ") : "default";
 
   const save = (nextPct: number) => {
     const cfg = loadConfig();
@@ -61,17 +64,43 @@ export function PreferencesView({ onExit }: Props) {
   return (
     <Box flexDirection="column">
       <Text bold color="cyan">preferences</Text>
+      <Text dimColor>Saved user defaults. Guided Run can override advanced values for one session.</Text>
+
       <Box marginTop={1} flexDirection="column">
+        <Text bold>saved defaults</Text>
         <Text>
-          vram usage warning: <Text color="cyan">{warningPct}%</Text>
+          vram usage warning: <Text color="cyan">{warningPct}%</Text> <Text dimColor>(editable)</Text>
         </Text>
         <Text dimColor>
           Warn when baseline VRAM already used by OS/apps is above this share of total VRAM.
         </Text>
         <Text dimColor>
-          Guided Run can override this for the current session without saving it.
+          This is system-level baseline VRAM, not reliable per-process attribution on Windows WDDM.
         </Text>
       </Box>
+
+      <Box marginTop={1} flexDirection="column">
+        <Text bold>planned advanced defaults</Text>
+        <Text>
+          gpu layers sweep: <Text color="gray">{offloadSweep}</Text> <Text dimColor>(planned)</Text>
+        </Text>
+        <Text dimColor>
+          Controls how many model layers llama.cpp attempts to place on GPU.
+        </Text>
+        <Text>
+          cpu moe sweep: <Text color="gray">{moeSweep}</Text> <Text dimColor>(planned)</Text>
+        </Text>
+        <Text dimColor>
+          Controls how many MoE expert/FFN layers stay on CPU to reduce VRAM pressure.
+        </Text>
+        <Text>
+          polling interval: <Text color="gray">150 ms</Text> <Text dimColor>(planned)</Text>
+        </Text>
+        <Text dimColor>
+          Controls live metric sampling cadence during benchmark runs.
+        </Text>
+      </Box>
+
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>left/right or -/+ changes by {STEP}% · r resets to {DEFAULT_VRAM_WARNING_PCT}% · q/esc back</Text>
         <Text dimColor>config: {CALIBR_LOCAL_CFG}</Text>

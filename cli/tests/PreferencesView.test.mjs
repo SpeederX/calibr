@@ -20,8 +20,13 @@ test("preferences view exposes the VRAM warning preference", async () => {
     await tick();
     const frame = lastFrame();
     assert.match(frame, /preferences/);
+    assert.match(frame, /saved defaults/);
     assert.match(frame, /vram usage warning/);
     assert.match(frame, /10%/);
+    assert.match(frame, /planned advanced defaults/);
+    assert.match(frame, /gpu layers sweep/);
+    assert.match(frame, /cpu moe sweep/);
+    assert.match(frame, /polling interval/);
     assert.match(frame, /left\/right or -\/\+/);
     unmount();
   } finally {

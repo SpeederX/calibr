@@ -213,6 +213,10 @@ are diagnosing the engine directly:
   NVIDIA/Linux usually fails cleanly at OOM, so there is no silent spill signal
   to detect. macOS/Metal is experimental and has unified memory, not a separate
   WDDM/GTT-style spill counter.
+- **Windows/NVIDIA per-process VRAM is not reliable under WDDM.** NVML /
+  `nvidia-smi` may show `N/A` for process memory even when `llama-server` is
+  visible, so calibr reports system-level VRAM baseline/peak and marks high
+  baseline usage as possible benchmark pollution.
 - **`discover` pairs mmproj by directory.** If two model variants live
   in the same folder and physically share one `mmproj-*.gguf` file but
   the projector is only valid for one of them (different vision

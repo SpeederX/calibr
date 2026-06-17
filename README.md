@@ -143,6 +143,13 @@ inspection and secondary scoring, but calibr does not yet optimize for "largest
 parameter count that fits" or "lowest memory use". Those are useful future
 profiles once the quality/performance tradeoffs are better understood.
 
+On Windows/NVIDIA, dedicated VRAM is reported as a system-level baseline and
+peak. NVML / `nvidia-smi` do not expose reliable per-PID dedicated-memory
+values under WDDM, so calibr does not pretend the number belongs only to
+`llama-server`. The report shows the baseline captured before each config so
+background apps, browsers, overlays, or 3D workloads are visible as possible
+benchmark pollution.
+
 It does not rank instruction-following quality, coding ability, multilingual
 performance, or preference alignment. Treat the winner as "this is the best
 performing fit for this hardware", then choose between close candidates by
@@ -300,6 +307,10 @@ layout.
   cleanly (no silent spill). Without `radeontop`, spill detection is off and
   winners go by throughput + fit. macOS/Metal has no WDDM/GTT-style spill
   signal; unified memory is reported separately and treated as experimental.
+- **Windows/NVIDIA process VRAM is not reliable per PID.** NVML-backed process
+  memory often reports `N/A` under WDDM, even when `llama-server` is visible in
+  the process list. calibr therefore records system-level VRAM baseline/peak
+  and baseline percentage instead of claiming exact `llama-server` VRAM.
 - **AMD metrics depend on the available toolchain.** `amd-smi` is preferred on
   ROCm-class dedicated GPUs. `radeontop`/`glxinfo` remain useful fallbacks and
   are still the source for GTT spill. Without those tools, metrics may degrade

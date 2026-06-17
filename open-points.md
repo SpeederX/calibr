@@ -158,14 +158,17 @@ UX rules:
   defaults instead of writing local config
 - show the effective default values and a short explanation beside each field
 
-Add a main-menu `preferences` entry for user-level defaults, then mirror those
-values inside guided run as session-only `advanced settings` before starting a
-run. Guided-run edits should reset after the run / process exit.
+The main-menu `preferences` entry exists and currently persists
+`vram usage warning` as a user-level default. Guided Run mirrors that value as
+a session-only override before starting a run.
 
-First preference to add:
+Next preferences to add:
 
-- `vram usage warning`: warn when baseline VRAM already used by the OS/apps is
-  above the configured percentage of total VRAM. Default: 10%. Step: 5%.
+- GPU layers sweep defaults / session override
+- CPU MoE sweep defaults / session override
+- polling interval default / session override
+- latency pass on/off if the extra streamed request becomes too expensive on
+  large runs
 
 Open design point: make sweep generation dynamic. The current defaults
 (`moecpu_sweep = [28,30,32,34,36]`, `offload_sweep = [20,24,28,32,36]`) are
@@ -335,15 +338,20 @@ measured per run.
 
 ### VRAM baseline and process attribution
 
-Dedicated VRAM currently has a system-wide peak field for compatibility. Add
-and expose process-attributed VRAM where the platform can provide it:
+Dedicated VRAM is currently reported as system-level baseline/peak. Keep that
+framing explicit in docs and report tooltips:
 
-- baseline VRAM used before launching `llama-server`
+- baseline VRAM used before each config run
 - baseline / total VRAM percentage, with a configurable warning threshold
-- `llama-server` process VRAM peak when `nvidia-smi --query-compute-apps`
-  reports the PID
 - external/system VRAM pressure during the run, so users can spot polluted
   benchmarks caused by browsers, IDEs, games, or other GPU workloads
+
+Platform note: on Windows/NVIDIA WDDM, NVML / `nvidia-smi` does not expose
+reliable per-PID dedicated-memory values. The process table may show
+`llama-server`, but memory is often `N/A`; do not present system-level VRAM as
+exact `llama-server` VRAM. If Linux/NVIDIA exposes reliable per-process memory
+through `nvidia-smi --query-compute-apps`, treat it as a future platform-specific
+enhancement, not the cross-platform baseline.
 
 ### CPU + RAM as first-class metrics
 
