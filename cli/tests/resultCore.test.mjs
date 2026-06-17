@@ -49,6 +49,11 @@ function run(i, vramPeak, sharedPeak, promptTps, evalTps) {
     timestamp: `2026-05-16T10:00:0${i}`,
     vram_before_mib: 1200,
     vram_peak_mib: vramPeak,
+    vram_baseline_mib: 1200,
+    vram_baseline_pct: 0.1465,
+    vram_total_peak_mib: vramPeak,
+    vram_process_peak_mib: vramPeak - 1200,
+    vram_external_peak_mib: 1200,
     shared_peak_mib: sharedPeak,
     load_sec: 6.5,
     ready: true,
@@ -104,6 +109,11 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   });
 
   assert.equal(result.vram_peak_mib, 7100);
+  assert.equal(result.vram_baseline_mib, 1200);
+  assert.equal(result.vram_baseline_pct, 0.1465);
+  assert.equal(result.vram_total_peak_mib, 7100);
+  assert.equal(result.vram_process_peak_mib, 5900);
+  assert.equal(result.vram_external_peak_mib, 1200);
   assert.equal(result.shared_peak_mib, 40);
   assert.equal(result.prompt_tps, 420);
   assert.equal(result.eval_tps, 55);

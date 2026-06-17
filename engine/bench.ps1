@@ -142,6 +142,11 @@ function New-AggregatedBenchResult {
     $satThresh = if ($null -ne $cfg.wddm_detection.vram_saturation_threshold) { [double]$cfg.wddm_detection.vram_saturation_threshold } else { 0.92 }
 
     $vramPeakMed   = [int](Get-Median -values @($runs | ForEach-Object { $_.vram_peak_mib }))
+    $vramTotalPeakMed = [int](Get-Median -values @($runs | ForEach-Object { if ($null -ne $_.vram_total_peak_mib) { $_.vram_total_peak_mib } else { $_.vram_peak_mib } }))
+    $vramProcessPeakMed = Get-Median -values @($runs | ForEach-Object { $_.vram_process_peak_mib })
+    $vramExternalPeakMed = Get-Median -values @($runs | ForEach-Object { $_.vram_external_peak_mib })
+    $vramBaselineMed = Get-Median -values @($runs | ForEach-Object { if ($null -ne $_.vram_baseline_mib) { $_.vram_baseline_mib } else { $_.vram_before_mib } })
+    $vramBaselinePctMed = Get-Median -values @($runs | ForEach-Object { $_.vram_baseline_pct })
     $sharedPeakMed = [int](Get-Median -values @($runs | ForEach-Object { $_.shared_peak_mib }))
     $promptTpsMed  = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.prompt_tps })), 2)
     $evalTpsMed    = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.eval_tps })),   2)
@@ -190,6 +195,8 @@ function New-AggregatedBenchResult {
 
         # Deterministic / first-run fields
         vram_before_mib  = $first.vram_before_mib
+        vram_baseline_mib = if ($null -ne $vramBaselineMed) { [int]$vramBaselineMed } else { $null }
+        vram_baseline_pct = if ($null -ne $vramBaselinePctMed) { [math]::Round([double]$vramBaselinePctMed, 4) } else { $null }
         load_sec         = $first.load_sec
         ready            = $first.ready
         prompt_n         = $first.prompt_n
@@ -204,6 +211,9 @@ function New-AggregatedBenchResult {
 
         # Median over runs for varying metrics
         vram_peak_mib    = $vramPeakMed
+        vram_total_peak_mib = $vramTotalPeakMed
+        vram_process_peak_mib = if ($null -ne $vramProcessPeakMed) { [int]$vramProcessPeakMed } else { $null }
+        vram_external_peak_mib = if ($null -ne $vramExternalPeakMed) { [int]$vramExternalPeakMed } else { $null }
         shared_peak_mib  = $sharedPeakMed
         prompt_tps       = $promptTpsMed
         eval_tps         = $evalTpsMed
@@ -272,6 +282,31 @@ function Get-GpuSnapshot {
         power_w  = if ($parts[1] -match '^\d') { [double]$parts[1] }    else { 0 }
         temp_c   = if ($parts[2] -match '^\d') { [int]$parts[2] }      else { 0 }
         util_pct = if ($parts[3] -match '^\d') { [int]$parts[3] }      else { 0 }
+    }
+}
+
+function Get-GpuProcessMemoryMib {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return -1 }
+    try {
+        $lines = @(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>$null)
+        $total = 0
+        $seen = $false
+        foreach ($line in $lines) {
+            $parts = @($line -split ',' | ForEach-Object { $_.Trim() })
+            if ($parts.Count -lt 3) { continue }
+            $pidText = $parts[0]
+            $memText = $parts[2]
+            if ($pidText -notmatch '^\d+$' -or [int]$pidText -ne $ProcessId) { continue }
+            if ($memText -match '(\d+)') {
+                $total += [int]$Matches[1]
+                $seen = $true
+            }
+        }
+        if ($seen) { return $total }
+        return -1
+    } catch {
+        return -1
     }
 }
 
@@ -449,6 +484,8 @@ function Invoke-OneBenchRun {
 
     $gpuBaseline = Get-GpuSnapshot
     $vramBefore = $gpuBaseline.mem_mib
+    $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
+    $vramBaselinePct = if ($vramTotal -gt 0) { [math]::Round($vramBefore / $vramTotal, 4) } else { $null }
     $sharedBaseline = if ($cfg.wddm_detection.enable_shared_mem_counter) { Get-SharedGPUMemoryMib } else { 0 }
     if ($sharedBaseline -lt 0) { $sharedBaseline = 0 }
     $ramBaseline = Get-AvailableMemoryMib   # MiB free before load
@@ -477,6 +514,7 @@ function Invoke-OneBenchRun {
     $deadline = (Get-Date).AddSeconds([int]$cfg.bench.wait_sec_ready)
     $ready = $false
     $peakVram = $vramBefore
+    $vramTrack = @{ process_peak = -1; external_peak = -1 }
     $peakShared = 0
     $peakPower = 0.0
     $peakTemp = 0
@@ -484,6 +522,15 @@ function Invoke-OneBenchRun {
     $utilCount = 0
     $minRam = $ramBaseline       # min available => peak used
     $peakDiskRead = 0            # bytes/sec, load phase only
+    $trackProcessVram = {
+        param([int]$totalVramNow)
+        $procVram = Get-GpuProcessMemoryMib -ProcessId $p.Id
+        if ($procVram -ge 0) {
+            if ($procVram -gt $vramTrack.process_peak) { $vramTrack.process_peak = $procVram }
+            $external = [Math]::Max(0, $totalVramNow - $procVram)
+            if ($external -gt $vramTrack.external_peak) { $vramTrack.external_peak = $external }
+        }
+    }
     $wc = New-Object System.Net.WebClient
     while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
         Start-Sleep -Milliseconds 500
@@ -494,6 +541,7 @@ function Invoke-OneBenchRun {
             # sysfs on Linux, so this never throws when nvidia-smi is absent.
             $vNow = (Get-GpuSnapshot).mem_mib
             if ($vNow -gt $peakVram) { $peakVram = $vNow }
+            & $trackProcessVram $vNow
             if ($cfg.wddm_detection.enable_shared_mem_counter) {
                 $s = Get-SharedGPUMemoryMib
                 if ($s -ge 0) {
@@ -504,6 +552,7 @@ function Invoke-OneBenchRun {
         } else {
             $snap = Get-GpuSnapshot
             if ($snap.mem_mib  -gt $peakVram)  { $peakVram  = $snap.mem_mib }
+            & $trackProcessVram $snap.mem_mib
             if ($snap.power_w  -gt $peakPower) { $peakPower = $snap.power_w }
             if ($snap.temp_c   -gt $peakTemp)  { $peakTemp  = $snap.temp_c }
             if ($snap.util_pct -ge 0) { $utilSum += $snap.util_pct; $utilCount++ }
@@ -546,6 +595,11 @@ function Invoke-OneBenchRun {
         timestamp       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
         vram_before_mib = $vramBefore
         vram_peak_mib   = $peakVram
+        vram_baseline_mib = $vramBefore
+        vram_baseline_pct = $vramBaselinePct
+        vram_total_peak_mib = $peakVram
+        vram_process_peak_mib = if ($vramTrack.process_peak -ge 0) { $vramTrack.process_peak } else { $null }
+        vram_external_peak_mib = if ($vramTrack.external_peak -ge 0) { $vramTrack.external_peak } else { $null }
         shared_peak_mib = $peakShared
         load_sec        = $loadSec
         ready           = $ready
@@ -687,7 +741,11 @@ function Invoke-OneBenchRun {
         $vramSnap = $snap.mem_mib
         $vramFresh = Get-LinuxGpuVramFresh
         if ($vramFresh -ge 0) { $vramSnap = $vramFresh }
+        & $trackProcessVram $vramSnap
         if ($vramSnap     -gt $run.vram_peak_mib)        { $run.vram_peak_mib       = $vramSnap }
+        if ($vramSnap     -gt $run.vram_total_peak_mib)  { $run.vram_total_peak_mib = $vramSnap }
+        if ($vramTrack.process_peak -ge 0)               { $run.vram_process_peak_mib = $vramTrack.process_peak }
+        if ($vramTrack.external_peak -ge 0)              { $run.vram_external_peak_mib = $vramTrack.external_peak }
         if ($snap.power_w  -gt $run.gpu_power_peak_w)     { $run.gpu_power_peak_w    = [math]::Round($snap.power_w, 1) }
         if ($snap.temp_c   -gt $run.gpu_temp_peak_c)      { $run.gpu_temp_peak_c     = $snap.temp_c }
         if ($cfg.wddm_detection.enable_shared_mem_counter) {
@@ -784,6 +842,8 @@ function Invoke-OneBench {
             model_path = $item.model_path; mmproj_path = $item.mmproj_path
             extra_args = $item.extra_args
             vram_before_mib = $null; vram_peak_mib = $null; shared_peak_mib = $null
+            vram_baseline_mib = $null; vram_baseline_pct = $null
+            vram_total_peak_mib = $null; vram_process_peak_mib = $null; vram_external_peak_mib = $null
             load_sec = $null; ready = $false; ok = $false
             error = "model file(s) not found on disk: " + ($missingFiles -join ', ')
             fit_status = $null; unsupported_architecture = $null
@@ -869,6 +929,11 @@ function Invoke-OneBench {
                 extra_args      = $item.extra_args
                 vram_before_mib = $r.vram_before_mib
                 vram_peak_mib   = $r.vram_peak_mib
+                vram_baseline_mib = $r.vram_baseline_mib
+                vram_baseline_pct = $r.vram_baseline_pct
+                vram_total_peak_mib = $r.vram_total_peak_mib
+                vram_process_peak_mib = $r.vram_process_peak_mib
+                vram_external_peak_mib = $r.vram_external_peak_mib
                 shared_peak_mib = $r.shared_peak_mib
                 load_sec        = $r.load_sec
                 ready           = $r.ready
@@ -909,7 +974,7 @@ function Invoke-OneBench {
                 llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
                 llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
             }
-            $failResult.failure_reason = Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal
+            $failResult | Add-Member -NotePropertyName failure_reason -NotePropertyValue (Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal) -Force
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
             Write-BenchStatusLine -item $item -result $failResult
             return $failResult
@@ -922,7 +987,7 @@ function Invoke-OneBench {
     # All N runs succeeded so failure_reason is unset (null). Recording it as
     # null (rather than omitting) keeps every result's schema identical, which
     # simplifies report.template.html's column rendering.
-    $aggregated.failure_reason = Get-FailureReason -result $aggregated -sharedConfirmMib $confirmMibLocal
+    $aggregated | Add-Member -NotePropertyName failure_reason -NotePropertyValue (Get-FailureReason -result $aggregated -sharedConfirmMib $confirmMibLocal) -Force
     $aggregated | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
     Write-BenchStatusLine -item $item -result $aggregated
     return $aggregated

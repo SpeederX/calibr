@@ -158,6 +158,15 @@ UX rules:
   defaults instead of writing local config
 - show the effective default values and a short explanation beside each field
 
+Add a main-menu `preferences` entry for user-level defaults, then mirror those
+values inside guided run as session-only `advanced settings` before starting a
+run. Guided-run edits should reset after the run / process exit.
+
+First preference to add:
+
+- `vram usage warning`: warn when baseline VRAM already used by the OS/apps is
+  above the configured percentage of total VRAM. Default: 10%. Step: 5%.
+
 Open design point: make sweep generation dynamic. The current defaults
 (`moecpu_sweep = [28,30,32,34,36]`, `offload_sweep = [20,24,28,32,36]`) are
 too tied to the original test hardware. Better candidates should depend on:
@@ -323,6 +332,18 @@ per-config-row column. The report's disk view should show, per model, the
 cold-load characteristics (load time + cold-load disk throughput) — a more
 honest and more interesting framing. Pairs naturally with `load_sec`, already
 measured per run.
+
+### VRAM baseline and process attribution
+
+Dedicated VRAM currently has a system-wide peak field for compatibility. Add
+and expose process-attributed VRAM where the platform can provide it:
+
+- baseline VRAM used before launching `llama-server`
+- baseline / total VRAM percentage, with a configurable warning threshold
+- `llama-server` process VRAM peak when `nvidia-smi --query-compute-apps`
+  reports the PID
+- external/system VRAM pressure during the run, so users can spot polluted
+  benchmarks caused by browsers, IDEs, games, or other GPU workloads
 
 ### CPU + RAM as first-class metrics
 

@@ -128,6 +128,11 @@ Describe "New-AggregatedBenchResult" {
             timestamp       = "2026-05-16T10:00:0$i"
             vram_before_mib = 1200
             vram_peak_mib   = $vramPeak
+            vram_baseline_mib = 1200
+            vram_baseline_pct = 0.1465
+            vram_total_peak_mib = $vramPeak
+            vram_process_peak_mib = $vramPeak - 1200
+            vram_external_peak_mib = 1200
             shared_peak_mib = $sharedPeak
             load_sec        = 6.5
             ready           = $true
@@ -304,6 +309,19 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 72    $r.gpu_temp_peak_c         "temp max"
         Assert-Equal 900   $r.ram_used_peak_mib       "ram max"
         Assert-Equal 500.0 $r.disk_read_peak_mb_s     "disk max"
+    }
+    It "aggregates VRAM baseline and process-attribution fields" {
+        $runs = @(
+            (_run 0 7000 30 410.0 40.0),
+            (_run 1 7200 50 430.0 42.0),
+            (_run 2 7100 40 420.0 41.0)
+        )
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal 1200   $r.vram_baseline_mib      "baseline MiB"
+        Assert-Equal 0.1465 $r.vram_baseline_pct      "baseline pct"
+        Assert-Equal 7100   $r.vram_total_peak_mib    "total peak median"
+        Assert-Equal 5900   $r.vram_process_peak_mib  "process peak median"
+        Assert-Equal 1200   $r.vram_external_peak_mib "external peak median"
     }
 }
 

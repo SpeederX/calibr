@@ -95,7 +95,12 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'Time to first streamed response chunk') "TTFR header tooltip missing"
         Assert-True ($tpl -match 'prompt processing / prefill time')      "Prompt ms tooltip missing"
         Assert-True ($tpl -match 'Decode throughput')     "Eval t/s tooltip missing"
+        Assert-True ($tpl -match 'Prompt rel %')          "Prompt relative-percent header missing"
+        Assert-True ($tpl -match 'Eval rel %')            "Eval relative-percent header missing"
+        Assert-True ($tpl -match 'normalized within the currently visible rows') "relative-percent tooltip missing"
         Assert-True ($tpl -match 'WDDM/shared GPU memory') "Shared tooltip missing"
+        Assert-True ($tpl -match 'Disk read happens just for the first config run of the model') "Disk tooltip should explain cold-load cache behavior"
+        Assert-True ($tpl -match 'process-attributed peak') "VRAM tooltip should mention process attribution"
     }
     It "falls back to requested gpu layers when llama.cpp does not report actual layers" {
         Assert-True ($tpl -match 'function layersLabel')       "layersLabel helper missing"
@@ -111,6 +116,12 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function evalRunNote')         "eval run note helper missing"
         Assert-True ($tpl -match 'first_eval_tps')               "first eval metric missing"
         Assert-True ($tpl -match 'eval_spread_pct')              "eval spread metric missing"
+    }
+    It "renders normalized throughput percentages with zero-division guard" {
+        Assert-True ($tpl -match 'function normalizedPct') "normalizedPct helper missing"
+        Assert-True ($tpl -match 'extent\.max <= extent\.min\) return 100') "normalizedPct should guard max == min"
+        Assert-True ($tpl -match 'Prompt rel %') "prompt rel column missing"
+        Assert-True ($tpl -match 'Eval rel %') "eval rel column missing"
     }
 }
 

@@ -241,14 +241,16 @@
         <th class="num">TTFR ms <span class="th-help" title="Time to first streamed response chunk. Empty when the latency stream pass was not collected.">?</span></th>
         <th class="num">Prompt ms <span class="th-help" title="llama.cpp prompt processing / prefill time for the input prompt.">?</span></th>
         <th class="num">Prompt t/s <span class="th-help" title="Prompt processing throughput: prompt tokens divided by prompt processing time. Higher is better.">?</span></th>
+        <th class="num">Prompt rel % <span class="th-help" title="Prompt throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
         <th class="num">Eval t/s <span class="th-help" title="Decode throughput for generated tokens. This is the main speed metric used by winner selection.">?</span></th>
-        <th class="num">VRAM <span class="th-help" title="Peak dedicated GPU memory observed during load/bench, in MiB.">?</span></th>
+        <th class="num">Eval rel % <span class="th-help" title="Eval throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
+        <th class="num">VRAM <span class="th-help" title="Peak dedicated GPU memory observed during load/bench, in MiB. Hover a value for baseline, total peak, process-attributed peak when available, and external/system pressure.">?</span></th>
         <th class="num">Shared <span class="th-help" title="WDDM/shared GPU memory delta. On Windows, positive values indicate spill into system RAM.">?</span></th>
         <th class="num">RAM Δ <span class="th-help" title="Peak system RAM increase observed during the run, in MiB.">?</span></th>
         <th class="num">GPU W <span class="th-help" title="Peak GPU power draw observed during the run.">?</span></th>
         <th class="num">GPU °C <span class="th-help" title="Peak GPU temperature observed during the run.">?</span></th>
         <th class="num">GPU % <span class="th-help" title="Average GPU utilization observed while calibr was polling metrics.">?</span></th>
-        <th class="num">Disk MB/s <span class="th-help" title="Peak disk read rate during model load, useful for cold-load and storage bottleneck analysis.">?</span></th>
+        <th class="num">Disk MB/s <span class="th-help" title="Disk read happens just for the first config run of the model, then it will be cached. That's why most rows are close to 0 as result.">?</span></th>
         <th>Layers <span class="th-help" title="llama.cpp reported GPU-offloaded layers when available; otherwise the requested --gpu-layers value is shown as req N.">?</span></th>
         <th>Fit <span class="th-help" title="Whether the run fit cleanly in VRAM, spilled into shared memory, or failed before completion.">?</span></th>
       </tr></thead>
@@ -648,8 +650,9 @@ function renderModelsList() {
       rows += '<tr' + (isWin ? ' class="is-winner"' : '') + '>' +
               '<td><code>' + escapeHtml(c.label) + '</code></td>' +
               '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
+              '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
-              '<td class="num">' + (c.vram_peak_mib != null ? c.vram_peak_mib : '-') + '</td>' +
+              '<td class="num" title="' + vramCellTitle(c) + '">' + (c.vram_peak_mib != null ? c.vram_peak_mib : '-') + '</td>' +
               '<td class="num">' + wddm + '</td>' +
               '<td class="num">' + fmt2(c.ttft_sec) + '</td>' +
               '<td class="num">' + ((+c.gpu_power_peak_w > 0) ? fmt0(c.gpu_power_peak_w) + ' W' : '-') + '</td>' +
@@ -669,11 +672,12 @@ function renderModelsList() {
           '<table>' +
             '<thead><tr>' +
               '<th>Config</th><th>Level</th>' +
+              '<th class="num">Prompt t/s</th>' +
               '<th class="num">Eval t/s</th>' +
               '<th class="num">VRAM</th><th class="num">Shared</th>' +
               '<th class="num">TTFT s</th>' +
               '<th class="num">GPU W</th>' +
-              '<th class="num">Disk MB/s</th>' +
+              '<th class="num">Disk MB/s <span class="th-help" title="Disk read happens just for the first config run of the model, then it will be cached. That&apos;s why most rows are close to 0 as result.">?</span></th>' +
               '<th>Fit</th><th></th>' +
             '</tr></thead>' +
             '<tbody>' + rows + '</tbody>' +
@@ -756,6 +760,33 @@ function latencyNote(d) {
 
 function totalThroughput(d) {
   return (+d.prompt_tps || 0) + (+d.eval_tps || 0);
+}
+
+function metricExtent(rows, valueOf) {
+  const vals = rows.map(valueOf).filter(v => Number.isFinite(v));
+  if (vals.length === 0) return { min: null, max: null };
+  return { min: Math.min(...vals), max: Math.max(...vals) };
+}
+
+function normalizedPct(value, extent) {
+  if (!Number.isFinite(value) || extent.min == null || extent.max == null) return null;
+  if (extent.max <= extent.min) return 100;
+  return Math.max(0, Math.min(100, ((value - extent.min) / (extent.max - extent.min)) * 100));
+}
+
+function fmtPct(value) {
+  return value == null ? '-' : fmt1(value) + '%';
+}
+
+function vramCellTitle(d) {
+  const parts = [
+    'Total peak: ' + (d.vram_total_peak_mib != null ? d.vram_total_peak_mib : d.vram_peak_mib || '-') + ' MiB',
+    'Baseline before run: ' + (d.vram_baseline_mib != null ? d.vram_baseline_mib + ' MiB' : '-'),
+    'Baseline %: ' + (d.vram_baseline_pct != null ? fmt1((+d.vram_baseline_pct) * 100) + '%' : '-'),
+    'llama-server process peak: ' + (d.vram_process_peak_mib != null ? d.vram_process_peak_mib + ' MiB' : 'not available'),
+    'External/system peak: ' + (d.vram_external_peak_mib != null ? d.vram_external_peak_mib + ' MiB' : 'not available')
+  ];
+  return escapeHtml(parts.join('\n'));
 }
 
 function speedGradient(value, mode) {
@@ -1102,10 +1133,15 @@ function renderLevelTabs() {
 function renderAllTable() {
   const tb = document.querySelector('#all tbody');
   tb.innerHTML = '';
-  VIEW.filter(d => STATE.levelTab === 'all' || lvl(d) === STATE.levelTab).forEach(d => {
+  const rows = VIEW.filter(d => STATE.levelTab === 'all' || lvl(d) === STATE.levelTab);
+  const promptExtent = metricExtent(rows, d => +d.prompt_tps);
+  const evalExtent = metricExtent(rows, d => +d.eval_tps);
+  rows.forEach(d => {
     const wddm = d.wddm_flag_shared_pos ? '<span class="wddm">+' + d.shared_peak_mib + '</span>' :
                  (d.shared_peak_mib >= 0 ? d.shared_peak_mib : '-');
     const winCls = isWinnerId(d.id) ? ' class="is-winner"' : '';
+    const promptRel = normalizedPct(+d.prompt_tps, promptExtent);
+    const evalRel = normalizedPct(+d.eval_tps, evalExtent);
     tb.insertAdjacentHTML('beforeend',
       '<tr' + winCls + '>' +
         '<td><code>' + d.id + '</code></td>' +
@@ -1116,8 +1152,10 @@ function renderAllTable() {
         '<td class="num">' + (d.ttfr_ms != null ? (+d.ttfr_ms).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_tps ? (+d.prompt_tps).toFixed(1) : '-') + '</td>' +
+        '<td class="num">' + fmtPct(promptRel) + '</td>' +
         '<td class="num"><b>' + (d.eval_tps ? (+d.eval_tps).toFixed(1) : '-') + '</b></td>' +
-        '<td class="num">' + d.vram_peak_mib + '</td>' +
+        '<td class="num">' + fmtPct(evalRel) + '</td>' +
+        '<td class="num" title="' + vramCellTitle(d) + '">' + d.vram_peak_mib + '</td>' +
         '<td class="num">' + wddm + '</td>' +
         '<td class="num">' + (d.ram_used_peak_mib != null ? d.ram_used_peak_mib : '-') + '</td>' +
         '<td class="num">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? (+d.gpu_power_peak_w).toFixed(0) : '-') + '</td>' +

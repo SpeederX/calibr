@@ -32,6 +32,11 @@ export interface BenchRun {
   timestamp?: string;
   vram_before_mib?: number | null;
   vram_peak_mib?: number | null;
+  vram_baseline_mib?: number | null;
+  vram_baseline_pct?: number | null;
+  vram_total_peak_mib?: number | null;
+  vram_process_peak_mib?: number | null;
+  vram_external_peak_mib?: number | null;
   shared_peak_mib?: number | null;
   load_sec?: number | null;
   ready?: boolean | null;
@@ -193,6 +198,11 @@ export function aggregateBenchResult(payload: {
   const satThreshold = num(cfg.wddm_detection?.vram_saturation_threshold) ?? 0.92;
 
   const vramPeakMed = int(median(runs.map((r) => num(r.vram_peak_mib))));
+  const vramTotalPeakMed = int(median(runs.map((r) => num(r.vram_total_peak_mib) ?? num(r.vram_peak_mib))));
+  const vramProcessPeakMed = median(runs.map((r) => num(r.vram_process_peak_mib)));
+  const vramExternalPeakMed = median(runs.map((r) => num(r.vram_external_peak_mib)));
+  const vramBaselineMed = median(runs.map((r) => num(r.vram_baseline_mib) ?? num(r.vram_before_mib)));
+  const vramBaselinePctMed = median(runs.map((r) => num(r.vram_baseline_pct)));
   const sharedPeakMed = int(median(runs.map((r) => num(r.shared_peak_mib))));
   const promptTpsMed = round(median(runs.map((r) => num(r.prompt_tps))) ?? 0, 2);
   const evalTpsMed = round(median(runs.map((r) => num(r.eval_tps))) ?? 0, 2);
@@ -222,6 +232,8 @@ export function aggregateBenchResult(payload: {
     mmproj_path: item.mmproj_path,
     extra_args: item.extra_args,
     vram_before_mib: first.vram_before_mib,
+    vram_baseline_mib: roundOrNull(vramBaselineMed, 0),
+    vram_baseline_pct: roundOrNull(vramBaselinePctMed, 4),
     load_sec: first.load_sec,
     ready: first.ready,
     prompt_n: first.prompt_n,
@@ -234,6 +246,9 @@ export function aggregateBenchResult(payload: {
     layers_offloaded: first.layers_offloaded,
     fit_status: inferFitStatus(first.fit_status, true, sharedPeakMed, confirm),
     vram_peak_mib: vramPeakMed,
+    vram_total_peak_mib: vramTotalPeakMed,
+    vram_process_peak_mib: roundOrNull(vramProcessPeakMed, 0),
+    vram_external_peak_mib: roundOrNull(vramExternalPeakMed, 0),
     shared_peak_mib: sharedPeakMed,
     prompt_tps: promptTpsMed,
     eval_tps: evalTpsMed,
