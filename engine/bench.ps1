@@ -167,6 +167,8 @@ function New-AggregatedBenchResult {
     $totalReqRaw   = Get-Median -values @($runs | ForEach-Object { $_.total_request_ms })
     $latReqRaw     = Get-Median -values @($runs | ForEach-Object { $_.latency_total_request_ms })
     $utilAvgMed    = [int](Get-Median   -values @($runs | ForEach-Object { $_.gpu_util_avg_pct }))
+    $processSmPeakMax = @($runs | ForEach-Object { $_.process_sm_peak_pct } | Where-Object { $null -ne $_ } | Measure-Object -Maximum).Maximum
+    $processMemPeakMax = @($runs | ForEach-Object { $_.process_mem_peak_pct } | Where-Object { $null -ne $_ } | Measure-Object -Maximum).Maximum
     $powerPeakMax  = [math]::Round((@($runs | ForEach-Object { $_.gpu_power_peak_w }) | Measure-Object -Maximum).Maximum, 1)
     $tempPeakMax   = [int]((@($runs | ForEach-Object { $_.gpu_temp_peak_c })  | Measure-Object -Maximum).Maximum)
     $ramPeakMax    = [int]((@($runs | ForEach-Object { $_.ram_used_peak_mib }) | Measure-Object -Maximum).Maximum)
@@ -233,6 +235,8 @@ function New-AggregatedBenchResult {
         total_request_ms     = if ($null -ne $totalReqRaw)  { [math]::Round($totalReqRaw, 2) } else { $null }
         latency_total_request_ms = if ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
         gpu_util_avg_pct     = $utilAvgMed
+        process_sm_peak_pct  = if ($null -ne $processSmPeakMax) { [int]$processSmPeakMax } else { $null }
+        process_mem_peak_pct = if ($null -ne $processMemPeakMax) { [int]$processMemPeakMax } else { $null }
         gpu_power_peak_w     = $powerPeakMax
         gpu_temp_peak_c      = $tempPeakMax
         ram_baseline_mib     = $first.ram_baseline_mib
@@ -691,21 +695,26 @@ function Wait-ProcessVramAttribution {
         [int]$IntervalMs = 250
     )
     if ($env:CALIBR_REQUIRE_PROCESS_VRAM -eq '0') {
-        return [pscustomobject]@{ ok = $true; skipped = $true; reason = "disabled"; process_vram_mib = $null; gpu_mem_mib = $null }
+        return [pscustomobject]@{ ok = $true; skipped = $true; reason = "disabled"; process_vram_mib = $null; gpu_mem_mib = $null; process_sm_pct = $null; process_mem_pct = $null }
     }
     if (-not (Test-NvidiaSmiAvailable)) {
-        return [pscustomobject]@{ ok = $true; skipped = $true; reason = "nvidia-smi unavailable"; process_vram_mib = $null; gpu_mem_mib = $null }
+        return [pscustomobject]@{ ok = $true; skipped = $true; reason = "nvidia-smi unavailable"; process_vram_mib = $null; gpu_mem_mib = $null; process_sm_pct = $null; process_mem_pct = $null }
     }
 
     $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
     do {
         $sample = Invoke-TsMetricSample -ProcessId $ProcessId
-        if ($sample -and $null -ne $sample.process_vram_mib -and [int]$sample.process_vram_mib -ge 0) {
+        if ($sample -and (
+            ($null -ne $sample.process_vram_mib -and [int]$sample.process_vram_mib -ge 0) -or
+            ($null -ne $sample.process_gpu_active -and [bool]$sample.process_gpu_active)
+        )) {
             return [pscustomobject]@{
                 ok = $true
                 skipped = $false
                 reason = "matched"
-                process_vram_mib = [int]$sample.process_vram_mib
+                process_vram_mib = if ($null -ne $sample.process_vram_mib -and [int]$sample.process_vram_mib -ge 0) { [int]$sample.process_vram_mib } else { $null }
+                process_sm_pct = if ($null -ne $sample.process_sm_pct -and [int]$sample.process_sm_pct -ge 0) { [int]$sample.process_sm_pct } else { $null }
+                process_mem_pct = if ($null -ne $sample.process_mem_pct -and [int]$sample.process_mem_pct -ge 0) { [int]$sample.process_mem_pct } else { $null }
                 gpu_mem_mib = if ($null -ne $sample.gpu_mem_mib) { [int]$sample.gpu_mem_mib } else { $null }
             }
         }
@@ -716,6 +725,8 @@ function Wait-ProcessVramAttribution {
                 skipped = $false
                 reason = "matched"
                 process_vram_mib = [int]$fallback
+                process_sm_pct = $null
+                process_mem_pct = $null
                 gpu_mem_mib = (Get-GpuSnapshot).mem_mib
             }
         }
@@ -727,6 +738,8 @@ function Wait-ProcessVramAttribution {
         skipped = $false
         reason = "pid_not_matched"
         process_vram_mib = $null
+        process_sm_pct = $null
+        process_mem_pct = $null
         gpu_mem_mib = (Get-GpuSnapshot).mem_mib
     }
 }
@@ -892,22 +905,28 @@ function Invoke-OneBenchRun {
         ram_used_peak_mib    = if ($ramBaseline -ge 0 -and $minRam -ge 0) { [int]($ramBaseline - $minRam) } else { 0 }
         disk_read_peak_mb_s  = [math]::Round($peakDiskRead / 1MB, 1)
         process_vram_attribution = $null
+        process_sm_peak_pct = $null
+        process_mem_peak_pct = $null
     }
 
     if ($ready) {
         $processGate = Wait-ProcessVramAttribution -ProcessId $p.Id
         $run.process_vram_attribution = $processGate.reason
         if ($processGate.ok -and -not $processGate.skipped) {
-            $run.vram_process_peak_mib = [int]$processGate.process_vram_mib
-            $vramTrack.process_peak = [int]$processGate.process_vram_mib
+            if ($null -ne $processGate.process_sm_pct) { $run.process_sm_peak_pct = [int]$processGate.process_sm_pct }
+            if ($null -ne $processGate.process_mem_pct) { $run.process_mem_peak_pct = [int]$processGate.process_mem_pct }
             $gateMem = if ($null -ne $processGate.gpu_mem_mib) { [int]$processGate.gpu_mem_mib } else { $run.vram_peak_mib }
             if ($gateMem -gt $run.vram_peak_mib)       { $run.vram_peak_mib = $gateMem }
             if ($gateMem -gt $run.vram_total_peak_mib) { $run.vram_total_peak_mib = $gateMem }
-            $external = [Math]::Max(0, $gateMem - [int]$processGate.process_vram_mib)
-            $run.vram_external_peak_mib = $external
-            $vramTrack.external_peak = $external
+            if ($null -ne $processGate.process_vram_mib) {
+                $run.vram_process_peak_mib = [int]$processGate.process_vram_mib
+                $vramTrack.process_peak = [int]$processGate.process_vram_mib
+                $external = [Math]::Max(0, $gateMem - [int]$processGate.process_vram_mib)
+                $run.vram_external_peak_mib = $external
+                $vramTrack.external_peak = $external
+            }
         } elseif (-not $processGate.ok) {
-            $run.error = "process VRAM attribution failed: llama-server PID $($p.Id) was not visible in nvidia-smi after readiness. Close other inference servers or set CALIBR_REQUIRE_PROCESS_VRAM=0 to bypass."
+            $run.error = "process attribution failed: llama-server PID $($p.Id) was not visible in nvidia-smi pmon after readiness. Close other inference servers or set CALIBR_REQUIRE_PROCESS_VRAM=0 to bypass."
             $run.failure_reason = "process_vram_unavailable"
         }
     }
@@ -1042,6 +1061,14 @@ function Invoke-OneBenchRun {
                 if ($tmp -gt $run.gpu_temp_peak_c) { $run.gpu_temp_peak_c = $tmp }
                 $util = if ($null -ne $sample.gpu_util_pct) { [int]$sample.gpu_util_pct } else { -1 }
                 if ($util -ge 0) { $utilSum += $util; $utilCount++ }
+                $procSm = if ($null -ne $sample.process_sm_pct) { [int]$sample.process_sm_pct } else { -1 }
+                if ($procSm -ge 0 -and ($null -eq $run.process_sm_peak_pct -or $procSm -gt $run.process_sm_peak_pct)) {
+                    $run.process_sm_peak_pct = $procSm
+                }
+                $procMemPct = if ($null -ne $sample.process_mem_pct) { [int]$sample.process_mem_pct } else { -1 }
+                if ($procMemPct -ge 0 -and ($null -eq $run.process_mem_peak_pct -or $procMemPct -gt $run.process_mem_peak_pct)) {
+                    $run.process_mem_peak_pct = $procMemPct
+                }
 
                 $sharedNow = if ($null -ne $sample.shared_mib) { [int]$sample.shared_mib } else { -1 }
                 if ($sharedNow -ge 0) {

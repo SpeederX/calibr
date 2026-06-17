@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import {
   parseComputeAppsQuery,
   parseGpuQuery,
+  parsePmonQuery,
   parseStandardNvidiaSmi,
-  parseTypeperfGpuProcessMemory,
 } from "../dist/metricsPoller.js";
 
 test("parseGpuQuery reads nvidia-smi GPU metrics", () => {
@@ -36,11 +36,21 @@ test("parseStandardNvidiaSmi falls back to llama-server rows for the target PID"
   assert.equal(parseStandardNvidiaSmi(out, 123), -1);
 });
 
-test("parseTypeperfGpuProcessMemory sums WDDM GPU Process Memory rows for the target PID", () => {
+test("parsePmonQuery detects target process SM and memory utilization", () => {
   const out = [
-    '"(PDH-CSV 4.0)","\\\\DESKTOP\\GPU Process Memory(pid_1234_luid_0x00000000_0x00000000_phys_0_eng_0_engtype_3D)\\Dedicated Usage","\\\\DESKTOP\\GPU Process Memory(pid_9999_luid_0x00000000_0x00000000_phys_0_eng_0_engtype_3D)\\Dedicated Usage","\\\\DESKTOP\\GPU Process Memory(pid_1234_luid_0x00000000_0x00000001_phys_0_eng_0_engtype_Compute)\\Dedicated Usage"',
-    '"06/17/2026 18:05:52.215","1048576.000000","999.000000","2097152.000000"',
+    "# gpu         pid   type     sm    mem    enc    dec    jpg    ofa    command",
+    "# Idx           #    C/G      %      %      %      %      %      %    name",
+    "    0       1184   C+G      -      -      -      -      -      -    Telegram.exe",
+    "    0       1234     C     71     47      -      -      -      -    llama-server.ex",
   ].join("\n");
-  assert.equal(parseTypeperfGpuProcessMemory(out, 1234), 3);
-  assert.equal(parseTypeperfGpuProcessMemory(out, 42), -1);
+  assert.deepEqual(parsePmonQuery(out, 1234), {
+    process_gpu_active: true,
+    process_sm_pct: 71,
+    process_mem_pct: 47,
+  });
+  assert.deepEqual(parsePmonQuery(out, 42), {
+    process_gpu_active: false,
+    process_sm_pct: -1,
+    process_mem_pct: -1,
+  });
 });

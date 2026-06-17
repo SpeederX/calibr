@@ -64,6 +64,8 @@ export interface BenchRun {
   gpu_power_peak_w?: number | null;
   gpu_temp_peak_c?: number | null;
   gpu_util_avg_pct?: number | null;
+  process_sm_peak_pct?: number | null;
+  process_mem_peak_pct?: number | null;
   ram_baseline_mib?: number | null;
   ram_used_peak_mib?: number | null;
   disk_read_peak_mb_s?: number | null;
@@ -261,6 +263,8 @@ export function aggregateBenchResult(payload: {
     total_request_ms: roundOrNull(totalReqMs, 2),
     latency_total_request_ms: roundOrNull(latReqMs, 2),
     gpu_util_avg_pct: int(median(runs.map((r) => num(r.gpu_util_avg_pct)))),
+    process_sm_peak_pct: roundOrNull(max(runs.map((r) => num(r.process_sm_peak_pct))), 0),
+    process_mem_peak_pct: roundOrNull(max(runs.map((r) => num(r.process_mem_peak_pct))), 0),
     gpu_power_peak_w: round(max(runs.map((r) => num(r.gpu_power_peak_w))), 1),
     gpu_temp_peak_c: int(max(runs.map((r) => num(r.gpu_temp_peak_c)))),
     ram_baseline_mib: first.ram_baseline_mib,

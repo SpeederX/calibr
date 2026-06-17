@@ -79,6 +79,8 @@ function run(i, vramPeak, sharedPeak, promptTps, evalTps) {
     gpu_power_peak_w: [130, 180, 150][i] ?? 140,
     gpu_temp_peak_c: [60, 72, 65][i] ?? 60,
     gpu_util_avg_pct: [60, 75, 90][i] ?? 70,
+    process_sm_peak_pct: [45, 71, 52][i] ?? 45,
+    process_mem_peak_pct: [30, 47, 35][i] ?? 30,
     ram_baseline_mib: 12000,
     ram_used_peak_mib: [500, 900, 700][i] ?? 500,
     disk_read_peak_mb_s: [200, 500, 300][i] ?? 200,
@@ -121,6 +123,8 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   assert.equal(result.first_eval_tps, 46);
   assert.equal(result.repeat_eval_tps, 55);
   assert.equal(result.eval_spread_pct, 32.7);
+  assert.equal(result.process_sm_peak_pct, 71);
+  assert.equal(result.process_mem_peak_pct, 47);
   assert.equal(result.gpu_power_peak_w, 180);
   assert.equal(result.gpu_temp_peak_c, 72);
   assert.equal(result.ram_used_peak_mib, 900);

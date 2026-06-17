@@ -565,6 +565,8 @@ export interface Result {
   gpu_power_peak_w?: number;
   gpu_temp_peak_c?: number;
   gpu_util_avg_pct?: number;
+  process_sm_peak_pct?: number | null;
+  process_mem_peak_pct?: number | null;
   ram_baseline_mib?: number;
   ram_used_peak_mib?: number;
   disk_read_peak_mb_s?: number;
