@@ -44,6 +44,46 @@ async function runNvidiaSmi(args: string[], command = "nvidia-smi"): Promise<str
   }
 }
 
+async function runTypeperf(counter: string): Promise<string> {
+  if (process.platform !== "win32") return "";
+  try {
+    const { stdout } = await execFileAsync("typeperf", [counter, "-sc", "1"], {
+      windowsHide: true,
+      timeout: 5000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return stdout;
+  } catch {
+    return "";
+  }
+}
+
+function parseCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (quoted && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        quoted = !quoted;
+      }
+      continue;
+    }
+    if (ch === "," && !quoted) {
+      values.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  values.push(current);
+  return values;
+}
+
 export function parseGpuQuery(stdout: string): Pick<MetricSample, "gpu_mem_mib" | "gpu_power_w" | "gpu_temp_c" | "gpu_util_pct"> {
   const line = stdout.split(/\r?\n/).find((row) => row.trim().length > 0) ?? "";
   const parts = line.split(",").map((part) => part.trim());
@@ -85,6 +125,44 @@ export function parseStandardNvidiaSmi(stdout: string, pid: number): number {
   return seen ? total : -1;
 }
 
+export function parseTypeperfGpuProcessMemory(stdout: string, pid: number): number {
+  const rows = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('"'));
+  if (rows.length < 2) return -1;
+
+  const headers = parseCsvLine(rows[0]);
+  const values = parseCsvLine(rows[1]);
+  const pidNeedle = `pid_${pid}_`;
+  let totalBytes = 0;
+  let seen = false;
+
+  for (let i = 1; i < headers.length; i += 1) {
+    const header = headers[i] ?? "";
+    if (!header.toLowerCase().includes(pidNeedle)) continue;
+    const bytes = Number(values[i]);
+    if (!Number.isFinite(bytes) || bytes <= 0) continue;
+    totalBytes += bytes;
+    seen = true;
+  }
+
+  return seen ? Math.trunc(totalBytes / 1024 / 1024) : -1;
+}
+
+async function sampleWindowsProcessVram(pid: number): Promise<number> {
+  const dedicated = parseTypeperfGpuProcessMemory(
+    await runTypeperf("\\GPU Process Memory(*)\\Dedicated Usage"),
+    pid,
+  );
+  if (dedicated >= 0) return dedicated;
+
+  return parseTypeperfGpuProcessMemory(
+    await runTypeperf("\\GPU Process Memory(*)\\Local Usage"),
+    pid,
+  );
+}
+
 async function sampleProcessVram(pid: number, command = "nvidia-smi"): Promise<number> {
   const query = await runNvidiaSmi(
     ["--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"],
@@ -92,7 +170,9 @@ async function sampleProcessVram(pid: number, command = "nvidia-smi"): Promise<n
   );
   const fromQuery = parseComputeAppsQuery(query, pid);
   if (fromQuery >= 0) return fromQuery;
-  return parseStandardNvidiaSmi(await runNvidiaSmi([], command), pid);
+  const fromTable = parseStandardNvidiaSmi(await runNvidiaSmi([], command), pid);
+  if (fromTable >= 0) return fromTable;
+  return sampleWindowsProcessVram(pid);
 }
 
 export async function collectMetricSample(pid: number, command = "nvidia-smi", now = () => new Date()): Promise<MetricSample> {
