@@ -7,8 +7,9 @@
 function Test-IsBetterWinner {
     # Decide whether $candidate should replace $current as the winner of its
     # group. Default rule: a non-paging config always beats a paging one;
-    # among equally-safe configs, higher eval_tps wins. With -PreferSpeed:
-    # safety is ignored, raw eval_tps is the only criterion.
+    # among equally-safe configs, higher eval_tps wins; near ties prefer better
+    # KV cache quality, then larger context. With -PreferSpeed: safety is
+    # ignored, raw eval_tps is the only criterion.
     #
     # "Paging" means shared_peak_mib > $sharedConfirmMib. The default 500 MiB
     # matches wddm_detection.shared_delta_confirm_mib so the picker and the
@@ -31,6 +32,10 @@ function Test-IsBetterWinner {
         return ($cEval -gt $curEval)
     }
 
+    $cKv = Get-ResultKvQuality $candidate
+    $curKv = Get-ResultKvQuality $current
+    if ($cKv -ne $curKv) { return ($cKv -gt $curKv) }
+
     $cCtx = Get-ResultCtxSize $candidate
     $curCtx = Get-ResultCtxSize $current
     if ($cCtx -ne $curCtx) { return ($cCtx -gt $curCtx) }
@@ -51,6 +56,23 @@ function Get-ResultCtxSize {
     if ($result.extra_args -and ($result.extra_args -match '--ctx-size\s+(\d+)')) {
         return [int]$Matches[1]
     }
+    return 0
+}
+
+function Get-ResultKvQuality {
+    param($result)
+    $args = if ($result.extra_args) { [string]$result.extra_args } else { "" }
+    $kv = ""
+    if ($args -match '--cache-type-k\s+(\S+)') { $kv = $Matches[1].ToLowerInvariant() }
+    elseif ($args -match '--cache-type-v\s+(\S+)') { $kv = $Matches[1].ToLowerInvariant() }
+
+    if ($kv -match '^q(\d+)(?:_(\d+))?') {
+        $base = [int]$Matches[1] * 10
+        $suffix = if ($Matches.Count -gt 2 -and $Matches[2]) { [int]$Matches[2] } else { 0 }
+        return ($base + $suffix)
+    }
+    if ($kv -eq "f16" -or $kv -eq "bf16") { return 160 }
+    if ($kv -eq "f32") { return 320 }
     return 0
 }
 

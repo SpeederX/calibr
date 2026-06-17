@@ -27,6 +27,15 @@
     ]
   },
   {
+    "name": "balanced near-tie prefers better KV cache before larger context",
+    "profile": "safety",
+    "expected": "q8-medium-context",
+    "candidates": [
+      { "id": "q4-largest-context", "eval_tps": 65.8, "shared_peak_mib": 252, "vram_peak_mib": 6595, "extra_args": "--ctx-size 163840 --cache-type-k q4_0 --cache-type-v q4_0" },
+      { "id": "q8-medium-context", "eval_tps": 66.0, "shared_peak_mib": 188, "vram_peak_mib": 6471, "extra_args": "--ctx-size 98304 --cache-type-k q8_0 --cache-type-v q8_0" }
+    ]
+  },
+  {
     "name": "balanced outside tie-band keeps faster config",
     "profile": "safety",
     "expected": "small-fast",

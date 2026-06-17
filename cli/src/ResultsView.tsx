@@ -163,6 +163,11 @@ function DetailView({
         {group.successCount}/{group.totalCount} configs ok · winner: {group.winner.label}
       </Text>
       <Box marginTop={1} flexDirection="column">
+        <Box>
+          <Text dimColor>
+            {"  "}{"config".padEnd(50)} {"safe".padEnd(6)} {" eval t/s"} {" prompt t/s"} {" vram".padStart(9)} {" ctx".padStart(7)} {" kv"}
+          </Text>
+        </Box>
         {ordered.map((c, i) => {
           const tag = safetyTag(c, threshold);
           const selected = i === cursor;
@@ -174,7 +179,7 @@ function DetailView({
               </Text>
               <Text color={tag.color}>{tag.text}</Text>
               <Text color={selected ? "cyan" : undefined} inverse={selected}>
-                {" "}eval {fmtTps(c.eval_tps)}   prompt {fmtTps(c.prompt_tps)}   vram {(c.vram_peak_mib ?? 0).toString().padStart(5)}MiB
+                {" "}{fmtTps(c.eval_tps)}    {fmtTps(c.prompt_tps)}    {(c.vram_peak_mib ?? 0).toString().padStart(5)}MiB {ctxFromArgs(c.extra_args).padStart(6)}  {kvFromArgs(c.extra_args)}
               </Text>
             </Box>
           );

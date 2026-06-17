@@ -42,6 +42,18 @@ export function ctxValue(result: WinnerPolicyResult): number {
   return match ? Number(match[1]) : 0;
 }
 
+export function kvQualityValue(result: WinnerPolicyResult): number {
+  const args = String(result.extra_args ?? "");
+  const match = args.match(/--cache-type-k\s+(\S+)/) ?? args.match(/--cache-type-v\s+(\S+)/);
+  const kv = match ? match[1].toLowerCase() : "";
+  const numMatch = kv.match(/^q(\d+)(?:_(\d+))?/);
+  if (numMatch) return Number(numMatch[1]) * 10 + Number(numMatch[2] ?? 0);
+  if (kv === "f16") return 160;
+  if (kv === "bf16") return 160;
+  if (kv === "f32") return 320;
+  return 0;
+}
+
 export function isSafe(result: WinnerPolicyResult, confirmMib = DEFAULT_CONFIRM_MIB): boolean {
   return finiteNumber(result.shared_peak_mib) <= confirmMib;
 }
@@ -120,6 +132,10 @@ export function isBetterWinner(
     return candidateEval > currentEval;
   }
 
+  const candidateKv = kvQualityValue(candidate);
+  const currentKv = kvQualityValue(current);
+  if (candidateKv !== currentKv) return candidateKv > currentKv;
+
   const candidateCtx = ctxValue(candidate);
   const currentCtx = ctxValue(current);
   if (candidateCtx !== currentCtx) return candidateCtx > currentCtx;
@@ -161,6 +177,7 @@ export function createReportWinnerPolicySource(): string {
   const functions = [
     finiteNumber,
     ctxValue,
+    kvQualityValue,
     isSafe,
     computeAnchors,
     winnerScore,
@@ -190,7 +207,7 @@ const SCORERS = {
   },
   safety: {
     label: 'Safety-balanced',
-    desc: 'Safe configs first; within 5% eval speed, prefer larger context, then lower shared/VRAM use.',
+    desc: 'Safe configs first; within 5% eval speed, prefer better KV cache quality, then larger context, then lower shared/VRAM use.',
     score: d => winnerScore(d, 'safety', { confirmMib: CONFIRM_MIB, anchors: ANCHORS }),
   },
   overall: {

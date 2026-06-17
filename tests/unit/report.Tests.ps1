@@ -5,12 +5,14 @@
 Describe "Test-IsBetterWinner" {
     # Shorthand for building a candidate.
     function _r {
-        param($eval, $shared, $ctx = 0, $vram = 1000)
+        param($eval, $shared, $ctx = 0, $vram = 1000, $kv = $null)
+        $args = if ($ctx -gt 0) { "--ctx-size $ctx" } else { "" }
+        if ($kv) { $args = "$args --cache-type-k $kv --cache-type-v $kv".Trim() }
         [PSCustomObject]@{
             eval_tps = $eval
             shared_peak_mib = $shared
             vram_peak_mib = $vram
-            extra_args = if ($ctx -gt 0) { "--ctx-size $ctx" } else { "" }
+            extra_args = $args
         }
     }
 
@@ -36,6 +38,11 @@ Describe "Test-IsBetterWinner" {
         It "uses the tie-band to prefer larger context for near-equal safe configs" {
             $current   = _r 100 0 16384
             $candidate = _r 97 0 65536
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "uses the tie-band to prefer better KV cache before larger context" {
+            $current   = _r 65.8 252 163840 6595 "q4_0"
+            $candidate = _r 66.0 188 98304 6471 "q8_0"
             Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
         }
         It "does not let the tie-band override a clearly faster safe config" {
