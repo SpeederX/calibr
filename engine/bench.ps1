@@ -304,6 +304,21 @@ function Get-GpuProcessMemoryMib {
             }
         }
         if ($seen) { return $total }
+    } catch {
+    }
+    try {
+        $lines = @(nvidia-smi 2>$null)
+        $total = 0
+        $seen = $false
+        foreach ($line in $lines) {
+            if ($line -notmatch "(?<!\d)$ProcessId(?!\d)") { continue }
+            if ($line -notmatch 'llama-server') { continue }
+            if ($line -match '(\d+)\s*MiB') {
+                $total += [int]$Matches[1]
+                $seen = $true
+            }
+        }
+        if ($seen) { return $total }
         return -1
     } catch {
         return -1
@@ -313,7 +328,7 @@ function Get-GpuProcessMemoryMib {
 function Start-BenchMetricPoller {
     param(
         [int]$ProcessId,
-        [int]$IntervalMs = 500
+        [int]$IntervalMs = 150
     )
     $path = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-bench-poll-{0}.jsonl" -f ([Guid]::NewGuid().ToString("N")))
     try {
@@ -363,6 +378,21 @@ function Start-BenchMetricPoller {
                     }
                     if ($seen) { $procMem = $sum }
                 } catch { }
+                if ($procMem -lt 0) {
+                    try {
+                        $lines = @(nvidia-smi 2>$null)
+                        $sum = 0; $seen = $false
+                        foreach ($line in $lines) {
+                            if ($line -notmatch "(?<!\d)$targetPid(?!\d)") { continue }
+                            if ($line -notmatch 'llama-server') { continue }
+                            if ($line -match '(\d+)\s*MiB') {
+                                $sum += [int]$Matches[1]
+                                $seen = $true
+                            }
+                        }
+                        if ($seen) { $procMem = $sum }
+                    } catch { }
+                }
                 if ($isWin) {
                     try {
                         $c = Get-Counter "\GPU Adapter Memory(*)\Shared Usage" -ErrorAction SilentlyContinue -MaxSamples 1

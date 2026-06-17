@@ -101,6 +101,9 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'WDDM/shared GPU memory') "Shared tooltip missing"
         Assert-True ($tpl -match 'Disk read happens just for the first config run of the model') "Disk tooltip should explain cold-load cache behavior"
         Assert-True ($tpl -match 'process-attributed peak') "VRAM tooltip should mention process attribution"
+        Assert-True ($tpl -match 'not sampled') "VRAM tooltip should distinguish missing PID samples"
+        Assert-True ($tpl -match 'not supported') "VRAM tooltip should distinguish unsupported process attribution"
+        Assert-True ($tpl -match 'Baseline warning') "VRAM tooltip should warn on high baseline usage"
     }
     It "falls back to requested gpu layers when llama.cpp does not report actual layers" {
         Assert-True ($tpl -match 'function layersLabel')       "layersLabel helper missing"

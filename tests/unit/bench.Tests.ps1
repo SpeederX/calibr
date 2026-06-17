@@ -108,6 +108,9 @@ Describe "Background bench polling" {
         Assert-True ($benchSource -match '\$inferencePoller = if \(-not \$MinimalPolling\)') "poller should honor -MinimalPolling"
         Assert-True ($benchSource -match 'finally \{\s*\$pollSamples = @\(Stop-BenchMetricPoller') "poller should stop in a finally block"
         Assert-True ($benchSource -match 'process_vram_mib') "process-attributed VRAM sample missing"
+        Assert-True ($benchSource -match '\[int\]\$IntervalMs = 150') "POST poller should sample fast runs at 150 ms"
+        Assert-True ($benchSource -match 'nvidia-smi 2>\$null') "process VRAM should fall back to parsing standard nvidia-smi output"
+        Assert-True ($benchSource -match 'llama-server') "nvidia-smi fallback should only accept llama-server rows"
     }
 }
 

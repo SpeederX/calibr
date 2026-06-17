@@ -779,13 +779,29 @@ function fmtPct(value) {
 }
 
 function vramCellTitle(d) {
+  const hasBaseline = d.vram_baseline_mib != null || d.vram_baseline_pct != null;
+  const hasTotal = d.vram_total_peak_mib != null || d.vram_peak_mib != null;
+  const processPeak = d.vram_process_peak_mib != null
+    ? d.vram_process_peak_mib + ' MiB'
+    : (hasBaseline && hasTotal
+      ? 'not sampled (PID was not matched during polling)'
+      : (hasTotal ? 'not supported by this backend/driver path' : 'not available'));
+  const externalPeak = d.vram_external_peak_mib != null
+    ? d.vram_external_peak_mib + ' MiB'
+    : (d.vram_process_peak_mib == null && hasBaseline && hasTotal
+      ? 'not sampled (requires process VRAM)'
+      : 'not available');
+  const baselinePct = d.vram_baseline_pct != null ? (+d.vram_baseline_pct) * 100 : null;
+  const baselineHint = baselinePct != null && baselinePct >= 10
+    ? 'Baseline warning: OS/apps already use >=10% VRAM before this run.'
+    : null;
   const parts = [
     'Total peak: ' + (d.vram_total_peak_mib != null ? d.vram_total_peak_mib : d.vram_peak_mib || '-') + ' MiB',
     'Baseline before run: ' + (d.vram_baseline_mib != null ? d.vram_baseline_mib + ' MiB' : '-'),
-    'Baseline %: ' + (d.vram_baseline_pct != null ? fmt1((+d.vram_baseline_pct) * 100) + '%' : '-'),
-    'llama-server process peak: ' + (d.vram_process_peak_mib != null ? d.vram_process_peak_mib + ' MiB' : 'not available'),
-    'External/system peak: ' + (d.vram_external_peak_mib != null ? d.vram_external_peak_mib + ' MiB' : 'not available')
-  ];
+    'Baseline %: ' + (baselinePct != null ? fmt1(baselinePct) + '%' : '-'),
+    'llama-server process peak: ' + processPeak,
+    'External/system peak: ' + externalPeak
+  ].concat(baselineHint ? [baselineHint] : []);
   return escapeHtml(parts.join('\n'));
 }
 
