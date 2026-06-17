@@ -339,6 +339,11 @@ function Invoke-Report {
         $ramPk  = if ($null -ne $r.ram_used_peak_mib)  { [int]$r.ram_used_peak_mib } else { $null }
         $ramBl  = if ($null -ne $r.ram_baseline_mib)   { [int]$r.ram_baseline_mib } else { $null }
         $diskRd = if ($null -ne $r.disk_read_peak_mb_s) { [double]$r.disk_read_peak_mb_s } else { $null }
+        $vramBl = if ($null -ne $r.vram_baseline_mib)  { [int]$r.vram_baseline_mib } else { $null }
+        $vramBlPct = if ($null -ne $r.vram_baseline_pct) { [double]$r.vram_baseline_pct } else { $null }
+        $vramTotalPeak = if ($null -ne $r.vram_total_peak_mib) { [int]$r.vram_total_peak_mib } else { $null }
+        $vramProcessPeak = if ($null -ne $r.vram_process_peak_mib) { [int]$r.vram_process_peak_mib } else { $null }
+        $vramExternalPeak = if ($null -ne $r.vram_external_peak_mib) { [int]$r.vram_external_peak_mib } else { $null }
         # Failure-classification fields. The report needs them to give a
         # meaningful summary for failed configs (otherwise the row shows
         # zeros + 'unknown' fit and the user thinks the config wasn't run).
@@ -398,6 +403,11 @@ function Invoke-Report {
             ram_used_peak_mib=$ramPk
             ram_baseline_mib=$ramBl
             disk_read_peak_mb_s=$diskRd
+            vram_baseline_mib=$vramBl
+            vram_baseline_pct=$vramBlPct
+            vram_total_peak_mib=$vramTotalPeak
+            vram_process_peak_mib=$vramProcessPeak
+            vram_external_peak_mib=$vramExternalPeak
         }
     }) | ConvertTo-Json -Depth 5 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {

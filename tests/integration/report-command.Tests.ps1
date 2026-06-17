@@ -147,6 +147,7 @@ Describe "Invoke-Report end-to-end on canned data" {
         ttft_sec=0.42; gpu_power_peak_w=120.0; gpu_temp_peak_c=65; gpu_util_avg_pct=92
         prompt_ms=310.0; ttfr_ms=120.0; e2e_ttft_ms=420.0; total_request_ms=3360.0; latency_total_request_ms=520.0
         ram_used_peak_mib=1024; ram_baseline_mib=512
+        vram_baseline_mib=900; vram_baseline_pct=0.1099; vram_total_peak_mib=2000; vram_process_peak_mib=1100; vram_external_peak_mib=900
         runs=@(
             @{ eval_tps=45.0 },
             @{ eval_tps=50.0 },
@@ -212,6 +213,13 @@ Describe "Invoke-Report end-to-end on canned data" {
             Assert-True ($html -match '"first_eval_tps"')     "DATA missing first_eval_tps"
             Assert-True ($html -match '"repeat_eval_tps"')    "DATA missing repeat_eval_tps"
             Assert-True ($html -match '"eval_spread_pct"')    "DATA missing eval_spread_pct"
+        }
+        It "embeds VRAM attribution fields for report tooltips" {
+            Assert-True ($html -match '"vram_baseline_mib":900')      "DATA missing vram_baseline_mib"
+            Assert-True ($html -match '"vram_baseline_pct":0\.1099')  "DATA missing vram_baseline_pct"
+            Assert-True ($html -match '"vram_total_peak_mib":2000')   "DATA missing vram_total_peak_mib"
+            Assert-True ($html -match '"vram_process_peak_mib":1100') "DATA missing vram_process_peak_mib"
+            Assert-True ($html -match '"vram_external_peak_mib":900') "DATA missing vram_external_peak_mib"
         }
         It "embeds paths for client-side .bat generation (Phase F)" {
             Assert-True ($html -match '"model_path"')         "DATA missing model_path"
