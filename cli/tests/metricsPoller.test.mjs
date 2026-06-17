@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {
   parseComputeAppsQuery,
   parseGpuQuery,
-  parsePmonQuery,
   parseStandardNvidiaSmi,
 } from "../dist/metricsPoller.js";
 
@@ -34,23 +33,4 @@ test("parseStandardNvidiaSmi falls back to llama-server rows for the target PID"
 `;
   assert.equal(parseStandardNvidiaSmi(out, 1234), 3150);
   assert.equal(parseStandardNvidiaSmi(out, 123), -1);
-});
-
-test("parsePmonQuery detects target process SM and memory utilization", () => {
-  const out = [
-    "# gpu         pid   type     sm    mem    enc    dec    jpg    ofa    command",
-    "# Idx           #    C/G      %      %      %      %      %      %    name",
-    "    0       1184   C+G      -      -      -      -      -      -    Telegram.exe",
-    "    0       1234     C     71     47      -      -      -      -    llama-server.ex",
-  ].join("\n");
-  assert.deepEqual(parsePmonQuery(out, 1234), {
-    process_gpu_active: true,
-    process_sm_pct: 71,
-    process_mem_pct: 47,
-  });
-  assert.deepEqual(parsePmonQuery(out, 42), {
-    process_gpu_active: false,
-    process_sm_pct: -1,
-    process_mem_pct: -1,
-  });
 });

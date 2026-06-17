@@ -107,9 +107,6 @@ Describe "Background bench polling" {
         Assert-True ($benchSource -match 'function Stop-BenchMetricPoller') "Stop-BenchMetricPoller missing"
         Assert-True ($benchSource -match 'function Resolve-TsMetricsPollerScript') "TS metrics poller resolver missing"
         Assert-True ($benchSource -match 'function Start-TsBenchMetricPoller') "TS metrics poller launcher missing"
-        Assert-True ($benchSource -match 'function Invoke-TsMetricSample') "TS one-shot metric sampler missing"
-        Assert-True ($benchSource -match 'function Wait-ProcessVramAttribution') "strict process VRAM gate missing"
-        Assert-True ($benchSource -match 'CALIBR_REQUIRE_PROCESS_VRAM') "process VRAM gate should have an explicit opt-out"
         Assert-True ($benchSource -match 'metricsPollerCli\.js') "TS metrics poller entrypoint should be wired"
         Assert-True ($benchSource -match '\$tsPoller = Start-TsBenchMetricPoller') "Start-BenchMetricPoller should try TS first"
         Assert-True ($benchSource -match '\$inferencePoller = if \(-not \$MinimalPolling\)') "poller should honor -MinimalPolling"
@@ -183,8 +180,6 @@ Describe "New-AggregatedBenchResult" {
             gpu_power_peak_w     = 140.0
             gpu_temp_peak_c      = 65
             gpu_util_avg_pct     = 80
-            process_sm_peak_pct  = 45
-            process_mem_peak_pct = 30
             ram_baseline_mib     = 12000
             ram_used_peak_mib    = 600
             disk_read_peak_mb_s  = 350.0
@@ -294,8 +289,6 @@ Describe "New-AggregatedBenchResult" {
         $r1.total_request_ms    = 3000.0
         $r1.latency_total_request_ms = 360.0
         $r1.gpu_util_avg_pct    = 60
-        $r1.process_sm_peak_pct = 45
-        $r1.process_mem_peak_pct = 30
         $r1.gpu_power_peak_w    = 130.0
         $r1.gpu_temp_peak_c     = 60
         $r1.ram_used_peak_mib   = 500
@@ -308,8 +301,6 @@ Describe "New-AggregatedBenchResult" {
         $r2.total_request_ms    = 3200.0 # median
         $r2.latency_total_request_ms = 420.0 # median
         $r2.gpu_util_avg_pct    = 75      # median
-        $r2.process_sm_peak_pct = 71      # max
-        $r2.process_mem_peak_pct = 47     # max
         $r2.gpu_power_peak_w    = 180.0  # max
         $r2.gpu_temp_peak_c     = 72     # max
         $r2.ram_used_peak_mib   = 900    # max
@@ -322,8 +313,6 @@ Describe "New-AggregatedBenchResult" {
         $r3.total_request_ms    = 3400.0
         $r3.latency_total_request_ms = 460.0
         $r3.gpu_util_avg_pct    = 90
-        $r3.process_sm_peak_pct = 52
-        $r3.process_mem_peak_pct = 35
         $r3.gpu_power_peak_w    = 150.0
         $r3.gpu_temp_peak_c     = 65
         $r3.ram_used_peak_mib   = 700
@@ -336,8 +325,6 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 3200.0 $r.total_request_ms      "request ms median"
         Assert-Equal 420.0 $r.latency_total_request_ms "latency request ms median"
         Assert-Equal 75    $r.gpu_util_avg_pct        "util median"
-        Assert-Equal 71    $r.process_sm_peak_pct     "process SM max"
-        Assert-Equal 47    $r.process_mem_peak_pct    "process memory-util max"
         Assert-Equal 180.0 $r.gpu_power_peak_w        "power max"
         Assert-Equal 72    $r.gpu_temp_peak_c         "temp max"
         Assert-Equal 900   $r.ram_used_peak_mib       "ram max"
@@ -355,8 +342,6 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 7100   $r.vram_total_peak_mib    "total peak median"
         Assert-Equal 5900   $r.vram_process_peak_mib  "process peak median"
         Assert-Equal 1200   $r.vram_external_peak_mib "external peak median"
-        Assert-Equal 45     $r.process_sm_peak_pct    "process SM peak"
-        Assert-Equal 30     $r.process_mem_peak_pct   "process memory-util peak"
     }
 }
 
@@ -377,10 +362,6 @@ Describe "Get-FailureReason" {
     It "returns 'vram_overflow' on high shared_peak even without fit flag (defensive)" {
         $r = Get-FailureReason -result @{ ok = $false; fit_status = "unknown"; shared_peak_mib = 900; ready = $false; unsupported_architecture = $null } -sharedConfirmMib 500
         Assert-Equal "vram_overflow" $r
-    }
-    It "returns 'process_vram_unavailable' when strict process attribution failed" {
-        $r = Get-FailureReason -result @{ ok = $false; failure_reason = "process_vram_unavailable"; ready = $true; shared_peak_mib = 0 }
-        Assert-Equal "process_vram_unavailable" $r
     }
     It "returns 'server_timeout' when ready was false with low shared_peak" {
         $r = Get-FailureReason -result @{ ok = $false; fit_status = "success"; shared_peak_mib = 50; ready = $false; unsupported_architecture = $null } -sharedConfirmMib 500

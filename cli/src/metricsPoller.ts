@@ -11,9 +11,6 @@ export interface MetricSample {
   gpu_power_w: number;
   gpu_temp_c: number;
   gpu_util_pct: number;
-  process_gpu_active: boolean;
-  process_sm_pct: number;
-  process_mem_pct: number;
   process_vram_mib: number;
   shared_mib: number;
   ram_avail_mib: number;
@@ -88,29 +85,6 @@ export function parseStandardNvidiaSmi(stdout: string, pid: number): number {
   return seen ? total : -1;
 }
 
-export function parsePmonQuery(stdout: string, pid: number): Pick<MetricSample, "process_gpu_active" | "process_sm_pct" | "process_mem_pct"> {
-  let smPct = -1;
-  let memPct = -1;
-  let seen = false;
-  for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const parts = trimmed.split(/\s+/);
-    if (parts.length < 10) continue;
-    if (Number(parts[1]) !== pid) continue;
-    seen = true;
-    const sm = num(parts[3], -1);
-    const mem = num(parts[4], -1);
-    if (sm > smPct) smPct = sm;
-    if (mem > memPct) memPct = mem;
-  }
-  return {
-    process_gpu_active: seen,
-    process_sm_pct: Math.trunc(smPct),
-    process_mem_pct: Math.trunc(memPct),
-  };
-}
-
 async function sampleProcessVram(pid: number, command = "nvidia-smi"): Promise<number> {
   const query = await runNvidiaSmi(
     ["--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"],
@@ -118,9 +92,7 @@ async function sampleProcessVram(pid: number, command = "nvidia-smi"): Promise<n
   );
   const fromQuery = parseComputeAppsQuery(query, pid);
   if (fromQuery >= 0) return fromQuery;
-  const fromTable = parseStandardNvidiaSmi(await runNvidiaSmi([], command), pid);
-  if (fromTable >= 0) return fromTable;
-  return -1;
+  return parseStandardNvidiaSmi(await runNvidiaSmi([], command), pid);
 }
 
 export async function collectMetricSample(pid: number, command = "nvidia-smi", now = () => new Date()): Promise<MetricSample> {
@@ -128,11 +100,9 @@ export async function collectMetricSample(pid: number, command = "nvidia-smi", n
     ["--query-gpu=memory.used,power.draw,temperature.gpu,utilization.gpu", "--format=csv,noheader,nounits"],
     command,
   ));
-  const processActivity = parsePmonQuery(await runNvidiaSmi(["pmon", "-c", "1"], command), pid);
   return {
     at: now().toISOString(),
     ...gpu,
-    ...processActivity,
     process_vram_mib: await sampleProcessVram(pid, command),
     shared_mib: -1,
     ram_avail_mib: Math.trunc(os.freemem() / 1024 / 1024),

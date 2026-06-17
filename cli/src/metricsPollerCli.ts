@@ -1,11 +1,10 @@
 import { pathToFileURL } from "node:url";
-import { collectMetricSample, startMetricPoller } from "./metricsPoller.js";
+import { startMetricPoller } from "./metricsPoller.js";
 
 interface Args {
   pid: number;
   outFile: string;
   intervalMs: number;
-  once: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -17,20 +16,14 @@ function parseArgs(argv: string[]): Args {
     pid: Number(get("--pid")),
     outFile: get("--out-file"),
     intervalMs: Number(get("--interval-ms") || 150),
-    once: argv.includes("--once"),
   };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  if (!Number.isInteger(args.pid) || args.pid <= 0 || (!args.outFile && !args.once)) {
-    process.stderr.write("usage: metricsPollerCli --pid <pid> [--once | --out-file <path>] [--interval-ms 150]\n");
+  if (!Number.isInteger(args.pid) || args.pid <= 0 || !args.outFile) {
+    process.stderr.write("usage: metricsPollerCli --pid <pid> --out-file <path> [--interval-ms 150]\n");
     process.exitCode = 2;
-    return;
-  }
-
-  if (args.once) {
-    process.stdout.write(`${JSON.stringify(await collectMetricSample(args.pid))}\n`);
     return;
   }
 

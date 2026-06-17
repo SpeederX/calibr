@@ -58,7 +58,6 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function noWinnerSummary')         "noWinnerSummary helper missing"
         Assert-True ($tpl -match 'unsupported_arch')                 "unsupported_arch case missing from fitLabel"
         Assert-True ($tpl -match 'unsupported_architecture')         "unsupported_architecture detail missing"
-        Assert-True ($tpl -match 'process_vram_unavailable')         "process_vram_unavailable case missing"
         Assert-True ($tpl -match 'is-failed')                        "is-failed model row modifier missing"
     }
     It "exposes the eval/vram tabbed widget that replaces the old separate bar sections" {
@@ -101,9 +100,9 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'normalized within the currently visible rows') "relative-percent tooltip missing"
         Assert-True ($tpl -match 'WDDM/shared GPU memory') "Shared tooltip missing"
         Assert-True ($tpl -match 'Disk read happens just for the first config run of the model') "Disk tooltip should explain cold-load cache behavior"
-        Assert-True ($tpl -match 'process-attributed peak') "VRAM tooltip should mention process attribution"
-        Assert-True ($tpl -match 'not sampled') "VRAM tooltip should distinguish missing PID samples"
-        Assert-True ($tpl -match 'not supported') "VRAM tooltip should distinguish unsupported process attribution"
+        Assert-True ($tpl -match 'system-level NVIDIA reading') "VRAM tooltip should explain system-level scope"
+        Assert-True ($tpl -match 'Estimated run delta') "VRAM tooltip should show baseline-subtracted estimate"
+        Assert-True ($tpl -match 'apps, 3D processes, browsers, overlays') "VRAM explainer should warn about external activity"
         Assert-True ($tpl -match 'Baseline warning') "VRAM tooltip should warn on high baseline usage"
     }
     It "falls back to requested gpu layers when llama.cpp does not report actual layers" {

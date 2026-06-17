@@ -167,8 +167,6 @@ function New-AggregatedBenchResult {
     $totalReqRaw   = Get-Median -values @($runs | ForEach-Object { $_.total_request_ms })
     $latReqRaw     = Get-Median -values @($runs | ForEach-Object { $_.latency_total_request_ms })
     $utilAvgMed    = [int](Get-Median   -values @($runs | ForEach-Object { $_.gpu_util_avg_pct }))
-    $processSmPeakMax = @($runs | ForEach-Object { $_.process_sm_peak_pct } | Where-Object { $null -ne $_ } | Measure-Object -Maximum).Maximum
-    $processMemPeakMax = @($runs | ForEach-Object { $_.process_mem_peak_pct } | Where-Object { $null -ne $_ } | Measure-Object -Maximum).Maximum
     $powerPeakMax  = [math]::Round((@($runs | ForEach-Object { $_.gpu_power_peak_w }) | Measure-Object -Maximum).Maximum, 1)
     $tempPeakMax   = [int]((@($runs | ForEach-Object { $_.gpu_temp_peak_c })  | Measure-Object -Maximum).Maximum)
     $ramPeakMax    = [int]((@($runs | ForEach-Object { $_.ram_used_peak_mib }) | Measure-Object -Maximum).Maximum)
@@ -235,8 +233,6 @@ function New-AggregatedBenchResult {
         total_request_ms     = if ($null -ne $totalReqRaw)  { [math]::Round($totalReqRaw, 2) } else { $null }
         latency_total_request_ms = if ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
         gpu_util_avg_pct     = $utilAvgMed
-        process_sm_peak_pct  = if ($null -ne $processSmPeakMax) { [int]$processSmPeakMax } else { $null }
-        process_mem_peak_pct = if ($null -ne $processMemPeakMax) { [int]$processMemPeakMax } else { $null }
         gpu_power_peak_w     = $powerPeakMax
         gpu_temp_peak_c      = $tempPeakMax
         ram_baseline_mib     = $first.ram_baseline_mib
@@ -664,86 +660,6 @@ function Start-TsBenchMetricPoller {
     }
 }
 
-function Invoke-TsMetricSample {
-    param([int]$ProcessId)
-    $script = Resolve-TsMetricsPollerScript
-    if (-not $script) { return $null }
-    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
-    try {
-        $out = & $node $script --pid $ProcessId --once
-        $text = (@($out) -join "`n").Trim()
-        if (-not $text) { return $null }
-        return ($text | ConvertFrom-Json)
-    } catch {
-        return $null
-    }
-}
-
-function Test-NvidiaSmiAvailable {
-    try {
-        $cmd = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-        return ($null -ne $cmd)
-    } catch {
-        return $false
-    }
-}
-
-function Wait-ProcessVramAttribution {
-    param(
-        [int]$ProcessId,
-        [int]$TimeoutMs = 5000,
-        [int]$IntervalMs = 250
-    )
-    if ($env:CALIBR_REQUIRE_PROCESS_VRAM -eq '0') {
-        return [pscustomobject]@{ ok = $true; skipped = $true; reason = "disabled"; process_vram_mib = $null; gpu_mem_mib = $null; process_sm_pct = $null; process_mem_pct = $null }
-    }
-    if (-not (Test-NvidiaSmiAvailable)) {
-        return [pscustomobject]@{ ok = $true; skipped = $true; reason = "nvidia-smi unavailable"; process_vram_mib = $null; gpu_mem_mib = $null; process_sm_pct = $null; process_mem_pct = $null }
-    }
-
-    $deadline = (Get-Date).AddMilliseconds($TimeoutMs)
-    do {
-        $sample = Invoke-TsMetricSample -ProcessId $ProcessId
-        if ($sample -and (
-            ($null -ne $sample.process_vram_mib -and [int]$sample.process_vram_mib -ge 0) -or
-            ($null -ne $sample.process_gpu_active -and [bool]$sample.process_gpu_active)
-        )) {
-            return [pscustomobject]@{
-                ok = $true
-                skipped = $false
-                reason = "matched"
-                process_vram_mib = if ($null -ne $sample.process_vram_mib -and [int]$sample.process_vram_mib -ge 0) { [int]$sample.process_vram_mib } else { $null }
-                process_sm_pct = if ($null -ne $sample.process_sm_pct -and [int]$sample.process_sm_pct -ge 0) { [int]$sample.process_sm_pct } else { $null }
-                process_mem_pct = if ($null -ne $sample.process_mem_pct -and [int]$sample.process_mem_pct -ge 0) { [int]$sample.process_mem_pct } else { $null }
-                gpu_mem_mib = if ($null -ne $sample.gpu_mem_mib) { [int]$sample.gpu_mem_mib } else { $null }
-            }
-        }
-        $fallback = Get-GpuProcessMemoryMib -ProcessId $ProcessId
-        if ($fallback -ge 0) {
-            return [pscustomobject]@{
-                ok = $true
-                skipped = $false
-                reason = "matched"
-                process_vram_mib = [int]$fallback
-                process_sm_pct = $null
-                process_mem_pct = $null
-                gpu_mem_mib = (Get-GpuSnapshot).mem_mib
-            }
-        }
-        Start-Sleep -Milliseconds $IntervalMs
-    } while ((Get-Date) -lt $deadline)
-
-    return [pscustomobject]@{
-        ok = $false
-        skipped = $false
-        reason = "pid_not_matched"
-        process_vram_mib = $null
-        process_sm_pct = $null
-        process_mem_pct = $null
-        gpu_mem_mib = (Get-GpuSnapshot).mem_mib
-    }
-}
-
 function Invoke-OneBenchRun {
     # Execute one warmup-then-bench cycle for $item: spawn llama-server,
     # wait for ready, optional warmup, bench, parse stderr, tear down.
@@ -904,34 +820,9 @@ function Invoke-OneBenchRun {
         ram_baseline_mib     = $ramBaseline
         ram_used_peak_mib    = if ($ramBaseline -ge 0 -and $minRam -ge 0) { [int]($ramBaseline - $minRam) } else { 0 }
         disk_read_peak_mb_s  = [math]::Round($peakDiskRead / 1MB, 1)
-        process_vram_attribution = $null
-        process_sm_peak_pct = $null
-        process_mem_peak_pct = $null
     }
 
     if ($ready) {
-        $processGate = Wait-ProcessVramAttribution -ProcessId $p.Id
-        $run.process_vram_attribution = $processGate.reason
-        if ($processGate.ok -and -not $processGate.skipped) {
-            if ($null -ne $processGate.process_sm_pct) { $run.process_sm_peak_pct = [int]$processGate.process_sm_pct }
-            if ($null -ne $processGate.process_mem_pct) { $run.process_mem_peak_pct = [int]$processGate.process_mem_pct }
-            $gateMem = if ($null -ne $processGate.gpu_mem_mib) { [int]$processGate.gpu_mem_mib } else { $run.vram_peak_mib }
-            if ($gateMem -gt $run.vram_peak_mib)       { $run.vram_peak_mib = $gateMem }
-            if ($gateMem -gt $run.vram_total_peak_mib) { $run.vram_total_peak_mib = $gateMem }
-            if ($null -ne $processGate.process_vram_mib) {
-                $run.vram_process_peak_mib = [int]$processGate.process_vram_mib
-                $vramTrack.process_peak = [int]$processGate.process_vram_mib
-                $external = [Math]::Max(0, $gateMem - [int]$processGate.process_vram_mib)
-                $run.vram_external_peak_mib = $external
-                $vramTrack.external_peak = $external
-            }
-        } elseif (-not $processGate.ok) {
-            $run.error = "process attribution failed: llama-server PID $($p.Id) was not visible in nvidia-smi pmon after readiness. Close other inference servers or set CALIBR_REQUIRE_PROCESS_VRAM=0 to bypass."
-            $run.failure_reason = "process_vram_unavailable"
-        }
-    }
-
-    if ($ready -and -not $run.error) {
         # We talk to /v1/chat/completions instead of /completion so llama-server
         # applies the chat template baked into the GGUF (Jinja). /completion
         # tokenizes the prompt raw - fine for Llama/Qwen which are forgiving,
@@ -1061,14 +952,6 @@ function Invoke-OneBenchRun {
                 if ($tmp -gt $run.gpu_temp_peak_c) { $run.gpu_temp_peak_c = $tmp }
                 $util = if ($null -ne $sample.gpu_util_pct) { [int]$sample.gpu_util_pct } else { -1 }
                 if ($util -ge 0) { $utilSum += $util; $utilCount++ }
-                $procSm = if ($null -ne $sample.process_sm_pct) { [int]$sample.process_sm_pct } else { -1 }
-                if ($procSm -ge 0 -and ($null -eq $run.process_sm_peak_pct -or $procSm -gt $run.process_sm_peak_pct)) {
-                    $run.process_sm_peak_pct = $procSm
-                }
-                $procMemPct = if ($null -ne $sample.process_mem_pct) { [int]$sample.process_mem_pct } else { -1 }
-                if ($procMemPct -ge 0 -and ($null -eq $run.process_mem_peak_pct -or $procMemPct -gt $run.process_mem_peak_pct)) {
-                    $run.process_mem_peak_pct = $procMemPct
-                }
 
                 $sharedNow = if ($null -ne $sample.shared_mib) { [int]$sample.shared_mib } else { -1 }
                 if ($sharedNow -ge 0) {
@@ -1319,7 +1202,6 @@ function Invoke-OneBench {
                 ram_baseline_mib     = $r.ram_baseline_mib
                 ram_used_peak_mib    = $r.ram_used_peak_mib
                 disk_read_peak_mb_s  = $r.disk_read_peak_mb_s
-                process_vram_attribution = $r.process_vram_attribution
                 # Session + llama-server identity (matches the success record
                 # in New-AggregatedBenchResult). Drives the report's
                 # latest-session filter and the cache's version-aware retry.
@@ -1328,8 +1210,7 @@ function Invoke-OneBench {
                 llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
                 llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
             }
-            $failureReason = if ($r.failure_reason) { $r.failure_reason } else { Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal }
-            $failResult | Add-Member -NotePropertyName failure_reason -NotePropertyValue $failureReason -Force
+            $failResult | Add-Member -NotePropertyName failure_reason -NotePropertyValue (Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal) -Force
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
             Write-BenchStatusLine -item $item -result $failResult
             return $failResult
@@ -1361,8 +1242,6 @@ function Write-BenchStatusLine {
         elseif ($result.wddm_flag_high_vram) { $detail += "   [WDDM: VRAM $([int]($result.wddm_vram_saturation*100))%]" }
     } elseif ($result.failure_reason -eq 'model_missing') {
         $detail = "(model file missing - re-download with get-models, or run discover to drop it)"
-    } elseif ($result.failure_reason -eq 'process_vram_unavailable') {
-        $detail = "(process VRAM attribution unavailable - PID not matched in nvidia-smi)"
     } elseif ($result.unsupported_architecture) {
         $detail = "(unsupported architecture: $($result.unsupported_architecture))"
     } elseif (-not $result.ready) {
@@ -1386,15 +1265,12 @@ function Get-FailureReason {
     #                        broken model file, port conflict, etc.
     #   unsupported_arch   - the v1.0 short-circuit: llama.cpp doesn't
     #                        know this architecture yet (update llama.cpp).
-    #   process_vram_unavailable - nvidia-smi exists, but the llama-server PID
-    #                        could not be matched before the measured request.
     #   other              - catch-all for $result.ok=false without any
     #                        of the above signals.
     # Returns $null when $result.ok is true (no failure to classify).
     param($result, [int]$sharedConfirmMib = 500)
     if ($null -eq $result) { return $null }
     if ($result.ok) { return $null }
-    if ($result.failure_reason -eq "process_vram_unavailable") { return "process_vram_unavailable" }
     if ($result.unsupported_architecture) { return "unsupported_arch" }
     $shared = if ($null -ne $result.shared_peak_mib) { [int]$result.shared_peak_mib } else { 0 }
     if ($result.fit_status -eq "failed_but_running" -or $shared -gt $sharedConfirmMib) {

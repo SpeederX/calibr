@@ -208,6 +208,7 @@
         <p><b>A. Fully in VRAM:</b> model weights, KV cache and compute buffers fit in GPU memory. This is the clean case; eval tokens/s usually stays stable.</p>
         <p><b>B. Near the cliff:</b> VRAM is almost saturated. Small changes in context, KV type, background apps, or MoE routing can push the run over the edge.</p>
         <p><b>C. Spill / paging:</b> Windows WDDM starts using shared system RAM. The model may still load, but token/s can drop hard because data crosses CPU/RAM/PCIe instead of staying in VRAM.</p>
+        <p><b>Baseline:</b> VRAM is measured at the start of each config, then sampled during the run. These are system-level NVIDIA readings; apps, 3D processes, browsers, overlays, or background work can change the peak and affect the benchmark.</p>
         <p><b>MoE note:</b> MoE can show the same pressure when experts do not fit cleanly. CPU expert offload may be intentional, but it is still a latency tradeoff.</p>
         <p><b>Latency fields:</b> TTFR is first streamed server response; e2e TTFT is first generated content/reasoning token; prompt ms is llama.cpp prefill time; request ms is the measured request wall time.</p>
       </span>
@@ -244,7 +245,7 @@
         <th class="num">Prompt rel % <span class="th-help" title="Prompt throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
         <th class="num">Eval t/s <span class="th-help" title="Decode throughput for generated tokens. This is the main speed metric used by winner selection.">?</span></th>
         <th class="num">Eval rel % <span class="th-help" title="Eval throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
-        <th class="num">VRAM <span class="th-help" title="Peak dedicated GPU memory observed during load/bench, in MiB. Hover a value for baseline, total peak, process-attributed peak when available, and external/system pressure.">?</span></th>
+        <th class="num">VRAM <span class="th-help" title="Peak dedicated GPU memory observed with NVIDIA system-level sampling, in MiB. Hover a value for baseline, total peak, and run delta. Other apps/processes can affect this number.">?</span></th>
         <th class="num">Shared <span class="th-help" title="WDDM/shared GPU memory delta. On Windows, positive values indicate spill into system RAM.">?</span></th>
         <th class="num">RAM Δ <span class="th-help" title="Peak system RAM increase observed during the run, in MiB.">?</span></th>
         <th class="num">GPU W <span class="th-help" title="Peak GPU power draw observed during the run.">?</span></th>
@@ -801,26 +802,20 @@ function fmtPct(value) {
 function vramCellTitle(d) {
   const hasBaseline = d.vram_baseline_mib != null || d.vram_baseline_pct != null;
   const hasTotal = d.vram_total_peak_mib != null || d.vram_peak_mib != null;
-  const processPeak = d.vram_process_peak_mib != null
-    ? d.vram_process_peak_mib + ' MiB'
-    : (hasBaseline && hasTotal
-      ? 'not sampled (PID was not matched during polling)'
-      : (hasTotal ? 'not supported by this backend/driver path' : 'not available'));
-  const externalPeak = d.vram_external_peak_mib != null
-    ? d.vram_external_peak_mib + ' MiB'
-    : (d.vram_process_peak_mib == null && hasBaseline && hasTotal
-      ? 'not sampled (requires process VRAM)'
-      : 'not available');
+  const totalPeak = d.vram_total_peak_mib != null ? d.vram_total_peak_mib : d.vram_peak_mib;
+  const runDelta = totalPeak != null && d.vram_baseline_mib != null
+    ? Math.max(0, totalPeak - d.vram_baseline_mib)
+    : null;
   const baselinePct = d.vram_baseline_pct != null ? (+d.vram_baseline_pct) * 100 : null;
   const baselineHint = baselinePct != null && baselinePct >= 10
     ? 'Baseline warning: OS/apps already use >=10% VRAM before this run.'
     : null;
   const parts = [
-    'Total peak: ' + (d.vram_total_peak_mib != null ? d.vram_total_peak_mib : d.vram_peak_mib || '-') + ' MiB',
+    'Total peak: ' + (totalPeak != null ? totalPeak : '-') + ' MiB',
     'Baseline before run: ' + (d.vram_baseline_mib != null ? d.vram_baseline_mib + ' MiB' : '-'),
     'Baseline %: ' + (baselinePct != null ? fmt1(baselinePct) + '%' : '-'),
-    'llama-server process peak: ' + processPeak,
-    'External/system peak: ' + externalPeak
+    'Estimated run delta: ' + (runDelta != null ? runDelta + ' MiB' : '-'),
+    'Scope: system-level NVIDIA reading; not per-process attribution.'
   ].concat(baselineHint ? [baselineHint] : []);
   return escapeHtml(parts.join('\n'));
 }
@@ -1084,7 +1079,6 @@ function fitLabel(c) {
         : 'unsupported architecture';
     case 'vram_overflow':  return 'vram overflow on load';
     case 'server_timeout': return 'llama-server timeout';
-    case 'process_vram_unavailable': return 'process VRAM unavailable';
     case 'other':          return 'load failed';
     default:
       // Legacy result JSONs (pre-failure_reason) — best-effort guess.
@@ -1109,7 +1103,6 @@ function failureLabel(reason) {
     case 'unsupported_arch': return 'unsupported architecture (needs newer llama.cpp build)';
     case 'vram_overflow':    return 'ran out of VRAM on load';
     case 'server_timeout':   return 'llama-server never became ready';
-    case 'process_vram_unavailable': return 'process VRAM attribution unavailable';
     case 'other':            return 'load failed';
     default:                 return reason || 'unknown';
   }
