@@ -711,17 +711,18 @@ function Invoke-Help {
             )
         }
         "report" = @{
-            Usage    = "calibr report [-GroupBy {model|model+variant}] [-PreferSpeed]"
+            Usage    = "calibr report [-GroupBy {model|model+variant}] [-PreferSpeed] [-VramUsageWarningPct N]"
             Flags    = @(
                 "-GroupBy model           (default) one winner per model"
                 "-GroupBy model+variant   one winner per (model,variant) pair"
                 "-PreferSpeed             Pick highest eval_tps regardless of WDDM paging"
                 "                         (default: prefer non-paging configs even if slower)"
+                "-VramUsageWarningPct N   Warn when baseline VRAM before a config run is >= N%."
             )
             Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
+            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-VramUsageWarningPct N] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
             Flags    = @(
                 "-AutoFetchLlama       Run init with automatic llama.cpp download when setup is incomplete"
                 "-LlamaCppBuild bNNNN   With -AutoFetchLlama, pin a specific llama.cpp release"
@@ -734,6 +735,7 @@ function Invoke-Help {
                 "-Model <regex>           Filter download AND bench by model name"
                 "-Force                   Re-run all benchmarks (skip cache)"
                 "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
+                "-VramUsageWarningPct N   Session-only report warning threshold for baseline VRAM."
                 "-DownloadRetention       cleanup (default), keep-all, keep-top-3, or keep-top-1."
                 "                         Only calibr-downloaded files from the current run are"
                 "                         eligible for cleanup; user-owned files are never touched."

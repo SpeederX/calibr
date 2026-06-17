@@ -103,6 +103,7 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'system-level NVIDIA reading') "VRAM tooltip should explain system-level scope"
         Assert-True ($tpl -match 'Estimated run delta') "VRAM tooltip should show baseline-subtracted estimate"
         Assert-True ($tpl -match 'apps, 3D processes, browsers, overlays') "VRAM explainer should warn about external activity"
+        Assert-True ($tpl -match 'baselineWarningPct') "VRAM tooltip should use configurable baseline warning threshold"
         Assert-True ($tpl -match 'Baseline warning') "VRAM tooltip should warn on high baseline usage"
     }
     It "falls back to requested gpu layers when llama.cpp does not report actual layers" {

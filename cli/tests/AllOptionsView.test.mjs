@@ -70,6 +70,11 @@ test("download retention passes through as -DownloadRetention", () => {
     ["all", "-FetchCatalog", "-Preset", "low", "-DownloadRetention", "keep-top-3"]);
 });
 
+test("VRAM warning threshold passes through as a run-scoped override", () => {
+  assert.deepEqual(buildAllArgs({ ...base, vramUsageWarningPct: 15 }).args,
+    ["all", "-FetchCatalog", "-Preset", "low", "-VramUsageWarningPct", "15"]);
+});
+
 test("model folder passes through as scan path and download destination", () => {
   assert.deepEqual(buildAllArgs({ ...base, modelFolder: "D:\\models" }).args,
     ["all", "-ScanPath", "D:\\models", "-Destination", "D:\\models", "-FetchCatalog", "-Preset", "low"]);

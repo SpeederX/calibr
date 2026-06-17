@@ -91,6 +91,11 @@ param(
     # ignoring WDDM-paging safety. Default off - safety wins ties.
     [switch]$PreferSpeed,
 
+    # Used by report (and `all`): warn when baseline VRAM already used by
+    # OS/apps before each config run is at or above this percentage. -1 means
+    # use preferences.vram_usage_warning_pct from config (default 10).
+    [int]$VramUsageWarningPct = -1,
+
     # Used by bench (and `all`): how many runs to execute per config when
     # gathering measurements. The top-level result records the median over the
     # N runs for varying metrics; raw per-run values live in a `runs` array.

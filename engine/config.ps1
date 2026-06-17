@@ -63,6 +63,12 @@ function Get-Config {
         $existing = if ($result.exclude_patterns) { @($result.exclude_patterns) } else { @() }
         $result.exclude_patterns = @($existing + $script:ExcludePattern)
     }
+    if ($script:VramUsageWarningPct -ge 0) {
+        if (-not $result.ContainsKey('preferences') -or -not ($result.preferences -is [hashtable])) {
+            $result.preferences = @{}
+        }
+        $result.preferences.vram_usage_warning_pct = [Math]::Max(0, [Math]::Min(100, [int]$script:VramUsageWarningPct))
+    }
 
     # Auto-detect hardware in-memory if the user hasn't supplied it via config.json.
     # This makes the tool usable end-to-end with just CLI flags, no init / config.json required.

@@ -69,7 +69,7 @@ export function PreferencesView({ onExit }: Props) {
           Warn when baseline VRAM already used by OS/apps is above this share of total VRAM.
         </Text>
         <Text dimColor>
-          This is a user preference. Guided-run per-run overrides are tracked as the next UI step.
+          Guided Run can override this for the current session without saving it.
         </Text>
       </Box>
       <Box marginTop={1} flexDirection="column">

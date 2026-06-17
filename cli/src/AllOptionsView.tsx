@@ -49,6 +49,8 @@ function readDiscoveredModelNames(): string[] {
 const ALL_RUNS_VALUES: number[] = [0, 1, 3, 5];
 const DOWNLOAD_RETENTION_VALUES = ["cleanup", "keep-all", "keep-top-3", "keep-top-1"] as const;
 export type DownloadRetention = (typeof DOWNLOAD_RETENTION_VALUES)[number];
+const DEFAULT_VRAM_WARNING_PCT = 10;
+const VRAM_WARNING_STEP = 5;
 
 function next<T>(values: readonly T[], current: T): T {
   const i = values.indexOf(current);
@@ -187,6 +189,7 @@ export interface AllArgsOpts {
   downloadRetention: DownloadRetention;
   preferSpeed: boolean;
   minimalPolling: boolean;
+  vramUsageWarningPct?: number | null;
   rerunAll: boolean;
   contextSizes?: number[] | null;
 }
@@ -230,6 +233,10 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
   if (o.rerunAll)        { args.push("-Force");          parts.push("-Force"); }
   if (o.preferSpeed)     { args.push("-PreferSpeed");    parts.push("-PreferSpeed"); }
   if (o.minimalPolling)  { args.push("-MinimalPolling"); parts.push("-MinimalPolling"); }
+  if (typeof o.vramUsageWarningPct === "number" && Number.isFinite(o.vramUsageWarningPct)) {
+    args.push("-VramUsageWarningPct", String(o.vramUsageWarningPct));
+    parts.push(`-VramUsageWarningPct ${o.vramUsageWarningPct}`);
+  }
   return { args, label: parts.length ? `all ${parts.join(" ")}` : "all" };
 }
 
@@ -267,7 +274,12 @@ export interface GuidedRunSession {
   downloadRetention?: DownloadRetention;
   preferSpeed?: boolean;
   minimalPolling?: boolean;
+  vramUsageWarningPct?: number;
   llamaDecision?: LlamaDecision | null;
+}
+
+function clampVramWarningPct(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value / VRAM_WARNING_STEP) * VRAM_WARNING_STEP));
 }
 
 export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Props) {
@@ -287,6 +299,10 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   const [downloadRetention, setDownloadRetention] = useState<DownloadRetention>(session?.downloadRetention ?? "cleanup");
   const [preferSpeed, setPreferSpeed] = useState<boolean>(session?.preferSpeed ?? false);
   const [minimalPolling, setMinimalPolling] = useState<boolean>(session?.minimalPolling ?? false);
+  const [vramUsageWarningPct, setVramUsageWarningPct] = useState<number>(() => {
+    const raw = session?.vramUsageWarningPct ?? cfg.preferences?.vram_usage_warning_pct ?? DEFAULT_VRAM_WARNING_PCT;
+    return typeof raw === "number" && Number.isFinite(raw) ? clampVramWarningPct(raw) : DEFAULT_VRAM_WARNING_PCT;
+  });
   const [model, setModel] = useState<string | null>(session?.model ?? null);
   const [runs, setRuns] = useState<number>(session?.runs ?? 0);
   const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(session?.llamaDecision ?? null);
@@ -367,6 +383,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     { kind: "rotate"   as const, label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
     { kind: "polling"  as const, label: `live metrics:    ${minimalPolling ? "minimal (lowest overhead; no GPU power / temp / RAM / disk strip)" : "full    (default — GPU/RAM/disk strip + extended fields in results)"}` },
+    { kind: "advanced" as const, label: `advanced settings: VRAM warning at ${vramUsageWarningPct}% baseline` },
     { kind: "run"      as const, label: "> start all" },
     { kind: "cancel"   as const, label: "  cancel" },
   ];
@@ -380,7 +397,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, rerunAll, contextSizes: customCtxSizes });
+    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -412,6 +429,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         downloadRetention,
         preferSpeed,
         minimalPolling,
+        vramUsageWarningPct,
         rerunAll,
       },
     };
@@ -610,6 +628,14 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         const nextPolling = !minimalPolling;
         setMinimalPolling(nextPolling);
         onSessionChange?.({ minimalPolling: nextPolling });
+        break;
+      }
+      case "advanced": {
+        const nextPct = vramUsageWarningPct >= 100
+          ? 0
+          : clampVramWarningPct(vramUsageWarningPct + VRAM_WARNING_STEP);
+        setVramUsageWarningPct(nextPct);
+        onSessionChange?.({ vramUsageWarningPct: nextPct });
         break;
       }
       case "run": startRun(); break;
@@ -1061,6 +1087,9 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         </Text>
         <Text dimColor>
           calibr uses ~150 MB RAM and 1–3% CPU on a polling thread, and does NOT touch the GPU.
+        </Text>
+        <Text dimColor>
+          advanced settings are session-only overrides; restart calibr to return to preferences/defaults.
         </Text>
       </Box>
       <Box marginTop={1}><Text dimColor>↑/↓ move · enter cycles or runs · q/esc back</Text></Box>

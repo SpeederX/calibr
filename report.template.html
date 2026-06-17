@@ -264,6 +264,9 @@
 const DATA = %%DATA%%;
 const WINNERS = %%WINNERS%%;  // engine's safety-first picks; used for the static bats/ links
 const CFG = %%CFG%%;
+const baselineWarningPct = Number.isFinite(+CFG?.preferences?.vram_usage_warning_pct)
+  ? Math.max(0, Math.min(100, +CFG.preferences.vram_usage_warning_pct))
+  : 10;
 
 // ===========================================================================
 // Hardware header + overall stats (unchanged from v1.1)
@@ -807,8 +810,8 @@ function vramCellTitle(d) {
     ? Math.max(0, totalPeak - d.vram_baseline_mib)
     : null;
   const baselinePct = d.vram_baseline_pct != null ? (+d.vram_baseline_pct) * 100 : null;
-  const baselineHint = baselinePct != null && baselinePct >= 10
-    ? 'Baseline warning: OS/apps already use >=10% VRAM before this run.'
+  const baselineHint = baselinePct != null && baselinePct >= baselineWarningPct
+    ? 'Baseline warning: OS/apps already use >=' + baselineWarningPct + '% VRAM before this run.'
     : null;
   const parts = [
     'Total peak: ' + (totalPeak != null ? totalPeak : '-') + ' MiB',
