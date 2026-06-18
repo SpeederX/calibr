@@ -685,6 +685,8 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
           CALIBR_TS_BENCH_SCRIPT: join(__dirname, "benchRunnerCli.js"),
           CALIBR_TS_RESULT_CORE: "1",
           CALIBR_TS_RESULT_CORE_SCRIPT: join(__dirname, "resultCoreCli.js"),
+          CALIBR_TS_LIFECYCLE: "1",
+          CALIBR_TS_LIFECYCLE_SCRIPT: join(__dirname, "serverLifecycleCli.js"),
           CALIBR_NODE: process.execPath,
         }
       : {}),

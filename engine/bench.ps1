@@ -623,10 +623,131 @@ function Resolve-TsMetricsPollerScript {
     return ""
 }
 
+function Resolve-TsServerLifecycleScript {
+    if ($env:CALIBR_TS_LIFECYCLE -eq '0') { return "" }
+    if ($env:CALIBR_TS_LIFECYCLE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_LIFECYCLE_SCRIPT)) {
+        return $env:CALIBR_TS_LIFECYCLE_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\serverLifecycleCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\serverLifecycleCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
 function ConvertTo-ProcessArgument {
     param([string]$Value)
     if ($null -eq $Value) { return '""' }
     return '"' + ($Value -replace '\\', '\\' -replace '"', '\"') + '"'
+}
+
+function Get-TsServerLifecycleStatus {
+    param($Lifecycle)
+    if (-not $Lifecycle -or -not (Test-Path -LiteralPath $Lifecycle.status_file)) { return $null }
+    try {
+        return (Get-Content -LiteralPath $Lifecycle.status_file -Raw -ErrorAction Stop | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Start-TsServerLifecycle {
+    param(
+        [string]$Executable,
+        [string[]]$Arguments,
+        [string]$BaseUrl,
+        [int]$TimeoutMs
+    )
+    $script = Resolve-TsServerLifecycleScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $id = [Guid]::NewGuid().ToString("N")
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-lifecycle-{0}" -f $id)
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $payloadPath = Join-Path $root "payload.json"
+    $statusPath = Join-Path $root "status.json"
+    $stopPath = Join-Path $root "stop"
+    $stdoutPath = Join-Path $root "server.stdout.log"
+    $stderrPath = Join-Path $root "server.stderr.log"
+    $payload = [ordered]@{
+        executable = $Executable
+        args = @($Arguments)
+        baseUrl = $BaseUrl
+        timeoutMs = $TimeoutMs
+        pollIntervalMs = 250
+        statusFile = $statusPath
+        stopFile = $stopPath
+        stdoutFile = $stdoutPath
+        stderrFile = $stderrPath
+        parentPid = $PID
+    } | ConvertTo-Json -Compress -Depth 10
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $node
+        $psi.Arguments = "{0} --json-file {1}" -f (ConvertTo-ProcessArgument $script), (ConvertTo-ProcessArgument $payloadPath)
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p) { throw "could not start TS lifecycle supervisor" }
+        $stdoutTask = $p.StandardOutput.ReadToEndAsync()
+        $stderrTask = $p.StandardError.ReadToEndAsync()
+        $deadline = (Get-Date).AddSeconds(5)
+        $status = $null
+        while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
+            Start-Sleep -Milliseconds 25
+            $status = Get-TsServerLifecycleStatus -Lifecycle @{ status_file = $statusPath }
+            if ($status -and $status.serverPid) { break }
+            if ($status -and $status.state -eq 'error') { break }
+        }
+        if (-not $status -or -not $status.serverPid) {
+            try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+            throw "TS lifecycle supervisor did not publish a server PID"
+        }
+        return @{
+            process = $p
+            server_pid = [int]$status.serverPid
+            status_file = $statusPath
+            stop_file = $stopPath
+            stdout_file = $stdoutPath
+            stderr_file = $stderrPath
+            payload_file = $payloadPath
+            root = $root
+            stdout_task = $stdoutTask
+            stderr_task = $stderrTask
+            kind = 'ts'
+        }
+    } catch {
+        try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+        return $null
+    }
+}
+
+function Stop-TsServerLifecycle {
+    param($Lifecycle)
+    if (-not $Lifecycle) { return "" }
+    try {
+        [System.IO.File]::WriteAllText($Lifecycle.stop_file, "stop", (New-Object System.Text.UTF8Encoding($false)))
+        $deadline = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $deadline -and -not $Lifecycle.process.HasExited) {
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not $Lifecycle.process.HasExited) {
+            try { $Lifecycle.process.Kill() } catch { }
+        }
+        Start-Sleep -Milliseconds 100
+        if (Test-Path -LiteralPath $Lifecycle.stderr_file) {
+            return (Get-Content -LiteralPath $Lifecycle.stderr_file -Raw -ErrorAction SilentlyContinue)
+        }
+        return ""
+    } finally {
+        try { Remove-Item -LiteralPath $Lifecycle.root -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    }
 }
 
 function Start-TsBenchMetricPoller {
@@ -681,6 +802,10 @@ function Invoke-OneBenchRun {
     $argStr = "-m `"$($item.model_path)`""
     if ($item.mmproj_path) { $argStr += " --mmproj `"$($item.mmproj_path)`"" }
     $argStr += " $($item.extra_args) --port $port --host 127.0.0.1 --no-warmup --cache-ram 128"
+    $serverArgs = @("-m", [string]$item.model_path)
+    if ($item.mmproj_path) { $serverArgs += @("--mmproj", [string]$item.mmproj_path) }
+    $serverArgs += @([string]$item.extra_args -split '\s+' | Where-Object { $_ })
+    $serverArgs += @("--port", [string]$port, "--host", "127.0.0.1", "--no-warmup", "--cache-ram", "128")
 
     $gpuBaseline = Get-GpuSnapshot
     $vramBefore = $gpuBaseline.mem_mib
@@ -694,18 +819,30 @@ function Invoke-OneBenchRun {
     "[CMD] $exe $argStr" | Out-File -Encoding utf8 -Append $logFile
     "[VRAM before: $vramBefore MiB; shared baseline: $sharedBaseline MiB; RAM avail: $ramBaseline MiB]" | Out-File -Encoding utf8 -Append $logFile
 
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $exe
-    $psi.Arguments = $argStr
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError  = $true
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow  = $true
-
     $loadStart = Get-Date
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $outTask = $p.StandardOutput.ReadToEndAsync()
-    $errTask = $p.StandardError.ReadToEndAsync()
+    $lifecycle = Start-TsServerLifecycle `
+        -Executable $exe `
+        -Arguments $serverArgs `
+        -BaseUrl "http://127.0.0.1:$port" `
+        -TimeoutMs ([int]$cfg.bench.wait_sec_ready * 1000)
+    if ($lifecycle) {
+        $p = $lifecycle.process
+        $serverPid = [int]$lifecycle.server_pid
+        $outTask = $null
+        $errTask = $null
+    } else {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = $argStr
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow  = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $serverPid = $p.Id
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $errTask = $p.StandardError.ReadToEndAsync()
+    }
 
     # Phase marker: CLI uses these to drive the per-run flow widget. Grep-
     # stable single-word state name. See RunView's PHASE_RE / RUN_PHASES.
@@ -724,14 +861,14 @@ function Invoke-OneBenchRun {
     $peakDiskRead = 0            # bytes/sec, load phase only
     $trackProcessVram = {
         param([int]$totalVramNow)
-        $procVram = Get-GpuProcessMemoryMib -ProcessId $p.Id
+        $procVram = Get-GpuProcessMemoryMib -ProcessId $serverPid
         if ($procVram -ge 0) {
             if ($procVram -gt $vramTrack.process_peak) { $vramTrack.process_peak = $procVram }
             $external = [Math]::Max(0, $totalVramNow - $procVram)
             if ($external -gt $vramTrack.external_peak) { $vramTrack.external_peak = $external }
         }
     }
-    $wc = New-Object System.Net.WebClient
+    $wc = if ($lifecycle) { $null } else { New-Object System.Net.WebClient }
     while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
         Start-Sleep -Milliseconds 500
         if ($MinimalPolling) {
@@ -780,13 +917,27 @@ function Invoke-OneBenchRun {
             $diskStr = $diskMBNow.ToString($inv)
             Write-Host ("[poll] gpu_mem={0} gpu_pow={1} gpu_temp={2} gpu_util={3} ram_used={4} disk_r={5}" -f $snap.mem_mib, $powStr, $snap.temp_c, $snap.util_pct, $ramUsedNow, $diskStr)
         }
-        try {
-            $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
-            if ($content.Length -gt 10) { $ready = $true; break }
-        } catch { }
+        if ($lifecycle) {
+            $lifecycleStatus = Get-TsServerLifecycleStatus -Lifecycle $lifecycle
+            if ($lifecycleStatus -and $lifecycleStatus.state -eq 'ready') {
+                $ready = $true
+                break
+            }
+            if ($lifecycleStatus -and $lifecycleStatus.state -in @('timeout', 'exited', 'error')) { break }
+        } else {
+            try {
+                $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
+                if ($content.Length -gt 10) { $ready = $true; break }
+            } catch { }
+        }
     }
-    $wc.Dispose()
-    $loadSec = [math]::Round(((Get-Date) - $loadStart).TotalSeconds, 2)
+    if ($wc) { $wc.Dispose() }
+    $lifecycleStatus = if ($lifecycle) { Get-TsServerLifecycleStatus -Lifecycle $lifecycle } else { $null }
+    $loadSec = if ($lifecycleStatus -and $null -ne $lifecycleStatus.loadMs) {
+        [math]::Round([double]$lifecycleStatus.loadMs / 1000, 2)
+    } else {
+        [math]::Round(((Get-Date) - $loadStart).TotalSeconds, 2)
+    }
 
     if ($ready) { Write-Host "[phase] server_ready" }
 
@@ -860,7 +1011,7 @@ function Invoke-OneBenchRun {
         $body = $reqBody | ConvertTo-Json -Compress -Depth 5
         Write-Host "[phase] sending_prompt"
         $requestStart = Get-Date
-        $inferencePoller = if (-not $MinimalPolling) { Start-BenchMetricPoller -ProcessId $p.Id } else { $null }
+        $inferencePoller = if (-not $MinimalPolling) { Start-BenchMetricPoller -ProcessId $serverPid } else { $null }
         try {
             $tsBenchScript = Resolve-TsBenchRunnerScript
             if ($tsBenchScript) {
@@ -998,10 +1149,14 @@ function Invoke-OneBenchRun {
         }
     }
 
-    if (-not $p.HasExited) { try { $p.Kill() } catch { } }
+    if ($lifecycle) {
+        $err = Stop-TsServerLifecycle -Lifecycle $lifecycle
+    } else {
+        if (-not $p.HasExited) { try { $p.Kill() } catch { } }
+        Start-Sleep -Milliseconds 700
+        try { $err = $errTask.GetAwaiter().GetResult() } catch { $err = "" }
+    }
     Stop-LinuxGpuMonitor
-    Start-Sleep -Milliseconds 700
-    try { $err = $errTask.GetAwaiter().GetResult() } catch { $err = "" }
 
     "`n===== STDERR (run $runIndex) =====" | Out-File -Encoding utf8 -Append $logFile
     $err | Out-File -Encoding utf8 -Append $logFile

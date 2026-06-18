@@ -99,6 +99,43 @@ Describe "Resolve-TsResultCoreScript" {
     }
 }
 
+Describe "TypeScript server lifecycle" {
+    $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+
+    It "finds the local lifecycle runner and honors the opt-out" {
+        $oldRoot = $script:CALIBR_ROOT
+        $oldFlag = $env:CALIBR_TS_LIFECYCLE
+        $oldScript = $env:CALIBR_TS_LIFECYCLE_SCRIPT
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-lifecycle-test-$([Guid]::NewGuid().ToString('N'))"
+        $runner = Join-Path $tmpRoot "cli\dist\serverLifecycleCli.js"
+        New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
+        try {
+            $script:CALIBR_ROOT = $tmpRoot
+            $env:CALIBR_TS_LIFECYCLE = $null
+            $env:CALIBR_TS_LIFECYCLE_SCRIPT = $null
+            Assert-Equal $runner (Resolve-TsServerLifecycleScript)
+            $env:CALIBR_TS_LIFECYCLE = "0"
+            Assert-Equal "" (Resolve-TsServerLifecycleScript)
+        } finally {
+            $script:CALIBR_ROOT = $oldRoot
+            $env:CALIBR_TS_LIFECYCLE = $oldFlag
+            $env:CALIBR_TS_LIFECYCLE_SCRIPT = $oldScript
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "owns server start/readiness/stop while preserving the PowerShell fallback" {
+        Assert-True ($benchSource -match 'function Start-TsServerLifecycle') "TS lifecycle launcher missing"
+        Assert-True ($benchSource -match 'function Stop-TsServerLifecycle') "TS lifecycle stop missing"
+        Assert-True ($benchSource -match 'serverLifecycleCli\.js') "lifecycle entrypoint should be wired"
+        Assert-True ($benchSource -match '\$serverPid = \[int\]\$lifecycle\.server_pid') "real llama-server PID should be used"
+        Assert-True ($benchSource -match 'Get-TsServerLifecycleStatus') "PowerShell adapter should consume lifecycle status"
+        Assert-True ($benchSource -match '\$psi = New-Object System\.Diagnostics\.ProcessStartInfo') "direct PowerShell spawn fallback should remain"
+        Assert-True ($benchSource -match 'CALIBR_TS_LIFECYCLE') "lifecycle opt-out should remain available"
+    }
+}
+
 Describe "Background bench polling" {
     $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
 
