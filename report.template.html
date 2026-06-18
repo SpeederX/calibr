@@ -120,8 +120,8 @@
   .bar-row.mode-latency .ann { justify-content: end; }
   .bar-row.mode-eval.bar-row-ann { grid-template-columns: minmax(340px, 520px) minmax(280px, 1fr) 112px minmax(270px, 330px); }
   .bar-row.mode-eval .ann { display: grid; grid-template-columns: 82px 92px 82px; justify-content: end; }
-  .bar-row.mode-vram .ann { display: grid; grid-template-columns: 90px 90px 110px 128px; }
-  .bar-row.mode-memory .ann { display: grid; grid-template-columns: 104px 90px 110px 92px 92px 90px; }
+  .bar-row.mode-vram .ann { display: grid; grid-template-columns: 88px 100px 76px 92px 90px; }
+  .bar-row.mode-memory .ann { display: grid; grid-template-columns: 82px 76px 92px 88px 76px 76px; }
   .bar-row.mode-disk .ann { display: grid; grid-template-columns: 118px 90px 110px; }
   .bar-row.mode-latency .ann { display: grid; grid-template-columns: 104px 104px 104px 118px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -137,6 +137,36 @@
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
   .bar-row .ann { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; font-family: Consolas, monospace; font-size: 10px; color: var(--c-muted); }
   .bar-row .metric { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; padding: 0 4px; white-space: nowrap; text-align: right; }
+  @media (max-width: 1320px) {
+    .bar-row.mode-vram,
+    .bar-row.mode-memory,
+    .bar-row.mode-disk,
+    .bar-row.mode-latency {
+      grid-template-columns: minmax(280px, 38%) minmax(260px, 1fr);
+    }
+    .bar-row.mode-vram .ann,
+    .bar-row.mode-memory .ann,
+    .bar-row.mode-disk .ann,
+    .bar-row.mode-latency .ann {
+      grid-column: 2;
+      justify-content: start;
+    }
+  }
+  @media (max-width: 900px) {
+    .bar-row.mode-vram,
+    .bar-row.mode-memory,
+    .bar-row.mode-disk,
+    .bar-row.mode-latency {
+      grid-template-columns: minmax(220px, 42%) minmax(220px, 1fr);
+    }
+    .bar-row.mode-vram .ann,
+    .bar-row.mode-memory .ann,
+    .bar-row.mode-disk .ann,
+    .bar-row.mode-latency .ann {
+      display: flex;
+      flex-wrap: wrap;
+    }
+  }
   .bar-model-group { margin: 10px 0 12px; }
   .bar-model-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 5px;
                        color: var(--c-text); font-weight: 700; font-size: 12px; }
