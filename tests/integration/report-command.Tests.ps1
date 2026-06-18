@@ -115,8 +115,11 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'scatter-baseline-toggle') "scatter baseline toggle missing"
         Assert-True ($tpl -match 'system_ram_total_mib') "scatter should use total installed system RAM"
         Assert-True ($tpl -match '&lt;llama_server_path&gt;') "llama-server path should be redacted for display"
-        Assert-True ($tpl -match 'STATE\.adjustScatterBaseline \? systemVramPeakMib\(d\) : benchmarkVramUsedMib\(d\)') "enabled baseline adjustment should plot total system VRAM"
+        Assert-True ($tpl -match 'effectiveMemoryUsedMib\(d, STATE\.adjustScatterBaseline\)') "scatter should use effective-memory semantics"
+        Assert-True ($tpl -match 'withRam <= cap \? vram : withRam') "RAM should only be added after VRAM capacity is exceeded"
         Assert-True ($tpl -match 'function confirmedSharedMib') "shared-memory display should use the confirmation threshold"
+        Assert-True ($tpl -match 'id="timeline"') "run timeline chart missing"
+        Assert-True ($tpl -match 'function renderTimeline') "run timeline renderer missing"
         Assert-True ($tpl -match 'VRAM run') "report should label baseline-adjusted VRAM explicitly"
         Assert-True ($tpl -match 'unknown \(legacy record\)') "invalid historical llama build tags should be identified as legacy"
     }

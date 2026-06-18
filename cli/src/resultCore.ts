@@ -72,6 +72,20 @@ export interface BenchRun {
   ram_baseline_mib?: number | null;
   ram_used_peak_mib?: number | null;
   disk_read_peak_mb_s?: number | null;
+  telemetry?: BenchTelemetryPoint[];
+}
+
+export interface BenchTelemetryPoint {
+  elapsed_ms: number;
+  phase: "warmup" | "throughput" | "latency_prompt" | "latency_eval";
+  token_index?: number | null;
+  rolling_tps?: number | null;
+  vram_total_mib: number;
+  vram_run_mib: number;
+  ram_used_mib: number;
+  shared_mib: number;
+  gpu_util_pct: number | null;
+  cpu_util_pct: number | null;
 }
 
 export interface ResultCoreSession {
@@ -80,7 +94,7 @@ export interface ResultCoreSession {
   llama_server_version?: string;
 }
 
-export const METRIC_SCHEMA_VERSION = 1;
+export const METRIC_SCHEMA_VERSION = 2;
 
 export const METRIC_GLOSSARY = {
   load_ms: "Process start to /v1/models readiness; model load plus backend initialization.",
@@ -97,6 +111,7 @@ export const METRIC_GLOSSARY = {
   ram_used_peak_mib: "Peak reduction in available system RAM relative to the pre-run baseline.",
   gpu_util_avg_pct: "Average GPU utilization across collected samples.",
   cpu_util_avg_pct: "Average total CPU utilization across collected samples.",
+  telemetry: "Time-series samples for benchmark phase, memory pressure, utilization, and rolling streamed output speed.",
 } as const;
 
 export interface ParsedLlamaServerStderr {

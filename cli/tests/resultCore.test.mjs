@@ -214,7 +214,7 @@ test("buildReportRows assigns cold load and disk once per model", () => {
   assert.equal(rows[0].model_cold_load_ms, 1500);
   assert.equal(rows[0].model_cold_disk_read_peak_mb_s, 400);
   assert.equal(rows[1].model_cold_load_ms, 1500);
-  assert.equal(rows[1].metric_schema_version, 1);
+  assert.equal(rows[1].metric_schema_version, 2);
 });
 
 test("resultCoreCli reads a JSON-file aggregate payload", () => {

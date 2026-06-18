@@ -315,6 +315,7 @@ export interface RunStreamingChatCompletionOptions {
   fetchImpl?: StreamFetchLike;
   nowMs?: () => number;
   timeoutMs?: number;
+  onContentEvent?: (event: { at_ms: number; index: number }) => void;
 }
 
 export interface StreamingChatCompletionResult {
@@ -384,12 +385,21 @@ export async function runStreamingChatCompletion(
     const decoder = typeof TextDecoder !== "undefined" ? new TextDecoder() : null;
     const chunks: TimedStreamChunk[] = [];
     let buffer = "";
+    let contentEventIndex = 0;
 
     for await (const part of readStreamParts(resp.body)) {
       buffer += typeof part === "string" ? part : decoder ? decoder.decode(part, { stream: true }) : "";
       const newlineAt = buffer.lastIndexOf("\n");
       if (newlineAt === -1) continue;
-      chunks.push({ atMs: round(now() - started, 2), text: buffer.slice(0, newlineAt + 1) });
+      const atMs = round(now() - started, 2);
+      const text = buffer.slice(0, newlineAt + 1);
+      chunks.push({ atMs, text });
+      for (const event of parseSseDataLines(text)) {
+        if (event.kind === "json" && extractContentDelta(event.value).length > 0) {
+          contentEventIndex++;
+          opts.onContentEvent?.({ at_ms: atMs, index: contentEventIndex });
+        }
+      }
       buffer = buffer.slice(newlineAt + 1);
     }
     if (decoder) buffer += decoder.decode();

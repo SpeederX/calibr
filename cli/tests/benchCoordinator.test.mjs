@@ -38,7 +38,7 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
         bench: { prompt: "hi", n_predict: 8, port: 18080, wait_sec_ready: 1, warmup: true },
       },
       runs: 2,
-      minimalPolling: true,
+      minimalPolling: false,
       eventFile: join(root, "events.log"),
       logFile: join(root, "bench.log"),
     }, {
@@ -56,8 +56,11 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
         ram_avail_mib: 10000,
         disk_read_mb_s: 0,
       }),
-      runHttp: async () => {
+      runHttp: async (_payload, hooks) => {
         httpCalls++;
+        hooks.onPhase?.("latency_prompt");
+        hooks.onContentEvent?.({ at_ms: 10, index: 1 });
+        hooks.onContentEvent?.({ at_ms: 30, index: 2 });
         return {
           ok: true,
           status: 200,
@@ -83,6 +86,11 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
     assert.equal(out.result.run_count, 2);
     assert.equal(out.result.eval_tps, 40);
     assert.equal(httpCalls, 2);
+    const tokenPoints = out.runs[0].telemetry.filter(point => point.token_index != null);
+    assert.equal(tokenPoints.length, 2);
+    assert.equal(tokenPoints[0].phase, "latency_eval");
+    assert.equal(tokenPoints[1].token_index, 2);
+    assert.ok(tokenPoints[1].rolling_tps > 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

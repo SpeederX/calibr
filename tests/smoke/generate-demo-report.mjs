@@ -47,6 +47,7 @@ for (const md of MODELS) {
     const fit = pages ? "failed_but_running" : (vram > 7000 ? "unknown" : "success");
     // Skip extended metrics on two rows to exercise the speed-fallback.
     const hasExt = !(i === 5 || i === 14);
+    const baseline = 900;
     const label = `ctx_${ctx}_kv_q8_0`;
     const args = `--ctx-size ${ctx} --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0`;
     DATA.push({
@@ -55,7 +56,9 @@ for (const md of MODELS) {
       model: md.m, series: md.s, variant: md.v, level: md.level, sweep: md.sweep,
       prompt_tps: tps * 6,
       eval_tps: tps,
-      vram_peak_mib: vram,
+      vram_peak_mib: vram + baseline,
+      vram_total_peak_mib: vram + baseline,
+      vram_baseline_mib: baseline,
       shared_peak_mib: shared,
       load_sec: 1.8 + Math.random() * 1.5,
       layers_offloaded: "32/32",
@@ -75,6 +78,15 @@ for (const md of MODELS) {
       gpu_util_avg_pct:  hasExt ? 88 + Math.round(ctxRatio) : null,
       ram_used_peak_mib: hasExt ? Math.round(1000 + 200 * ctxRatio) : null,
       ram_baseline_mib:  hasExt ? 600 : null,
+      runs: hasExt ? [{ run_index:1, telemetry:[
+        { elapsed_ms:0, phase:"warmup", token_index:null, rolling_tps:null, vram_total_mib:baseline, vram_run_mib:0, ram_used_mib:0, shared_mib:0, gpu_util_pct:2, cpu_util_pct:4 },
+        { elapsed_ms:450, phase:"throughput", token_index:null, rolling_tps:null, vram_total_mib:vram + baseline - 120, vram_run_mib:vram - 120, ram_used_mib:500, shared_mib:0, gpu_util_pct:94, cpu_util_pct:18 },
+        { elapsed_ms:900, phase:"latency_prompt", token_index:null, rolling_tps:null, vram_total_mib:vram + baseline, vram_run_mib:vram, ram_used_mib:700, shared_mib:shared, gpu_util_pct:96, cpu_util_pct:22 },
+        { elapsed_ms:1080, phase:"latency_eval", token_index:1, rolling_tps:null, vram_total_mib:vram + baseline, vram_run_mib:vram, ram_used_mib:720, shared_mib:shared, gpu_util_pct:97, cpu_util_pct:20 },
+        { elapsed_ms:1120, phase:"latency_eval", token_index:2, rolling_tps:tps * 1.12, vram_total_mib:vram + baseline, vram_run_mib:vram, ram_used_mib:725, shared_mib:shared, gpu_util_pct:98, cpu_util_pct:20 },
+        { elapsed_ms:1180, phase:"latency_eval", token_index:3, rolling_tps:tps * 0.96, vram_total_mib:vram + baseline, vram_run_mib:vram, ram_used_mib:730, shared_mib:shared, gpu_util_pct:98, cpu_util_pct:20 },
+        { elapsed_ms:1260, phase:"latency_eval", token_index:4, rolling_tps:tps * 0.72, vram_total_mib:vram + baseline, vram_run_mib:vram, ram_used_mib:735, shared_mib:shared, gpu_util_pct:95, cpu_util_pct:23 }
+      ]}] : [],
       model_path:        `D:\\models\\${md.m.toLowerCase()}.gguf`,
       mmproj_path:       null,
     });

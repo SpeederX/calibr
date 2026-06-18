@@ -182,12 +182,14 @@ test("runNonStreamingChatCompletion reports transport errors", async () => {
 
 test("runStreamingChatCompletion times first response/content and assembles streamed text", async () => {
   const calls = [];
+  const contentEvents = [];
   // now() order: start, one per emitted chunk (4: role, content, content+timings, DONE), total.
   const nowValues = [1000, 1110, 1145, 1210, 1212, 1215];
   const result = await runStreamingChatCompletion({
     baseUrl: "http://127.0.0.1:18080/",
     request: buildChatCompletionRequest({ prompt: "hello", maxTokens: 16, stream: false }),
     nowMs: () => nowValues.shift() ?? 1215,
+    onContentEvent: event => contentEvents.push(event),
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
       return {
@@ -215,6 +217,10 @@ test("runStreamingChatCompletion times first response/content and assembles stre
   assert.equal(result.metrics.eval_tps, 24.5);
   assert.equal(calls[0].url, "http://127.0.0.1:18080/v1/chat/completions");
   assert.equal(JSON.parse(calls[0].init.body).stream, true);
+  assert.deepEqual(contentEvents, [
+    { at_ms: 145, index: 1 },
+    { at_ms: 210, index: 2 },
+  ]);
 });
 
 test("runStreamingChatCompletion buffers SSE events split across stream parts", async () => {

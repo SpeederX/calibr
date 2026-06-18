@@ -217,6 +217,7 @@ async function runOne(
     ram_baseline_mib: ramBaseline,
     ram_used_peak_mib: 0,
     disk_read_peak_mb_s: 0,
+    telemetry: [],
   };
 
   const loadStarted = Date.now();
@@ -257,10 +258,32 @@ async function runOne(
     emit(payload.eventFile, "[phase] server_ready");
     emit(payload.eventFile, "[phase] sending_prompt");
     let inferenceStopped = false;
+    const inferenceStartedMs = Date.now();
+    let inferencePhase: "warmup" | "throughput" | "latency_prompt" | "latency_eval" = "warmup";
+    let lastInferenceSample = baseline;
+    const tokenTimes: number[] = [];
+    const appendTelemetry = (sample: MetricSample, tokenIndex: number | null = null, rollingTps: number | null = null) => {
+      const elapsedMs = Math.max(0, Date.now() - inferenceStartedMs);
+      const points = run.telemetry ?? (run.telemetry = []);
+      points.push({
+        elapsed_ms: elapsedMs,
+        phase: inferencePhase,
+        token_index: tokenIndex,
+        rolling_tps: rollingTps,
+        vram_total_mib: Math.max(0, sample.gpu_mem_mib),
+        vram_run_mib: Math.max(0, sample.gpu_mem_mib - baseline.gpu_mem_mib),
+        ram_used_mib: Math.max(0, ramBaseline - sample.ram_avail_mib),
+        shared_mib: Math.max(0, sample.shared_mib - sharedBaseline),
+        gpu_util_pct: sample.gpu_util_pct >= 0 ? sample.gpu_util_pct : null,
+        cpu_util_pct: sample.cpu_util_pct >= 0 ? sample.cpu_util_pct : null,
+      });
+    };
     const inferencePoll = async () => {
       while (!inferenceStopped && child.exitCode === null) {
         const sample = await collect(child.pid ?? 0).catch(() => emptySample(now()));
+        lastInferenceSample = sample;
         mergeSample(run, sample, ramBaseline, sharedBaseline);
+        appendTelemetry(sample);
         if (sample.gpu_util_pct >= 0) {
           utilTotal += sample.gpu_util_pct;
           utilCount++;
@@ -280,7 +303,24 @@ async function runOne(
       warmup: payload.cfg.bench?.warmup ?? true,
       reasoningOff: payload.item.reasoning_mode === "off",
       timeoutMs: 900000,
-    }, deps.httpDeps);
+    }, {
+      ...deps.httpDeps,
+      onPhase: (phase) => {
+        inferencePhase = phase;
+        deps.httpDeps?.onPhase?.(phase);
+      },
+      onContentEvent: (event) => {
+        inferencePhase = "latency_eval";
+        const elapsed = Date.now() - inferenceStartedMs;
+        tokenTimes.push(elapsed);
+        const window = tokenTimes.slice(-8);
+        const rollingTps = window.length >= 2
+          ? round((window.length - 1) / Math.max(0.001, (window[window.length - 1] - window[0]) / 1000), 1)
+          : null;
+        if (!payload.minimalPolling) appendTelemetry(lastInferenceSample, event.index, rollingTps);
+        deps.httpDeps?.onContentEvent?.(event);
+      },
+    });
     inferenceStopped = true;
     await inferencePollPromise;
     run.total_request_ms = http.total_request_ms;

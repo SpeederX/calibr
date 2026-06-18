@@ -188,6 +188,15 @@
     50% { opacity: 1; stroke-width: 2.8; }
   }
   .scatter-dot:hover { stroke: var(--c-accent); stroke-width: 3; }
+  .timeline-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0; }
+  .timeline-controls select { background:#1a1a1a; color:var(--c-text); border:1px solid var(--c-border);
+                              border-radius:4px; padding:5px 8px; max-width:min(620px, 75vw); }
+  .timeline-speed { fill:none; stroke:var(--c-accent); stroke-width:2; }
+  .timeline-vram { fill:none; stroke:#22c55e; stroke-width:1.7; }
+  .timeline-ram { fill:none; stroke:#f59e0b; stroke-width:1.7; }
+  .timeline-shared { fill:none; stroke:#ef4444; stroke-width:1.7; }
+  .timeline-phase { opacity:0.08; }
+  .timeline-point { stroke-width:1; }
 
   /* ----- All-results table (winner-aware) ----- */
   #all tbody tr.is-winner { background: var(--c-win-bg); }
@@ -217,11 +226,19 @@
   </div>
 
   <h2>Memory vs latency</h2>
-  <p class="meta">One dot per ok config. <b>Y</b> = benchmark VRAM plus observed system-RAM growth. <b>X</b> = total prompt + generation time. The scale always spans installed RAM + VRAM; the dashed line marks dedicated GPU VRAM.</p>
+  <p class="meta">One dot per ok config. <b>Y</b> stays on VRAM while VRAM + observed RAM remains within the GPU capacity; RAM is added only after that boundary is exceeded. <b>X</b> = total prompt + generation time. The dashed line marks dedicated GPU VRAM.</p>
   <div class="chart-toolbar">
     <label><input id="scatter-baseline-toggle" type="checkbox" checked>Adjust with baseline VRAM used memory</label>
   </div>
   <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
+
+  <h3>Run timeline</h3>
+  <p class="meta">Streaming diagnostic pass: phase, rolling output speed, VRAM, RAM and confirmed shared spill sampled through time. Official throughput remains the separate non-streaming measurement.</p>
+  <div class="timeline-controls">
+    <label>Config <select id="timeline-config"></select></label>
+    <label>Run <select id="timeline-run"></select></label>
+  </div>
+  <svg id="timeline" width="100%" height="340" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 340"></svg>
 
   <details class="card">
     <summary><b>Metric glossary</b> <span class="meta">what each benchmark value measures</span></summary>
@@ -237,6 +254,7 @@
         <tr><td><code>shared peak</code></td><td>Shared/spill GPU memory growth above baseline.</td><td><code>shared peak - shared baseline</code></td><td>Flags WDDM paging and likely PCIe/RAM latency penalties.</td></tr>
         <tr><td><code>RAM Δ</code></td><td>Peak reduction in available system RAM.</td><td><code>available baseline - minimum available</code></td><td>Exposes host-memory pressure and CPU/offload cost.</td></tr>
         <tr><td><code>CPU / GPU %</code></td><td>Average utilization across samples.</td><td><code>sum(sample %) / sample count</code></td><td>Shows whether a run is CPU-bound, GPU-bound, or underutilized.</td></tr>
+        <tr><td><code>rolling output/s</code></td><td>Recent streamed content events during the diagnostic pass.</td><td><code>(events - 1) / elapsed seconds</code> over the last eight events</td><td>Locates generation slowdowns alongside VRAM, RAM, and shared spill changes.</td></tr>
       </tbody>
     </table>
   </details>
@@ -589,6 +607,8 @@ const STATE = {
   bars:    'eval',
   levelTab: 'all',
   adjustScatterBaseline: true,
+  timelineConfigId: null,
+  timelineRunIndex: 0,
 };
 
 // Hardware level of a result (low/middle/high/ultra), or 'custom' for a
@@ -620,6 +640,7 @@ function rerender() {
   renderOverallStats();
   renderFilterBar();
   renderScatter();
+  renderTimeline();
   renderModelsList();
   renderBars();
   renderWddmWatchlist();
@@ -829,6 +850,13 @@ function confirmedSharedMib(d) {
 
 function totalMemoryUsedMib(d) {
   return benchmarkVramUsedMib(d) + Math.max(0, +d.ram_used_peak_mib || 0);
+}
+
+function effectiveMemoryUsedMib(d, includeBaseline) {
+  const vram = includeBaseline ? systemVramPeakMib(d) : benchmarkVramUsedMib(d);
+  const withRam = vram + Math.max(0, +d.ram_used_peak_mib || 0);
+  const cap = +(CFG.hardware?.vram_total_mib || 0);
+  return cap > 0 && withRam <= cap ? vram : withRam;
 }
 
 function metricChip(label, value) {
@@ -1085,8 +1113,7 @@ function renderScatter() {
   const pts = VIEW.filter(d => d.ok && d.time_total_sec != null).map(d => ({
     d: d,
     x: d.time_total_sec,
-    y: (STATE.adjustScatterBaseline ? systemVramPeakMib(d) : benchmarkVramUsedMib(d)) +
-       Math.max(0, +d.ram_used_peak_mib || 0)
+    y: effectiveMemoryUsedMib(d, STATE.adjustScatterBaseline)
   }));
   if (pts.length === 0) {
     svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" class="scatter-tick">No ok runs to plot.</text>';
@@ -1131,8 +1158,9 @@ function renderScatter() {
     const cy = ys(Math.min(pt.y, yMax));
     const fill = modelColor(d.model);
     const stroke = lvlColor(lvl(d));
-    const tip = d.label + ' · plotted vram ' + (STATE.adjustScatterBaseline ? systemVramPeakMib(d) : benchmarkVramUsedMib(d)) +
-                ' · system peak ' + systemVramPeakMib(d) + ' · RAM Δ ' + (+d.ram_used_peak_mib || 0) +
+    const tip = d.label + ' · plotted memory ' + effectiveMemoryUsedMib(d, STATE.adjustScatterBaseline) +
+                ' · run VRAM ' + benchmarkVramUsedMib(d) + ' · system peak ' + systemVramPeakMib(d) +
+                ' · RAM Δ ' + (+d.ram_used_peak_mib || 0) +
                 ' · time ' + pt.x + 's · eval ' + (+d.eval_tps).toFixed(1) + ' t/s';
     const isWin = isWinnerId(d.id);
     const winCls = isWin ? ' is-winner' : '';
@@ -1149,6 +1177,109 @@ const scatterBaselineToggle = document.getElementById('scatter-baseline-toggle')
 scatterBaselineToggle.addEventListener('change', () => {
   STATE.adjustScatterBaseline = scatterBaselineToggle.checked;
   renderScatter();
+});
+
+// ===========================================================================
+// Per-run diagnostic timeline. Memory comes from the coordinator poller;
+// rolling speed comes from streamed content events in the latency pass.
+// ===========================================================================
+const timelineConfig = document.getElementById('timeline-config');
+const timelineRun = document.getElementById('timeline-run');
+
+function telemetryRuns(d) {
+  return Array.isArray(d?.runs) ? d.runs.filter(r => Array.isArray(r.telemetry) && r.telemetry.length > 0) : [];
+}
+
+function renderTimeline() {
+  const svg = document.getElementById('timeline');
+  const configs = VIEW.filter(d => telemetryRuns(d).length > 0);
+  if (configs.length === 0) {
+    timelineConfig.innerHTML = '<option>No telemetry in these results</option>';
+    timelineRun.innerHTML = '<option>-</option>';
+    svg.innerHTML = '<text x="500" y="165" text-anchor="middle" class="scatter-tick">Run a new benchmark with full live metrics to collect timeline points.</text>';
+    return;
+  }
+
+  if (!configs.some(d => d.id === STATE.timelineConfigId)) {
+    const winner = configs.find(d => isWinnerId(d.id));
+    STATE.timelineConfigId = (winner || configs[0]).id;
+    STATE.timelineRunIndex = 0;
+  }
+  timelineConfig.innerHTML = configs.map(d =>
+    '<option value="' + escapeHtml(d.id) + '"' + (d.id === STATE.timelineConfigId ? ' selected' : '') + '>' +
+    escapeHtml(d.label) + '</option>'
+  ).join('');
+
+  const selected = configs.find(d => d.id === STATE.timelineConfigId) || configs[0];
+  const runs = telemetryRuns(selected);
+  if (STATE.timelineRunIndex >= runs.length) STATE.timelineRunIndex = 0;
+  timelineRun.innerHTML = runs.map((r, i) =>
+    '<option value="' + i + '"' + (i === STATE.timelineRunIndex ? ' selected' : '') + '>run ' + (r.run_index ?? i + 1) + '</option>'
+  ).join('');
+
+  const points = runs[STATE.timelineRunIndex].telemetry.slice().sort((a, b) => (+a.elapsed_ms || 0) - (+b.elapsed_ms || 0));
+  const W = 1000, H = 340, M = { l: 62, r: 62, t: 28, b: 38 };
+  const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
+  const xMax = Math.max(1, ...points.map(p => +p.elapsed_ms || 0));
+  const memoryMax = Math.max(1024, ...points.map(p =>
+    Math.max(+p.vram_total_mib || 0, (+p.vram_run_mib || 0) + (+p.ram_used_mib || 0), +p.shared_mib || 0)
+  ));
+  const speedPoints = points.filter(p => p.rolling_tps != null && +p.rolling_tps >= 0);
+  const speedMax = Math.max(1, ...speedPoints.map(p => +p.rolling_tps || 0));
+  const xs = v => M.l + (v / xMax) * innerW;
+  const ym = v => M.t + innerH - (v / memoryMax) * innerH;
+  const ys = v => M.t + innerH - (v / speedMax) * innerH;
+  const line = (rows, valueOf, yScale) => rows.map((p, i) =>
+    (i === 0 ? 'M' : 'L') + xs(+p.elapsed_ms || 0).toFixed(1) + ',' + yScale(valueOf(p)).toFixed(1)
+  ).join(' ');
+
+  const out = [];
+  const phaseColors = { warmup:'#60a5fa', throughput:'#22c55e', latency_prompt:'#f59e0b', latency_eval:'#8b5cf6' };
+  let phaseStart = 0;
+  for (let i = 1; i <= points.length; i++) {
+    if (i === points.length || points[i].phase !== points[phaseStart].phase) {
+      const x1 = xs(+points[phaseStart].elapsed_ms || 0);
+      const x2 = xs(i < points.length ? (+points[i].elapsed_ms || 0) : xMax);
+      out.push('<rect class="timeline-phase" x="' + x1 + '" y="' + M.t + '" width="' + Math.max(1, x2 - x1) + '" height="' + innerH +
+        '" fill="' + (phaseColors[points[phaseStart].phase] || '#fff') + '"><title>' + points[phaseStart].phase + '</title></rect>');
+      phaseStart = i;
+    }
+  }
+  out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + (M.t + innerH) + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
+  out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + M.t + '" x2="' + M.l + '" y2="' + (M.t + innerH) + '"/>');
+  out.push('<line class="scatter-axis" x1="' + (M.l + innerW) + '" y1="' + M.t + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
+  for (let i = 0; i <= 4; i++) {
+    const elapsed = xMax * i / 4;
+    out.push('<text class="scatter-tick" x="' + xs(elapsed) + '" y="' + (H - 12) + '" text-anchor="middle">' + (elapsed / 1000).toFixed(1) + 's</text>');
+    out.push('<text class="scatter-tick" x="' + (M.l - 7) + '" y="' + (ym(memoryMax * i / 4) + 4) + '" text-anchor="end">' + Math.round(memoryMax * i / 4) + '</text>');
+    out.push('<text class="scatter-tick" x="' + (M.l + innerW + 7) + '" y="' + (ys(speedMax * i / 4) + 4) + '">' + (speedMax * i / 4).toFixed(0) + '</text>');
+  }
+  out.push('<text class="scatter-tick" transform="translate(14,' + (M.t + innerH/2) + ') rotate(-90)" text-anchor="middle">Memory (MiB)</text>');
+  out.push('<text class="scatter-tick" transform="translate(990,' + (M.t + innerH/2) + ') rotate(90)" text-anchor="middle">Rolling output events/s</text>');
+  out.push('<path class="timeline-vram" d="' + line(points, p => +p.vram_total_mib || 0, ym) + '"><title>Total VRAM</title></path>');
+  out.push('<path class="timeline-ram" d="' + line(points, p => +p.ram_used_mib || 0, ym) + '"><title>RAM delta</title></path>');
+  const sharedRows = points.map(p => ({ ...p, shared_mib: (+p.shared_mib || 0) > CONFIRM_MIB ? +p.shared_mib : 0 }));
+  out.push('<path class="timeline-shared" d="' + line(sharedRows, p => +p.shared_mib || 0, ym) + '"><title>Confirmed shared spill</title></path>');
+  if (speedPoints.length > 0) out.push('<path class="timeline-speed" d="' + line(speedPoints, p => +p.rolling_tps || 0, ys) + '"><title>Rolling output speed</title></path>');
+  speedPoints.forEach(p => {
+    const tip = 't=' + ((+p.elapsed_ms || 0) / 1000).toFixed(2) + 's · token event ' + (p.token_index ?? '-') +
+      ' · rolling ' + fmt1(p.rolling_tps) + '/s · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib +
+      ' MiB · shared ' + ((+p.shared_mib || 0) > CONFIRM_MIB ? p.shared_mib : 0) + ' MiB';
+    out.push('<circle class="timeline-point" cx="' + xs(+p.elapsed_ms || 0) + '" cy="' + ys(+p.rolling_tps || 0) +
+      '" r="3" fill="var(--c-accent)" stroke="#fff"><title>' + tip + '</title></circle>');
+  });
+  out.push('<text class="scatter-tick" x="' + M.l + '" y="14">green VRAM · orange RAM Δ · red confirmed shared · purple rolling speed</text>');
+  svg.innerHTML = out.join('');
+}
+
+timelineConfig.addEventListener('change', () => {
+  STATE.timelineConfigId = timelineConfig.value;
+  STATE.timelineRunIndex = 0;
+  renderTimeline();
+});
+timelineRun.addEventListener('change', () => {
+  STATE.timelineRunIndex = +timelineRun.value || 0;
+  renderTimeline();
 });
 
 // ===========================================================================

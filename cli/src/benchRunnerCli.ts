@@ -40,6 +40,8 @@ export interface BenchRunnerDeps {
   fetchImpl?: RunNonStreamingChatCompletionOptions["fetchImpl"];
   streamFetchImpl?: RunStreamingChatCompletionOptions["fetchImpl"];
   nowMs?: () => number;
+  onPhase?: (phase: "warmup" | "throughput" | "latency_prompt") => void;
+  onContentEvent?: RunStreamingChatCompletionOptions["onContentEvent"];
 }
 
 export async function runFromPayload(
@@ -56,6 +58,7 @@ export async function runFromPayload(
 
   let warmupError: string | undefined;
   if (payload.warmup) {
+    deps.onPhase?.("warmup");
     const warmup = await runNonStreamingChatCompletion({
       baseUrl: payload.baseUrl,
       request: requestFor(payload.warmupMaxTokens ?? 8, false, true),
@@ -66,6 +69,7 @@ export async function runFromPayload(
     if (!warmup.ok) warmupError = warmup.error ?? `HTTP ${warmup.status}`;
   }
 
+  deps.onPhase?.("throughput");
   const throughput = await runNonStreamingChatCompletion({
     baseUrl: payload.baseUrl,
     request: requestFor(payload.maxTokens, false, false),
@@ -87,12 +91,14 @@ export async function runFromPayload(
     };
   }
 
+  deps.onPhase?.("latency_prompt");
   const latency = await runStreamingChatCompletion({
     baseUrl: payload.baseUrl,
     request: requestFor(Math.min(payload.maxTokens, payload.latencyMaxTokens ?? 32), true, false),
     fetchImpl: deps.streamFetchImpl,
     nowMs: deps.nowMs,
     timeoutMs: payload.timeoutMs,
+    onContentEvent: deps.onContentEvent,
   });
   return {
     ok: true,
