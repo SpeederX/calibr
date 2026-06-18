@@ -40,7 +40,10 @@ validated against the PowerShell path. State + the decisions taken:
   parser, non-streaming runner, and a streaming runner that timestamps SSE
   chunks for `ttfr_ms` / `e2e_ttft_ms`. Unit-tested with injected fetch/clock
   (no live llama-server needed).
-- `cli/src/benchRunnerCli.ts`: Node entrypoint the engine shells out to.
+- `cli/src/benchRunnerCli.ts`: Node entrypoint the engine shells out to. One
+  invocation now owns the complete HTTP sequence: optional warmup,
+  non-streaming throughput, then the short streaming latency pass. PowerShell
+  keeps the hardware poller around that sequence and maps the single result.
 - Default-on from the CLI, opt-out with `CALIBR_TS_BENCH=0`: the
   EngineAdapter (`cli/src/engine.ts`) injects `CALIBR_NODE` +
   `CALIBR_TS_BENCH_SCRIPT`; `engine/bench.ps1` (`Invoke-TsBenchRequest`)
@@ -61,7 +64,7 @@ Decision — decouple throughput from latency:
 
 Remaining:
 
-- Move the warmup + repeated benchmark-run coordinator into TypeScript.
+- Move the repeated benchmark-run coordinator into TypeScript.
 - Move stderr/result parsing into the TypeScript run coordinator.
 - Do NOT delete the PowerShell request path.
 
@@ -69,8 +72,8 @@ Lifecycle migration status:
 
 - `serverLifecycleCli` now owns `llama-server` spawn, readiness polling, real
   server PID publication, explicit stop, and child cleanup.
-- PowerShell remains the transitional coordinator for GPU/RAM polling, warmup,
-  benchmark requests, stderr parsing, and aggregation.
+- PowerShell remains the transitional coordinator for GPU/RAM polling,
+  repeated runs, stderr parsing, and aggregation.
 - `CALIBR_TS_LIFECYCLE=0` keeps the direct PowerShell lifecycle as a fallback.
 
 ### Engine pruning before deeper migration

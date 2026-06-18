@@ -1,13 +1,6 @@
-// Thin Node entrypoint the PowerShell engine shells out to when the opt-in
-// CALIBR_TS_BENCH path is active. It owns nothing about the llama-server
-// lifecycle — bench.ps1 still launches the server, polls readiness, and takes
-// GPU/RAM snapshots. This process only performs the single chat/completions
-// request and prints one JSON line that bench.ps1 maps into a run record.
-//
-// Contract (stdin, --json <payload>, or --json-file <path>): a JSON object
-//   { baseUrl, prompt, maxTokens, stream?, cachePrompt?, reasoningOff?, timeoutMs? }
-// Output (stdout, one line): BenchRunnerOutput. The `timings` field mirrors
-// llama.cpp's shape so the engine's existing metric mapping is untouched.
+// Node entrypoint for the complete HTTP benchmark sequence: optional warmup,
+// non-streaming throughput, then a short streaming latency pass. PowerShell
+// wraps this process in the hardware poller and maps its single JSON result.
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
@@ -23,20 +16,23 @@ export interface BenchRunnerPayload {
   baseUrl: string;
   prompt: string;
   maxTokens: number;
-  stream?: boolean;
-  cachePrompt?: boolean;
+  warmup?: boolean;
+  warmupMaxTokens?: number;
+  latencyMaxTokens?: number;
   reasoningOff?: boolean;
   timeoutMs?: number;
 }
 
 export interface BenchRunnerOutput {
   ok: boolean;
-  mode: "stream" | "nostream";
   status: number;
   total_request_ms: number;
   timings: LlamaTimings | null;
   ttfr_ms: number | null;
   e2e_ttft_ms: number | null;
+  latency_total_request_ms: number | null;
+  warmup_error?: string;
+  latency_error?: string;
   error?: string;
 }
 
@@ -50,53 +46,64 @@ export async function runFromPayload(
   payload: BenchRunnerPayload,
   deps: BenchRunnerDeps = {},
 ): Promise<BenchRunnerOutput> {
-  const request = buildChatCompletionRequest({
+  const requestFor = (maxTokens: number, stream: boolean, cachePrompt: boolean) => buildChatCompletionRequest({
     prompt: payload.prompt,
-    maxTokens: payload.maxTokens,
-    stream: payload.stream,
-    cachePrompt: payload.cachePrompt,
+    maxTokens,
+    stream,
+    cachePrompt,
     reasoningMode: payload.reasoningOff ? "off" : "default",
   });
 
-  // Default to streaming; the engine currently opts into stream:false for a
-  // clean parity check against the PowerShell path. Streaming stays one payload
-  // flag away so ttfr_ms / e2e_ttft_ms can be wired in next.
-  if (payload.stream === false) {
-    const r = await runNonStreamingChatCompletion({
+  let warmupError: string | undefined;
+  if (payload.warmup) {
+    const warmup = await runNonStreamingChatCompletion({
       baseUrl: payload.baseUrl,
-      request,
+      request: requestFor(payload.warmupMaxTokens ?? 8, false, true),
       fetchImpl: deps.fetchImpl,
       nowMs: deps.nowMs,
       timeoutMs: payload.timeoutMs,
     });
+    if (!warmup.ok) warmupError = warmup.error ?? `HTTP ${warmup.status}`;
+  }
+
+  const throughput = await runNonStreamingChatCompletion({
+    baseUrl: payload.baseUrl,
+    request: requestFor(payload.maxTokens, false, false),
+    fetchImpl: deps.fetchImpl,
+    nowMs: deps.nowMs,
+    timeoutMs: payload.timeoutMs,
+  });
+  if (!throughput.ok) {
     return {
-      ok: r.ok,
-      mode: "nostream",
-      status: r.status,
-      total_request_ms: r.total_request_ms,
-      timings: r.timings,
+      ok: false,
+      status: throughput.status,
+      total_request_ms: throughput.total_request_ms,
+      timings: null,
       ttfr_ms: null,
       e2e_ttft_ms: null,
-      ...(r.error ? { error: r.error } : {}),
+      latency_total_request_ms: null,
+      ...(warmupError ? { warmup_error: warmupError } : {}),
+      ...(throughput.error ? { error: throughput.error } : {}),
     };
   }
 
-  const r = await runStreamingChatCompletion({
+  const latency = await runStreamingChatCompletion({
     baseUrl: payload.baseUrl,
-    request,
+    request: requestFor(Math.min(payload.maxTokens, payload.latencyMaxTokens ?? 32), true, false),
     fetchImpl: deps.streamFetchImpl,
     nowMs: deps.nowMs,
     timeoutMs: payload.timeoutMs,
   });
   return {
-    ok: r.ok,
-    mode: "stream",
-    status: r.status,
-    total_request_ms: r.total_request_ms,
-    timings: r.latency.timings,
-    ttfr_ms: r.latency.ttfr_ms,
-    e2e_ttft_ms: r.latency.e2e_ttft_ms,
-    ...(r.error ? { error: r.error } : {}),
+    ok: true,
+    status: throughput.status,
+    total_request_ms: throughput.total_request_ms,
+    timings: throughput.timings,
+    ttfr_ms: latency.ok ? latency.latency.ttfr_ms : null,
+    e2e_ttft_ms: latency.ok ? latency.latency.e2e_ttft_ms : null,
+    latency_total_request_ms: latency.total_request_ms,
+    ...(warmupError ? { warmup_error: warmupError } : {}),
+    ...(!latency.ok ? { latency_error: latency.error ?? `HTTP ${latency.status}` } : {}),
   };
 }
 
@@ -111,7 +118,16 @@ function readStdin(): Promise<string> {
 }
 
 function failure(error: string): BenchRunnerOutput {
-  return { ok: false, mode: "stream", status: 0, total_request_ms: 0, timings: null, ttfr_ms: null, e2e_ttft_ms: null, error };
+  return {
+    ok: false,
+    status: 0,
+    total_request_ms: 0,
+    timings: null,
+    ttfr_ms: null,
+    e2e_ttft_ms: null,
+    latency_total_request_ms: null,
+    error,
+  };
 }
 
 async function main(): Promise<void> {
@@ -150,7 +166,6 @@ async function main(): Promise<void> {
   process.stdout.write(JSON.stringify(out) + "\n");
 }
 
-// Run only when invoked as a script, not when imported by the test module.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   void main();
 }

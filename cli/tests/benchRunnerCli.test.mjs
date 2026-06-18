@@ -10,13 +10,23 @@ async function* streamParts(parts) {
   for (const part of parts) yield part;
 }
 
-test("runFromPayload (nostream) reproduces the PowerShell parity contract", async () => {
-  const nowValues = [100, 160];
+test("runFromPayload owns warmup, throughput, and streaming latency in order", async () => {
   const calls = [];
+  let now = 0;
   const out = await runFromPayload(
-    { baseUrl: "http://127.0.0.1:18080", prompt: "hi", maxTokens: 8, stream: false, reasoningOff: true },
     {
-      nowMs: () => nowValues.shift() ?? 160,
+      baseUrl: "http://127.0.0.1:18080",
+      prompt: "hi",
+      maxTokens: 64,
+      warmup: true,
+      latencyMaxTokens: 32,
+      reasoningOff: true,
+    },
+    {
+      nowMs: () => {
+        now += 10;
+        return now;
+      },
       fetchImpl: async (url, init) => {
         calls.push({ url, init });
         return {
@@ -34,35 +44,13 @@ test("runFromPayload (nostream) reproduces the PowerShell parity contract", asyn
           }),
         };
       },
-    },
-  );
-
-  assert.equal(out.ok, true);
-  assert.equal(out.mode, "nostream");
-  assert.equal(out.status, 200);
-  assert.equal(out.total_request_ms, 60);
-  assert.equal(out.ttfr_ms, null);
-  assert.equal(out.e2e_ttft_ms, null);
-  assert.equal(out.timings.predicted_per_second, 25);
-  // The engine relies on this exact request shape.
-  assert.equal(JSON.parse(calls[0].init.body).stream, false);
-  assert.equal(JSON.parse(calls[0].init.body).enable_thinking, false);
-});
-
-test("runFromPayload (stream) maps streamed latency + final timings", async () => {
-  const nowValues = [0, 30, 60, 70, 90];
-  const out = await runFromPayload(
-    { baseUrl: "http://127.0.0.1:18080", prompt: "hi", maxTokens: 8 },
-    {
-      nowMs: () => nowValues.shift() ?? 90,
       streamFetchImpl: async (url, init) => {
-        assert.equal(JSON.parse(init.body).stream, true);
+        calls.push({ url, init });
         return {
           ok: true,
           status: 200,
           body: streamParts([
             'data: {"choices":[{"delta":{"content":"x"}}]}\n\n',
-            'data: {"choices":[{"delta":{"content":"y"}}],"timings":{"prompt_n":3,"prompt_per_second":30,"prompt_ms":12,"predicted_n":5,"predicted_per_second":20,"predicted_ms":250}}\n\n',
             "data: [DONE]\n\n",
           ]),
         };
@@ -71,34 +59,69 @@ test("runFromPayload (stream) maps streamed latency + final timings", async () =
   );
 
   assert.equal(out.ok, true);
-  assert.equal(out.mode, "stream");
-  assert.equal(out.ttfr_ms, 30);
-  assert.equal(out.e2e_ttft_ms, 30);
-  assert.equal(out.total_request_ms, 90);
-  assert.deepEqual(out.timings, {
-    prompt_n: 3,
-    prompt_per_second: 30,
-    prompt_ms: 12,
-    predicted_n: 5,
-    predicted_per_second: 20,
-    predicted_ms: 250,
-  });
+  assert.equal(out.status, 200);
+  assert.equal(out.timings.predicted_per_second, 25);
+  assert.ok(out.ttfr_ms > 0);
+  assert.ok(out.e2e_ttft_ms > 0);
+  assert.ok(out.latency_total_request_ms > 0);
+  assert.equal(calls.length, 3);
+
+  const bodies = calls.map((call) => JSON.parse(call.init.body));
+  assert.equal(bodies[0].max_tokens, 8);
+  assert.equal(bodies[0].stream, false);
+  assert.equal(bodies[0].cache_prompt, true);
+  assert.equal(bodies[1].max_tokens, 64);
+  assert.equal(bodies[1].stream, false);
+  assert.equal(bodies[1].cache_prompt, false);
+  assert.equal(bodies[2].max_tokens, 32);
+  assert.equal(bodies[2].stream, true);
+  assert.ok(bodies.every((body) => body.enable_thinking === false));
 });
 
-test("runFromPayload surfaces transport errors as ok:false", async () => {
+test("runFromPayload keeps warmup and latency failures non-fatal", async () => {
+  let nonStreamingCall = 0;
+  const out = await runFromPayload(
+    { baseUrl: "http://127.0.0.1:18080", prompt: "hi", maxTokens: 8, warmup: true },
+    {
+      nowMs: () => 0,
+      fetchImpl: async () => {
+        nonStreamingCall++;
+        if (nonStreamingCall === 1) throw new Error("warmup failed");
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            timings: { predicted_n: 2, predicted_ms: 100, predicted_per_second: 20 },
+          }),
+        };
+      },
+      streamFetchImpl: async () => { throw new Error("latency failed"); },
+    },
+  );
+
+  assert.equal(out.ok, true);
+  assert.match(out.warmup_error ?? "", /warmup failed/);
+  assert.match(out.latency_error ?? "", /latency failed/);
+  assert.equal(out.timings.predicted_per_second, 20);
+});
+
+test("runFromPayload stops after throughput failure", async () => {
+  let streamed = false;
   const out = await runFromPayload(
     { baseUrl: "http://127.0.0.1:18080", prompt: "hi", maxTokens: 8 },
     {
       nowMs: () => 0,
+      fetchImpl: async () => { throw new Error("connection refused"); },
       streamFetchImpl: async () => {
-        throw new Error("connection refused");
+        streamed = true;
+        throw new Error("should not run");
       },
     },
   );
 
   assert.equal(out.ok, false);
-  assert.equal(out.mode, "stream");
   assert.match(out.error ?? "", /connection refused/);
+  assert.equal(streamed, false);
 });
 
 test("CLI entrypoint reads payload from --json-file as UTF-8 JSON", () => {
@@ -108,7 +131,6 @@ test("CLI entrypoint reads payload from --json-file as UTF-8 JSON", () => {
     baseUrl: "http://127.0.0.1:1",
     prompt: "ciao",
     maxTokens: 1,
-    stream: false,
   }), "utf8");
 
   try {

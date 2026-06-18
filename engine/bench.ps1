@@ -546,31 +546,25 @@ function Get-DiskReadBytesPerSec {
 }
 
 function Invoke-TsBenchRequest {
-    # Hand the chat/completions request to the TypeScript bench client
-    # (dist/benchRunnerCli.js) instead of Invoke-RestMethod when the runner is
-    # available. The runner returns the same llama.cpp `timings` shape (plus
-    # optional streamed ttfr_ms / e2e_ttft_ms), so the metric mapping in
-    # Invoke-OneBenchRun stays identical. Returns a PSCustomObject with .ok
-    # plus either .timings or .error.
+    # Hand the complete HTTP sequence to TypeScript in one subprocess:
+    # optional warmup, non-streaming throughput, streamed latency. The runner
+    # returns the throughput `timings` plus latency fields for PowerShell to map.
     param(
         [int]$Port,
         [string]$Prompt,
         [int]$MaxTokens,
         [switch]$ReasoningOff,
-        [switch]$Stream
+        [switch]$Warmup
     )
     $node   = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
     $script = $env:CALIBR_TS_BENCH_SCRIPT
-    # The caller chooses stream=false for throughput and stream=true for the
-    # dedicated latency pass. Keeping those requests separate prevents SSE
-    # flushing jitter from changing eval_tps, while still collecting TTFR /
-    # e2e TTFT when the TypeScript client is available.
     $payload = [ordered]@{
         baseUrl      = "http://127.0.0.1:$Port"
         prompt       = $Prompt
         maxTokens    = $MaxTokens
-        stream       = [bool]$Stream
-        cachePrompt  = $false
+        warmup       = [bool]$Warmup
+        warmupMaxTokens = 8
+        latencyMaxTokens = [Math]::Min($MaxTokens, 32)
         reasoningOff = [bool]$ReasoningOff
         timeoutMs    = 900000
     } | ConvertTo-Json -Compress -Depth 5
@@ -985,21 +979,6 @@ function Invoke-OneBenchRun {
         # prompt_per_second, predicted_n, predicted_per_second, prompt_ms) is
         # returned by llama-server on this endpoint too, so the metric
         # pipeline below is untouched.
-        if ($cfg.bench.warmup) {
-            try {
-                $warmupReq = @{
-                    messages    = @(@{ role = 'user'; content = $prompt })
-                    max_tokens  = 8
-                    temperature = 0.0
-                    stream      = $false
-                    cache_prompt = $true
-                }
-                if ($item.reasoning_mode -eq "off") { $warmupReq["enable_thinking"] = $false }
-                $wBody = $warmupReq | ConvertTo-Json -Compress -Depth 5
-                Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
-            } catch { }
-        }
-
         $reqBody = @{
             messages    = @(@{ role = 'user'; content = $prompt })
             max_tokens  = $nPred
@@ -1015,14 +994,38 @@ function Invoke-OneBenchRun {
         try {
             $tsBenchScript = Resolve-TsBenchRunnerScript
             if ($tsBenchScript) {
-                # Opt-in: the TypeScript bench client issues the request and
-                # returns the same llama.cpp `timings` shape, so both paths
-                # share the metric mapping below.
+                # One Node call owns warmup + throughput + latency while this
+                # PowerShell poller samples the complete HTTP sequence.
                 $env:CALIBR_TS_BENCH_SCRIPT = $tsBenchScript
-                $resp = Invoke-TsBenchRequest -Port $port -Prompt $prompt -MaxTokens $nPred -ReasoningOff:($item.reasoning_mode -eq "off")
+                $resp = Invoke-TsBenchRequest `
+                    -Port $port `
+                    -Prompt $prompt `
+                    -MaxTokens $nPred `
+                    -ReasoningOff:($item.reasoning_mode -eq "off") `
+                    -Warmup:([bool]$cfg.bench.warmup)
                 if (-not $resp.ok) { throw "ts bench runner: $($resp.error)" }
                 if ($null -ne $resp.total_request_ms) { $run.total_request_ms = [math]::Round([double]$resp.total_request_ms, 2) }
+                if ($null -ne $resp.ttfr_ms) { $run.ttfr_ms = [math]::Round([double]$resp.ttfr_ms, 2) }
+                if ($null -ne $resp.e2e_ttft_ms) { $run.e2e_ttft_ms = [math]::Round([double]$resp.e2e_ttft_ms, 2) }
+                if ($null -ne $resp.latency_total_request_ms) {
+                    $run.latency_total_request_ms = [math]::Round([double]$resp.latency_total_request_ms, 2)
+                }
+                if ($resp.latency_error) { $run.latency_error = [string]$resp.latency_error }
             } else {
+                if ($cfg.bench.warmup) {
+                    try {
+                        $warmupReq = @{
+                            messages    = @(@{ role = 'user'; content = $prompt })
+                            max_tokens  = 8
+                            temperature = 0.0
+                            stream      = $false
+                            cache_prompt = $true
+                        }
+                        if ($item.reasoning_mode -eq "off") { $warmupReq["enable_thinking"] = $false }
+                        $wBody = $warmupReq | ConvertTo-Json -Compress -Depth 5
+                        Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
+                    } catch { }
+                }
                 $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
             }
             if ($null -eq $run.total_request_ms) {
@@ -1047,26 +1050,6 @@ function Invoke-OneBenchRun {
                 } else {
                     $run.eval_tps = $null   # unmeasured: too few tokens to time
                 }
-                if ($tsBenchScript) {
-                    try {
-                        # Dedicated latency pass: streamed on purpose, separate
-                        # from the non-streamed throughput request above so
-                        # token/s remains stable. Keep it short; we only need
-                        # first-response and first-content timestamps.
-                        $latTokens = [Math]::Min($nPred, 32)
-                        $latResp = Invoke-TsBenchRequest -Port $port -Prompt $prompt -MaxTokens $latTokens -ReasoningOff:($item.reasoning_mode -eq "off") -Stream
-                        if ($latResp.ok) {
-                            if ($null -ne $latResp.ttfr_ms) { $run.ttfr_ms = [math]::Round([double]$latResp.ttfr_ms, 2) }
-                            if ($null -ne $latResp.e2e_ttft_ms) { $run.e2e_ttft_ms = [math]::Round([double]$latResp.e2e_ttft_ms, 2) }
-                            if ($null -ne $latResp.total_request_ms) { $run.latency_total_request_ms = [math]::Round([double]$latResp.total_request_ms, 2) }
-                        } else {
-                            $run.latency_error = $latResp.error
-                        }
-                    } catch {
-                        $run.latency_error = $_.Exception.Message
-                    }
-                }
-
                 # Legacy report field: prefer the real streamed time-to-first
                 # content when available, otherwise keep the old prompt-ms
                 # approximation so older report views remain meaningful.

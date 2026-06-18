@@ -64,6 +64,15 @@ Describe "Resolve-TsBenchRunnerScript" {
             $env:CALIBR_TS_BENCH = $oldFlag
         }
     }
+
+    It "delegates the complete HTTP sequence in one TypeScript call" {
+        $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+        Assert-True ($benchSource -match 'warmupMaxTokens\s*=\s*8') "TS sequence should own warmup"
+        Assert-True ($benchSource -match 'latencyMaxTokens\s*=\s*\[Math\]::Min') "TS sequence should own latency"
+        Assert-True ($benchSource -match 'Invoke-TsBenchRequest[\s\S]*-Warmup:\(\[bool\]\$cfg\.bench\.warmup\)') "PowerShell should invoke one sequence"
+        Assert-Equal 1 ([regex]::Matches($benchSource, '\$resp\s*=\s*Invoke-TsBenchRequest').Count) "PowerShell should invoke the TS sequence once"
+        Assert-True ($benchSource -match '\$resp\.latency_total_request_ms') "PowerShell should map sequence latency"
+    }
 }
 
 Describe "Resolve-TsResultCoreScript" {
@@ -97,6 +106,7 @@ Describe "Resolve-TsResultCoreScript" {
             $env:CALIBR_TS_RESULT_CORE = $oldFlag
         }
     }
+
 }
 
 Describe "TypeScript server lifecycle" {
