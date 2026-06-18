@@ -123,6 +123,33 @@ function Invoke-TsAggregateBenchResult {
     }
 }
 
+function Invoke-TsFinalizeBenchRun {
+    param($run, [string]$stderr, $cfg)
+    $script = Resolve-TsResultCoreScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $payload = [ordered]@{
+        action = "finalize-run"
+        run    = $run
+        stderr = $stderr
+        cfg    = $cfg
+    } | ConvertTo-Json -Compress -Depth 20
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-finalize-run-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $out = & $node $script --json-file $payloadPath
+        $text = (@($out) -join "`n").Trim()
+        if (-not $text) { return $null }
+        $resp = $text | ConvertFrom-Json
+        if ($resp.ok -and $null -ne $resp.result) { return $resp.result }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function New-AggregatedBenchResult {
     # Combine N per-run hashtables (from Invoke-OneBenchRun) plus the
     # planning $item metadata into a single top-level successful result.
@@ -1144,37 +1171,40 @@ function Invoke-OneBenchRun {
     "`n===== STDERR (run $runIndex) =====" | Out-File -Encoding utf8 -Append $logFile
     $err | Out-File -Encoding utf8 -Append $logFile
 
-    $patterns = @{
-        cpu_model_mib    = 'CPU model buffer size\s*=\s*([\d\.]+)'
-        cuda_model_mib   = 'CUDA0 model buffer size\s*=\s*([\d\.]+)'
-        kv_cache_mib     = 'CUDA0 KV buffer size\s*=\s*([\d\.]+)'
-        compute_cuda_mib = 'CUDA0 compute buffer size\s*=\s*([\d\.]+)'
-        compute_host_mib = 'CUDA_Host compute buffer size\s*=\s*([\d\.]+)'
-        layers_offloaded = 'offloaded (\d+)/(\d+) layers'
-    }
-    foreach ($k in $patterns.Keys) {
-        $m = [regex]::Match($err, $patterns[$k])
-        if ($m.Success) {
-            if ($k -eq 'layers_offloaded') { $run[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
-            else { $run[$k] = [double]$m.Groups[1].Value }
+    $tsFinalizedRun = Invoke-TsFinalizeBenchRun -run $run -stderr $err -cfg $cfg
+    if ($null -ne $tsFinalizedRun) {
+        $run = $tsFinalizedRun
+    } else {
+        $patterns = @{
+            cpu_model_mib    = 'CPU model buffer size\s*=\s*([\d\.]+)'
+            cuda_model_mib   = 'CUDA0 model buffer size\s*=\s*([\d\.]+)'
+            kv_cache_mib     = 'CUDA0 KV buffer size\s*=\s*([\d\.]+)'
+            compute_cuda_mib = 'CUDA0 compute buffer size\s*=\s*([\d\.]+)'
+            compute_host_mib = 'CUDA_Host compute buffer size\s*=\s*([\d\.]+)'
+            layers_offloaded = 'offloaded (\d+)/(\d+) layers'
         }
-    }
-    # Trap llama.cpp builds that don't recognize a model's architecture (e.g.
-    # an older build vs. a brand-new lineage). Surface the architecture name
-    # so the caller can short-circuit further tests on the same model.
-    $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
-    if ($mArch.Success) { $run.unsupported_architecture = $mArch.Groups[1].Value }
-    if ($err -match 'successfully fit params') { $run.fit_status = "success" }
-    elseif ($err -match 'failed to fit params') { $run.fit_status = "failed_but_running" }
-    else { $run.fit_status = "unknown" }
+        foreach ($k in $patterns.Keys) {
+            $m = [regex]::Match($err, $patterns[$k])
+            if ($m.Success) {
+                if ($k -eq 'layers_offloaded') { $run[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
+                else { $run[$k] = [double]$m.Groups[1].Value }
+            }
+        }
+        # Trap llama.cpp builds that don't recognize a model's architecture.
+        $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
+        if ($mArch.Success) { $run.unsupported_architecture = $mArch.Groups[1].Value }
+        if ($err -match 'successfully fit params') { $run.fit_status = "success" }
+        elseif ($err -match 'failed to fit params') { $run.fit_status = "failed_but_running" }
+        else { $run.fit_status = "unknown" }
 
-    $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
-    $satRatio = if ($vramTotal -gt 0) { $run.vram_peak_mib / $vramTotal } else { 0 }
-    $run.wddm_vram_saturation = [math]::Round($satRatio, 3)
-    $run.wddm_flag_high_vram  = ($satRatio -gt $cfg.wddm_detection.vram_saturation_threshold)
-    $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
-    $run.wddm_flag_shared_pos = ($run.shared_peak_mib -gt $confirmThresh)
-    $run.fit_status = Resolve-FitStatus -Status $run.fit_status -Ok $run.ok -SharedPeakMib $run.shared_peak_mib -SharedConfirmMib $confirmThresh
+        $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
+        $satRatio = if ($vramTotal -gt 0) { $run.vram_peak_mib / $vramTotal } else { 0 }
+        $run.wddm_vram_saturation = [math]::Round($satRatio, 3)
+        $run.wddm_flag_high_vram  = ($satRatio -gt $cfg.wddm_detection.vram_saturation_threshold)
+        $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
+        $run.wddm_flag_shared_pos = ($run.shared_peak_mib -gt $confirmThresh)
+        $run.fit_status = Resolve-FitStatus -Status $run.fit_status -Ok $run.ok -SharedPeakMib $run.shared_peak_mib -SharedConfirmMib $confirmThresh
+    }
 
     Write-Host "[phase] run_complete"
     return $run

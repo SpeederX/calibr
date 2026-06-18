@@ -3,17 +3,20 @@ import { pathToFileURL } from "node:url";
 import {
   aggregateBenchResult,
   deriveResultFields,
+  finalizeBenchRun,
   getFailureReason,
   runStats,
 } from "./resultCore.js";
 
-type ResultCoreAction = "aggregate" | "derive" | "failure" | "run-stats" | "report-fields";
+type ResultCoreAction = "aggregate" | "finalize-run" | "derive" | "failure" | "run-stats" | "report-fields";
 
 interface ResultCorePayload {
   action: ResultCoreAction;
   item?: unknown;
   cfg?: unknown;
   runs?: unknown;
+  run?: unknown;
+  stderr?: string;
   result?: Record<string, unknown>;
   results?: Array<Record<string, unknown>>;
   vramTotalMib?: number;
@@ -56,6 +59,19 @@ function handle(payload: ResultCorePayload): Record<string, unknown> {
         cfg: payload.cfg as never,
         runs: payload.runs as never,
         session: payload.session as never,
+      }),
+    };
+  }
+  if (payload.action === "finalize-run") {
+    if (!payload.run || !payload.cfg || typeof payload.stderr !== "string") {
+      return failure("finalize-run requires run, cfg, and stderr");
+    }
+    return {
+      ok: true,
+      result: finalizeBenchRun({
+        run: payload.run as never,
+        cfg: payload.cfg as never,
+        stderr: payload.stderr,
       }),
     };
   }

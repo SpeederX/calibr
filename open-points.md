@@ -65,15 +65,17 @@ Decision — decouple throughput from latency:
 Remaining:
 
 - Move the repeated benchmark-run coordinator into TypeScript.
-- Move stderr/result parsing into the TypeScript run coordinator.
+- Fold the now-TypeScript stderr/per-run finalizer into the repeated-run
+  coordinator, removing the extra subprocess hop on the normal path.
 - Do NOT delete the PowerShell request path.
 
 Lifecycle migration status:
 
 - `serverLifecycleCli` now owns `llama-server` spawn, readiness polling, real
   server PID publication, explicit stop, and child cleanup.
-- PowerShell remains the transitional coordinator for GPU/RAM polling,
-  repeated runs, stderr parsing, and aggregation.
+- PowerShell remains the transitional coordinator for GPU/RAM polling and
+  repeated runs. TypeScript owns stderr parsing, per-run finalization, and
+  successful-run aggregation.
 - `CALIBR_TS_LIFECYCLE=0` keeps the direct PowerShell lifecycle as a fallback.
 
 ### Engine pruning before deeper migration

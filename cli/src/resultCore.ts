@@ -75,6 +75,17 @@ export interface ResultCoreSession {
   llama_server_version?: string;
 }
 
+export interface ParsedLlamaServerStderr {
+  cpu_model_mib?: number;
+  cuda_model_mib?: number;
+  kv_cache_mib?: number;
+  compute_cuda_mib?: number;
+  compute_host_mib?: number;
+  layers_offloaded?: string;
+  unsupported_architecture?: string;
+  fit_status: "success" | "failed_but_running" | "unknown";
+}
+
 export function median(values: Array<number | null | undefined> | null | undefined): number | null {
   if (!values) return null;
   const nums = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
@@ -110,6 +121,56 @@ export function inferFitStatus(status: string | null | undefined, ok: boolean, s
   if (status === "success" || status === "failed_but_running") return status;
   if (!ok) return status;
   return sharedPeakMib > sharedConfirmMib ? "failed_but_running" : "success";
+}
+
+export function parseLlamaServerStderr(stderr: string): ParsedLlamaServerStderr {
+  const out: ParsedLlamaServerStderr = { fit_status: "unknown" };
+  type NumericStderrKey =
+    | "cpu_model_mib"
+    | "cuda_model_mib"
+    | "kv_cache_mib"
+    | "compute_cuda_mib"
+    | "compute_host_mib";
+  const numeric: Array<[NumericStderrKey, RegExp]> = [
+    ["cpu_model_mib", /CPU model buffer size\s*=\s*([\d.]+)/],
+    ["cuda_model_mib", /CUDA0 model buffer size\s*=\s*([\d.]+)/],
+    ["kv_cache_mib", /CUDA0 KV buffer size\s*=\s*([\d.]+)/],
+    ["compute_cuda_mib", /CUDA0 compute buffer size\s*=\s*([\d.]+)/],
+    ["compute_host_mib", /CUDA_Host compute buffer size\s*=\s*([\d.]+)/],
+  ];
+  for (const [key, pattern] of numeric) {
+    const match = stderr.match(pattern);
+    if (match) out[key] = Number.parseFloat(match[1]);
+  }
+  const layers = stderr.match(/offloaded (\d+)\/(\d+) layers/);
+  if (layers) out.layers_offloaded = `${layers[1]}/${layers[2]}`;
+  const architecture = stderr.match(/unknown model architecture: '([^']+)'/);
+  if (architecture) out.unsupported_architecture = architecture[1];
+  if (/successfully fit params/.test(stderr)) out.fit_status = "success";
+  else if (/failed to fit params/.test(stderr)) out.fit_status = "failed_but_running";
+  return out;
+}
+
+export function finalizeBenchRun(payload: {
+  run: BenchRun;
+  stderr: string;
+  cfg: BenchConfig;
+}): BenchRun {
+  const parsed = parseLlamaServerStderr(payload.stderr);
+  const vramTotal = int(payload.cfg.hardware?.vram_total_mib);
+  const peakVram = int(payload.run.vram_peak_mib);
+  const sharedPeak = int(payload.run.shared_peak_mib);
+  const confirm = int(payload.cfg.wddm_detection?.shared_delta_confirm_mib, 500);
+  const threshold = num(payload.cfg.wddm_detection?.vram_saturation_threshold) ?? 0.92;
+  const saturation = vramTotal > 0 ? peakVram / vramTotal : 0;
+  return {
+    ...payload.run,
+    ...parsed,
+    fit_status: inferFitStatus(parsed.fit_status, payload.run.ok === true, sharedPeak, confirm),
+    wddm_vram_saturation: round(saturation, 3),
+    wddm_flag_high_vram: saturation > threshold,
+    wddm_flag_shared_pos: sharedPeak > confirm,
+  };
 }
 
 export function getFailureReason(result: Record<string, unknown>, sharedConfirmMib = 500): string | null {

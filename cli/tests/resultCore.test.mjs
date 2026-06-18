@@ -7,9 +7,11 @@ import { spawnSync } from "node:child_process";
 import {
   aggregateBenchResult,
   deriveResultFields,
+  finalizeBenchRun,
   getFailureReason,
   inferFitStatus,
   median,
+  parseLlamaServerStderr,
   runStats,
 } from "../dist/resultCore.js";
 
@@ -138,6 +140,44 @@ test("fit and failure classification match the transitional engine rules", () =>
   assert.equal(getFailureReason({ ok: false, shared_peak_mib: 900 }), "vram_overflow");
   assert.equal(getFailureReason({ ok: false, ready: false, shared_peak_mib: 0 }), "server_timeout");
   assert.equal(getFailureReason({ ok: false, ready: true, shared_peak_mib: 0 }), "other");
+});
+
+test("parseLlamaServerStderr extracts buffers, offload, architecture, and fit", () => {
+  const parsed = parseLlamaServerStderr([
+    "CPU model buffer size = 100.50 MiB",
+    "CUDA0 model buffer size = 5200.25 MiB",
+    "CUDA0 KV buffer size = 1024.00 MiB",
+    "CUDA0 compute buffer size = 360.75 MiB",
+    "CUDA_Host compute buffer size = 80.00 MiB",
+    "offloaded 33/33 layers to GPU",
+    "successfully fit params",
+  ].join("\n"));
+  assert.deepEqual(parsed, {
+    cpu_model_mib: 100.5,
+    cuda_model_mib: 5200.25,
+    kv_cache_mib: 1024,
+    compute_cuda_mib: 360.75,
+    compute_host_mib: 80,
+    layers_offloaded: "33/33",
+    fit_status: "success",
+  });
+
+  const unsupported = parseLlamaServerStderr("unknown model architecture: 'qwen-next'\nfailed to fit params");
+  assert.equal(unsupported.unsupported_architecture, "qwen-next");
+  assert.equal(unsupported.fit_status, "failed_but_running");
+});
+
+test("finalizeBenchRun derives WDDM flags and infers fit when stderr is silent", () => {
+  const finalized = finalizeBenchRun({
+    run: { ok: true, vram_peak_mib: 7600, shared_peak_mib: 800 },
+    stderr: "CUDA0 model buffer size = 5200.00",
+    cfg: cfg(),
+  });
+  assert.equal(finalized.cuda_model_mib, 5200);
+  assert.equal(finalized.fit_status, "failed_but_running");
+  assert.equal(finalized.wddm_vram_saturation, 0.928);
+  assert.equal(finalized.wddm_flag_high_vram, true);
+  assert.equal(finalized.wddm_flag_shared_pos, true);
 });
 
 test("derived fields and run stats can be reconstructed from existing result JSON", () => {

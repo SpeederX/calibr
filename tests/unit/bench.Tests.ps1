@@ -107,6 +107,14 @@ Describe "Resolve-TsResultCoreScript" {
         }
     }
 
+    It "delegates stderr parsing and per-run finalization to TypeScript" {
+        $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+        Assert-True ($benchSource -match 'function Invoke-TsFinalizeBenchRun') "TS run finalizer launcher missing"
+        Assert-True ($benchSource -match 'action\s*=\s*"finalize-run"') "finalize-run action missing"
+        Assert-True ($benchSource -match '\$tsFinalizedRun = Invoke-TsFinalizeBenchRun') "run should be finalized through TypeScript"
+        Assert-True ($benchSource -match 'if \(\$null -ne \$tsFinalizedRun\)') "PowerShell fallback should remain"
+    }
+
 }
 
 Describe "TypeScript server lifecycle" {
