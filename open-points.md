@@ -21,36 +21,31 @@ current guided-run cleanup line.
 
 Proposed order:
 
-1. Prune unused legacy paths and duplicated UI/engine behavior.
-2. Move the HTTP benchmark client toward TypeScript where stream parsing and
-   telemetry are easier to maintain.
-3. Add benchmark metric glossary / latency work and prompt-length prefill
-   sweep.
-4. Add opt-in telemetry / leaderboard submission when the server-side
+1. Make benchmark metrics explicit and honest in schema, live UI, and report.
+2. Treat cold load/disk as per-model data and promote CPU/RAM capacity signals.
+3. Expose advanced sweep profiles, then make sweep generation hardware-aware.
+4. Add prompt-length prefill and KV-fill benchmark modes.
+5. Add opt-in telemetry / leaderboard submission when the server-side
    Cloudflare + PHP token layer exists.
-5. Add MTP/speculative decoding support if it stays small enough for 0.1.8;
+6. Add MTP/speculative decoding support if it stays small enough for 0.1.8;
    otherwise shift it to 0.1.9.
 
 ### TS bench client — current status and decisions
 
-The TypeScript HTTP bench client (migration target #2) is wired opt-in and
-validated against the PowerShell path. State + the decisions taken:
+The CUDA/NVIDIA benchmark path is now coordinated end-to-end in TypeScript and
+validated against the PowerShell path:
 
 - `cli/src/benchClient.ts`: request builder, llama.cpp timing mapper, SSE
   parser, non-streaming runner, and a streaming runner that timestamps SSE
   chunks for `ttfr_ms` / `e2e_ttft_ms`. Unit-tested with injected fetch/clock
   (no live llama-server needed).
-- `cli/src/benchRunnerCli.ts`: Node entrypoint the engine shells out to. One
-  invocation now owns the complete HTTP sequence: optional warmup,
-  non-streaming throughput, then the short streaming latency pass. PowerShell
-  keeps the hardware poller around that sequence and maps the single result.
-- Default-on from the CLI, opt-out with `CALIBR_TS_BENCH=0`: the
-  EngineAdapter (`cli/src/engine.ts`) injects `CALIBR_NODE` +
-  `CALIBR_TS_BENCH_SCRIPT`; `engine/bench.ps1` (`Invoke-TsBenchRequest`)
-  delegates the chat/completions call over stdin and maps the returned
-  llama.cpp `timings` through the existing pipeline. `Invoke-RestMethod` stays
-  as the standalone/fallback path. Validated: TS reproduced the PowerShell
-  prompt_tps/eval_tps within run-to-run noise.
+- `cli/src/benchCoordinator.ts`: lifecycle, readiness, metric polling, warmup,
+  non-streaming throughput, streaming latency, stderr parsing, repeated runs,
+  cleanup, per-run finalization, and aggregation.
+- Default-on from the CLI, opt-out with `CALIBR_TS_COORDINATOR=0`.
+- `engine/bench.ps1` remains the adapter/persistence layer and the fallback
+  coordinator for non-CUDA providers. Do not remove that fallback until AMD,
+  Linux non-NVIDIA, and Metal providers have equivalent coverage.
 
 Decision — decouple throughput from latency:
 
@@ -129,9 +124,9 @@ Candidate metric names:
 - `eval_tps`: decode / token-generation throughput.
 - `total_request_ms`: full request duration, excluding model load.
 
-Implementation note: robust stream timing is awkward in PowerShell. Consider
-moving the HTTP benchmark client into TypeScript before adding `ttfr_ms` /
-`e2e_ttft_ms`, while keeping the rest of the engine boundary intact.
+The latency measurements are implemented. Remaining work is presentation:
+document the definitions and surface them consistently in result schema,
+live UI, and report.
 
 ### Prompt-length prefill sweep
 
@@ -401,27 +396,24 @@ Needed:
 - report changes that explain CPU/RAM offload instead of framing everything as
   VRAM-only
 
-### Background polling during bench POST
-
-Live polling currently covers load wait more than inference. Add a background
-poller during the synchronous HTTP POST so peak GPU power/temp/util and RAM
-are captured while inference is actually running.
-
 ### reasoning_mode wiring
 
 Catalog entries can mark `reasoning_mode`, and the bench path now sends
 `enable_thinking=false` in the chat request when `reasoning_mode = off`.
-Remaining work: verify the current llama.cpp behavior against Qwen reasoning
-models and decide whether any server-startup flag is also needed.
+Remaining work is an isolated real-model UAT against a Qwen reasoning model to
+confirm the current llama.cpp build and embedded template honor the request
+flag. Add a startup flag only if that UAT demonstrates one is required.
 
 This is especially important for Qwen reasoning models, where default thinking
 can distort speed measurements.
 
 ### Gemma chat-template verification
 
-Catalog/template notes are now propagated into plan/results/report. Remaining
-work: verify which chat template llama.cpp chooses for Gemma 2 / 3 / 4 entries.
-If defaults are wrong, add explicit catalog-driven template wiring.
+Catalog/template notes are propagated into plan/results/report and the bench
+uses `/v1/chat/completions`, which asks llama.cpp to apply the GGUF's embedded
+template. Remaining work is a small Gemma 2/3/4 UAT matrix to catch malformed
+or missing template metadata. Add explicit catalog-driven template wiring only
+for models that fail that verification.
 
 ### KV-fill benchmark mode
 
