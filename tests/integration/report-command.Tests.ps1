@@ -120,6 +120,11 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function confirmedSharedMib') "shared-memory display should use the confirmation threshold"
         Assert-True ($tpl -match 'id="timeline"') "run timeline chart missing"
         Assert-True ($tpl -match 'function renderTimeline') "run timeline renderer missing"
+        Assert-True ($tpl -match 'data-config-id') "scatter points should open the linked timeline"
+        Assert-True ($tpl -match 'show all runs') "timeline should support an all-runs overlay"
+        Assert-True ($tpl -match 'latency_prompt.*latency_eval') "timeline should focus its domain on latency phases"
+        Assert-False ($tpl -match 'timeline-shared') "timeline should not render shared memory"
+        Assert-True ($tpl -match 'timeline-legend') "timeline color legend missing"
         Assert-True ($tpl -match 'VRAM run') "report should label baseline-adjusted VRAM explicitly"
         Assert-True ($tpl -match 'unknown \(legacy record\)') "invalid historical llama build tags should be identified as legacy"
     }

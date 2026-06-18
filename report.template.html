@@ -170,8 +170,9 @@
   .scatter-line-gpu { stroke: var(--c-c); stroke-dasharray: 4 4; stroke-width: 1.2; opacity: 0.7; }
   .scatter-axis     { stroke: var(--c-border); stroke-width: 1; }
   .scatter-tick     { fill: var(--c-muted); font-size: 10px; font-family: Consolas, monospace; }
-  .scatter-dot      { stroke-width: 1.8; cursor: default; opacity: 0.74; }
+  .scatter-dot      { stroke-width: 1.8; cursor: pointer; opacity: 0.74; }
   .scatter-dot.is-winner { stroke: var(--c-win); stroke-width: 3.5; opacity: 1; }
+  .scatter-dot.is-selected { stroke:#fff; stroke-width:4; opacity:1; }
   .scatter-winner-ring {
     fill: none;
     stroke: var(--c-win);
@@ -191,12 +192,24 @@
   .timeline-controls { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:8px 0; }
   .timeline-controls select { background:#1a1a1a; color:var(--c-text); border:1px solid var(--c-border);
                               border-radius:4px; padding:5px 8px; max-width:min(620px, 75vw); }
+  .memory-latency-grid { display:grid; grid-template-columns:minmax(0, 1fr); gap:16px; align-items:start; }
+  .memory-latency-grid.timeline-open { grid-template-columns:minmax(0, 1.08fr) minmax(520px, .92fr); }
+  .timeline-panel { display:none; min-width:0; border-left:1px solid var(--c-border); padding-left:16px; }
+  .memory-latency-grid.timeline-open .timeline-panel { display:block; }
+  .timeline-panel h3 { margin-top:0; }
+  .timeline-legend { display:flex; gap:8px 14px; flex-wrap:wrap; margin:7px 0; color:var(--c-muted); font-size:11px; }
+  .legend-item { display:inline-flex; align-items:center; gap:5px; }
+  .legend-line { display:inline-block; width:20px; height:0; border-top:2px solid currentColor; }
+  .legend-box { display:inline-block; width:12px; height:9px; border:1px solid rgba(255,255,255,.15); }
   .timeline-speed { fill:none; stroke:var(--c-accent); stroke-width:2; }
   .timeline-vram { fill:none; stroke:#22c55e; stroke-width:1.7; }
   .timeline-ram { fill:none; stroke:#f59e0b; stroke-width:1.7; }
-  .timeline-shared { fill:none; stroke:#ef4444; stroke-width:1.7; }
   .timeline-phase { opacity:0.08; }
   .timeline-point { stroke-width:1; }
+  @media (max-width: 1250px) {
+    .memory-latency-grid.timeline-open { grid-template-columns:1fr; }
+    .timeline-panel { border-left:0; border-top:1px solid var(--c-border); padding:14px 0 0; }
+  }
 
   /* ----- All-results table (winner-aware) ----- */
   #all tbody tr.is-winner { background: var(--c-win-bg); }
@@ -230,15 +243,28 @@
   <div class="chart-toolbar">
     <label><input id="scatter-baseline-toggle" type="checkbox" checked>Adjust with baseline VRAM used memory</label>
   </div>
-  <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
-
-  <h3>Run timeline</h3>
-  <p class="meta">Streaming diagnostic pass: phase, rolling output speed, VRAM, RAM and confirmed shared spill sampled through time. Official throughput remains the separate non-streaming measurement.</p>
-  <div class="timeline-controls">
-    <label>Config <select id="timeline-config"></select></label>
-    <label>Run <select id="timeline-run"></select></label>
+  <div class="memory-latency-grid" id="memory-latency-grid">
+    <div class="scatter-panel">
+      <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
+    </div>
+    <aside class="timeline-panel" id="timeline-panel">
+      <h3>Run timeline</h3>
+      <div class="meta" id="timeline-title"></div>
+      <p class="meta">Streaming diagnostic pass, focused on prefill and eval. Official throughput remains the separate non-streaming measurement.</p>
+      <div class="timeline-controls">
+        <label>Run <select id="timeline-run"></select></label>
+      </div>
+      <div class="timeline-legend">
+        <span class="legend-item" style="color:#22c55e"><span class="legend-line"></span>VRAM</span>
+        <span class="legend-item" style="color:#f59e0b"><span class="legend-line"></span>RAM Δ</span>
+        <span class="legend-item" style="color:#8b5cf6"><span class="legend-line"></span>rolling output</span>
+        <span class="legend-item"><span class="legend-box" style="background:#f59e0b"></span>prefill</span>
+        <span class="legend-item"><span class="legend-box" style="background:#8b5cf6"></span>eval</span>
+      </div>
+      <div class="timeline-legend" id="timeline-run-legend"></div>
+      <svg id="timeline" width="100%" height="340" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 340"></svg>
+    </aside>
   </div>
-  <svg id="timeline" width="100%" height="340" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 340"></svg>
 
   <details class="card">
     <summary><b>Metric glossary</b> <span class="meta">what each benchmark value measures</span></summary>
@@ -608,7 +634,7 @@ const STATE = {
   levelTab: 'all',
   adjustScatterBaseline: true,
   timelineConfigId: null,
-  timelineRunIndex: 0,
+  timelineRunIndex: 'all',
 };
 
 // Hardware level of a result (low/middle/high/ultra), or 'custom' for a
@@ -1164,11 +1190,13 @@ function renderScatter() {
                 ' · time ' + pt.x + 's · eval ' + (+d.eval_tps).toFixed(1) + ' t/s';
     const isWin = isWinnerId(d.id);
     const winCls = isWin ? ' is-winner' : '';
+    const selectedCls = d.id === STATE.timelineConfigId ? ' is-selected' : '';
     const r = isWin ? 6 : 5;
     if (isWin) {
       p.push('<circle class="scatter-winner-ring" cx="' + cx + '" cy="' + cy + '" r="10"><animate attributeName="r" values="9;14;9" dur="1.8s" repeatCount="indefinite"/><animate attributeName="opacity" values="0.35;1;0.35" dur="1.8s" repeatCount="indefinite"/></circle>');
     }
-    p.push('<circle class="scatter-dot' + winCls + '" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + fill + '" stroke="' + stroke + '"><title>' + tip + '</title></circle>');
+    p.push('<circle class="scatter-dot' + winCls + selectedCls + '" data-config-id="' + escapeHtml(d.id) +
+      '" cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="' + fill + '" stroke="' + stroke + '"><title>' + tip + '</title></circle>');
   });
   svg.innerHTML = p.join('');
 }
@@ -1178,13 +1206,23 @@ scatterBaselineToggle.addEventListener('change', () => {
   STATE.adjustScatterBaseline = scatterBaselineToggle.checked;
   renderScatter();
 });
+document.getElementById('scatter').addEventListener('click', event => {
+  const dot = event.target.closest('.scatter-dot[data-config-id]');
+  if (!dot) return;
+  STATE.timelineConfigId = dot.dataset.configId;
+  STATE.timelineRunIndex = 'all';
+  renderScatter();
+  renderTimeline();
+});
 
 // ===========================================================================
 // Per-run diagnostic timeline. Memory comes from the coordinator poller;
 // rolling speed comes from streamed content events in the latency pass.
 // ===========================================================================
-const timelineConfig = document.getElementById('timeline-config');
 const timelineRun = document.getElementById('timeline-run');
+const timelineGrid = document.getElementById('memory-latency-grid');
+const timelineTitle = document.getElementById('timeline-title');
+const timelineRunLegend = document.getElementById('timeline-run-legend');
 
 function telemetryRuns(d) {
   return Array.isArray(d?.runs) ? d.runs.filter(r => Array.isArray(r.telemetry) && r.telemetry.length > 0) : [];
@@ -1192,93 +1230,124 @@ function telemetryRuns(d) {
 
 function renderTimeline() {
   const svg = document.getElementById('timeline');
-  const configs = VIEW.filter(d => telemetryRuns(d).length > 0);
-  if (configs.length === 0) {
-    timelineConfig.innerHTML = '<option>No telemetry in these results</option>';
-    timelineRun.innerHTML = '<option>-</option>';
-    svg.innerHTML = '<text x="500" y="165" text-anchor="middle" class="scatter-tick">Run a new benchmark with full live metrics to collect timeline points.</text>';
+  if (!STATE.timelineConfigId) {
+    timelineGrid.classList.remove('timeline-open');
     return;
   }
-
-  if (!configs.some(d => d.id === STATE.timelineConfigId)) {
-    const winner = configs.find(d => isWinnerId(d.id));
-    STATE.timelineConfigId = (winner || configs[0]).id;
-    STATE.timelineRunIndex = 0;
+  timelineGrid.classList.add('timeline-open');
+  const selected = VIEW.find(d => d.id === STATE.timelineConfigId);
+  if (!selected) {
+    timelineGrid.classList.remove('timeline-open');
+    return;
   }
-  timelineConfig.innerHTML = configs.map(d =>
-    '<option value="' + escapeHtml(d.id) + '"' + (d.id === STATE.timelineConfigId ? ' selected' : '') + '>' +
-    escapeHtml(d.label) + '</option>'
-  ).join('');
-
-  const selected = configs.find(d => d.id === STATE.timelineConfigId) || configs[0];
+  timelineTitle.textContent = selected.label;
   const runs = telemetryRuns(selected);
-  if (STATE.timelineRunIndex >= runs.length) STATE.timelineRunIndex = 0;
-  timelineRun.innerHTML = runs.map((r, i) =>
-    '<option value="' + i + '"' + (i === STATE.timelineRunIndex ? ' selected' : '') + '>run ' + (r.run_index ?? i + 1) + '</option>'
-  ).join('');
+  if (runs.length === 0) {
+    timelineRun.innerHTML = '<option>No telemetry</option>';
+    timelineRunLegend.innerHTML = '';
+    svg.innerHTML = '<text x="500" y="165" text-anchor="middle" class="scatter-tick">Run this config again with full live metrics to collect timeline points.</text>';
+    return;
+  }
+  if (STATE.timelineRunIndex !== 'all' && +STATE.timelineRunIndex >= runs.length) STATE.timelineRunIndex = 'all';
+  timelineRun.innerHTML = '<option value="all"' + (STATE.timelineRunIndex === 'all' ? ' selected' : '') + '>show all runs</option>' +
+    runs.map((r, i) =>
+      '<option value="' + i + '"' + (+STATE.timelineRunIndex === i ? ' selected' : '') + '>run ' + (r.run_index ?? i + 1) + '</option>'
+    ).join('');
 
-  const points = runs[STATE.timelineRunIndex].telemetry.slice().sort((a, b) => (+a.elapsed_ms || 0) - (+b.elapsed_ms || 0));
+  const chosenRuns = STATE.timelineRunIndex === 'all'
+    ? runs.map((run, index) => ({ run, index }))
+    : [{ run: runs[+STATE.timelineRunIndex], index: +STATE.timelineRunIndex }];
+  const series = chosenRuns.map(({ run, index }) => {
+    const latency = run.telemetry.filter(p => p.phase === 'latency_prompt' || p.phase === 'latency_eval')
+      .slice().sort((a, b) => (+a.elapsed_ms || 0) - (+b.elapsed_ms || 0));
+    const start = latency.length > 0 ? (+latency[0].elapsed_ms || 0) : 0;
+    const relative = latency.map(p => ({ ...p, plot_ms: Math.max(0, (+p.elapsed_ms || 0) - start) }));
+    const firstEval = relative.find(p => p.phase === 'latency_eval')?.plot_ms ?? 0;
+    const end = Math.max(firstEval + 1, ...relative.map(p => +p.plot_ms || 0));
+    return {
+      index,
+      eval_duration_ms: Math.max(1, end - firstEval),
+      points: relative.map(p => ({
+        ...p,
+        plot_x: p.phase === 'latency_prompt'
+          ? 0.12 * (firstEval > 0 ? p.plot_ms / firstEval : 0)
+          : 0.12 + 0.88 * Math.max(0, p.plot_ms - firstEval) / Math.max(1, end - firstEval)
+      }))
+    };
+  }).filter(item => item.points.length > 0);
+  if (series.length === 0) {
+    timelineRunLegend.innerHTML = '';
+    svg.innerHTML = '<text x="500" y="165" text-anchor="middle" class="scatter-tick">No latency-phase samples in this run.</text>';
+    return;
+  }
   const W = 1000, H = 340, M = { l: 62, r: 62, t: 28, b: 38 };
   const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
-  const xMax = Math.max(1, ...points.map(p => +p.elapsed_ms || 0));
-  const memoryMax = Math.max(1024, ...points.map(p =>
-    Math.max(+p.vram_total_mib || 0, (+p.vram_run_mib || 0) + (+p.ram_used_mib || 0), +p.shared_mib || 0)
-  ));
-  const speedPoints = points.filter(p => p.rolling_tps != null && +p.rolling_tps >= 0);
-  const speedMax = Math.max(1, ...speedPoints.map(p => +p.rolling_tps || 0));
-  const xs = v => M.l + (v / xMax) * innerW;
-  const ym = v => M.t + innerH - (v / memoryMax) * innerH;
-  const ys = v => M.t + innerH - (v / speedMax) * innerH;
+  const allPoints = series.flatMap(item => item.points);
+  const maxEvalDuration = Math.max(1, ...series.map(item => item.eval_duration_ms));
+  const memoryValues = allPoints.flatMap(p => [+p.vram_total_mib || 0, +p.ram_used_mib || 0]);
+  const memoryMinRaw = Math.min(...memoryValues);
+  const memoryMaxRaw = Math.max(...memoryValues);
+  const memoryPad = Math.max(128, (memoryMaxRaw - memoryMinRaw) * 0.12);
+  const memoryMin = Math.max(0, memoryMinRaw - memoryPad);
+  const memoryMax = Math.max(memoryMin + 256, memoryMaxRaw + memoryPad);
+  const speedPoints = allPoints.filter(p => p.rolling_tps != null && +p.rolling_tps >= 0);
+  const speedValues = speedPoints.map(p => +p.rolling_tps || 0);
+  const speedMinRaw = speedValues.length ? Math.min(...speedValues) : 0;
+  const speedMaxRaw = speedValues.length ? Math.max(...speedValues) : 1;
+  const speedPad = Math.max(1, (speedMaxRaw - speedMinRaw) * 0.12);
+  const speedMin = Math.max(0, speedMinRaw - speedPad);
+  const speedMax = Math.max(speedMin + 2, speedMaxRaw + speedPad);
+  const xs = v => M.l + v * innerW;
+  const ym = v => M.t + innerH - ((v - memoryMin) / (memoryMax - memoryMin)) * innerH;
+  const ys = v => M.t + innerH - ((v - speedMin) / (speedMax - speedMin)) * innerH;
   const line = (rows, valueOf, yScale) => rows.map((p, i) =>
-    (i === 0 ? 'M' : 'L') + xs(+p.elapsed_ms || 0).toFixed(1) + ',' + yScale(valueOf(p)).toFixed(1)
+    (i === 0 ? 'M' : 'L') + xs(+p.plot_x || 0).toFixed(1) + ',' + yScale(valueOf(p)).toFixed(1)
   ).join(' ');
 
   const out = [];
-  const phaseColors = { warmup:'#60a5fa', throughput:'#22c55e', latency_prompt:'#f59e0b', latency_eval:'#8b5cf6' };
-  let phaseStart = 0;
-  for (let i = 1; i <= points.length; i++) {
-    if (i === points.length || points[i].phase !== points[phaseStart].phase) {
-      const x1 = xs(+points[phaseStart].elapsed_ms || 0);
-      const x2 = xs(i < points.length ? (+points[i].elapsed_ms || 0) : xMax);
-      out.push('<rect class="timeline-phase" x="' + x1 + '" y="' + M.t + '" width="' + Math.max(1, x2 - x1) + '" height="' + innerH +
-        '" fill="' + (phaseColors[points[phaseStart].phase] || '#fff') + '"><title>' + points[phaseStart].phase + '</title></rect>');
-      phaseStart = i;
-    }
-  }
+  out.push('<rect class="timeline-phase" x="' + M.l + '" y="' + M.t + '" width="' + (innerW * 0.12) + '" height="' + innerH + '" fill="#f59e0b"><title>prefill</title></rect>');
+  out.push('<rect class="timeline-phase" x="' + xs(0.12) + '" y="' + M.t + '" width="' + (innerW * 0.88) + '" height="' + innerH + '" fill="#8b5cf6"><title>eval</title></rect>');
   out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + (M.t + innerH) + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
   out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + M.t + '" x2="' + M.l + '" y2="' + (M.t + innerH) + '"/>');
   out.push('<line class="scatter-axis" x1="' + (M.l + innerW) + '" y1="' + M.t + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
+  out.push('<text class="scatter-tick" x="' + xs(0.06) + '" y="' + (H - 12) + '" text-anchor="middle">prefill</text>');
+  out.push('<text class="scatter-tick" x="' + xs(0.12) + '" y="' + (H - 12) + '" text-anchor="middle">TTFT</text>');
   for (let i = 0; i <= 4; i++) {
-    const elapsed = xMax * i / 4;
-    out.push('<text class="scatter-tick" x="' + xs(elapsed) + '" y="' + (H - 12) + '" text-anchor="middle">' + (elapsed / 1000).toFixed(1) + 's</text>');
-    out.push('<text class="scatter-tick" x="' + (M.l - 7) + '" y="' + (ym(memoryMax * i / 4) + 4) + '" text-anchor="end">' + Math.round(memoryMax * i / 4) + '</text>');
-    out.push('<text class="scatter-tick" x="' + (M.l + innerW + 7) + '" y="' + (ys(speedMax * i / 4) + 4) + '">' + (speedMax * i / 4).toFixed(0) + '</text>');
+    const evalFraction = i / 4;
+    const x = 0.12 + 0.88 * evalFraction;
+    const evalSeconds = maxEvalDuration * evalFraction / 1000;
+    if (i > 0) out.push('<text class="scatter-tick" x="' + xs(x) + '" y="' + (H - 12) + '" text-anchor="middle">+' + evalSeconds.toFixed(evalSeconds < 1 ? 2 : 1) + 's</text>');
+    const memoryTick = memoryMin + (memoryMax - memoryMin) * i / 4;
+    const speedTick = speedMin + (speedMax - speedMin) * i / 4;
+    out.push('<text class="scatter-tick" x="' + (M.l - 7) + '" y="' + (ym(memoryTick) + 4) + '" text-anchor="end">' + Math.round(memoryTick) + '</text>');
+    out.push('<text class="scatter-tick" x="' + (M.l + innerW + 7) + '" y="' + (ys(speedTick) + 4) + '">' + speedTick.toFixed(0) + '</text>');
   }
   out.push('<text class="scatter-tick" transform="translate(14,' + (M.t + innerH/2) + ') rotate(-90)" text-anchor="middle">Memory (MiB)</text>');
   out.push('<text class="scatter-tick" transform="translate(990,' + (M.t + innerH/2) + ') rotate(90)" text-anchor="middle">Rolling output events/s</text>');
-  out.push('<path class="timeline-vram" d="' + line(points, p => +p.vram_total_mib || 0, ym) + '"><title>Total VRAM</title></path>');
-  out.push('<path class="timeline-ram" d="' + line(points, p => +p.ram_used_mib || 0, ym) + '"><title>RAM delta</title></path>');
-  const sharedRows = points.map(p => ({ ...p, shared_mib: (+p.shared_mib || 0) > CONFIRM_MIB ? +p.shared_mib : 0 }));
-  out.push('<path class="timeline-shared" d="' + line(sharedRows, p => +p.shared_mib || 0, ym) + '"><title>Confirmed shared spill</title></path>');
-  if (speedPoints.length > 0) out.push('<path class="timeline-speed" d="' + line(speedPoints, p => +p.rolling_tps || 0, ys) + '"><title>Rolling output speed</title></path>');
-  speedPoints.forEach(p => {
-    const tip = 't=' + ((+p.elapsed_ms || 0) / 1000).toFixed(2) + 's · token event ' + (p.token_index ?? '-') +
-      ' · rolling ' + fmt1(p.rolling_tps) + '/s · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib +
-      ' MiB · shared ' + ((+p.shared_mib || 0) > CONFIRM_MIB ? p.shared_mib : 0) + ' MiB';
-    out.push('<circle class="timeline-point" cx="' + xs(+p.elapsed_ms || 0) + '" cy="' + ys(+p.rolling_tps || 0) +
-      '" r="3" fill="var(--c-accent)" stroke="#fff"><title>' + tip + '</title></circle>');
+  const dashPatterns = ['', '8 4', '3 3', '10 3 2 3'];
+  series.forEach(item => {
+    const dash = dashPatterns[item.index % dashPatterns.length];
+    const style = 'stroke-dasharray:' + dash + ';stroke-opacity:' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + ';';
+    out.push('<path class="timeline-vram" style="' + style + '" d="' + line(item.points, p => +p.vram_total_mib || 0, ym) + '"><title>Run ' + (item.index + 1) + ' VRAM</title></path>');
+    out.push('<path class="timeline-ram" style="' + style + '" d="' + line(item.points, p => +p.ram_used_mib || 0, ym) + '"><title>Run ' + (item.index + 1) + ' RAM delta</title></path>');
+    const runSpeed = item.points.filter(p => p.rolling_tps != null && +p.rolling_tps >= 0);
+    if (runSpeed.length > 0) out.push('<path class="timeline-speed" style="' + style + '" d="' + line(runSpeed, p => +p.rolling_tps || 0, ys) + '"><title>Run ' + (item.index + 1) + ' rolling output</title></path>');
+    runSpeed.forEach(p => {
+      const tip = 'run ' + (item.index + 1) + ' · t=' + ((+p.plot_ms || 0) / 1000).toFixed(2) + 's · output event ' + (p.token_index ?? '-') +
+        ' · rolling ' + fmt1(p.rolling_tps) + '/s · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib + ' MiB';
+      out.push('<circle class="timeline-point" cx="' + xs(+p.plot_x || 0) + '" cy="' + ys(+p.rolling_tps || 0) +
+        '" r="3" fill="var(--c-accent)" stroke="#fff" opacity="' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + '"><title>' + tip + '</title></circle>');
+    });
   });
-  out.push('<text class="scatter-tick" x="' + M.l + '" y="14">green VRAM · orange RAM Δ · red confirmed shared · purple rolling speed</text>');
+  timelineRunLegend.innerHTML = series.map(item => {
+    const dash = dashPatterns[item.index % dashPatterns.length];
+    return '<span class="legend-item"><span class="legend-line" style="border-top-style:' + (dash ? 'dashed' : 'solid') + '"></span>run ' + (item.index + 1) + '</span>';
+  }).join('');
   svg.innerHTML = out.join('');
 }
 
-timelineConfig.addEventListener('change', () => {
-  STATE.timelineConfigId = timelineConfig.value;
-  STATE.timelineRunIndex = 0;
-  renderTimeline();
-});
 timelineRun.addEventListener('change', () => {
-  STATE.timelineRunIndex = +timelineRun.value || 0;
+  STATE.timelineRunIndex = timelineRun.value === 'all' ? 'all' : (+timelineRun.value || 0);
   renderTimeline();
 });
 
