@@ -150,6 +150,13 @@ values under WDDM, so calibr does not pretend the number belongs only to
 background apps, browsers, overlays, or 3D workloads are visible as possible
 benchmark pollution.
 
+The warning percentage is calculated as:
+`VRAM used before the run / total VRAM * 100`. Baseline is measured before the
+benchmark and again before each configuration. For example, `1500 / 8192`
+means 18.3% of VRAM was already occupied; thresholds of 5%, 10%, or 15% would
+therefore show a warning. Memory charts display estimated benchmark VRAM as
+`system peak - baseline`, while retaining the raw system peak in the tooltip.
+
 It does not rank instruction-following quality, coding ability, multilingual
 performance, or preference alignment. Treat the winner as "this is the best
 performing fit for this hardware", then choose between close candidates by

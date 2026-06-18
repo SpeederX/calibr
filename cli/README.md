@@ -216,7 +216,9 @@ are diagnosing the engine directly:
 - **Windows/NVIDIA per-process VRAM is not reliable under WDDM.** NVML /
   `nvidia-smi` may show `N/A` for process memory even when `llama-server` is
   visible, so calibr reports system-level VRAM baseline/peak and marks high
-  baseline usage as possible benchmark pollution.
+  baseline usage as possible benchmark pollution. Baseline percentage is
+  `VRAM used before the run / total VRAM * 100`; memory charts subtract that
+  baseline from the system peak to estimate benchmark VRAM.
 - **`discover` pairs mmproj by directory.** If two model variants live
   in the same folder and physically share one `mmproj-*.gguf` file but
   the projector is only valid for one of them (different vision

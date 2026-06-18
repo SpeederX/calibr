@@ -353,6 +353,27 @@ exact `llama-server` VRAM. If Linux/NVIDIA exposes reliable per-process memory
 through `nvidia-smi --query-compute-apps`, treat it as a future platform-specific
 enhancement, not the cross-platform baseline.
 
+### Baseline warning during guided runs
+
+The configurable baseline threshold is currently surfaced in preferences and
+the generated report. Add an immediate warning before benchmark execution and
+keep it visible during the run when:
+
+`VRAM used before run / total VRAM * 100 >= configured threshold`
+
+The warning should be explicit rather than decorative: show the measured
+baseline, total VRAM, computed percentage, and configured threshold. A visible
+warning marker in the live run header is useful, but it must not flicker or
+hide the numeric explanation.
+
+### All-results row layout review
+
+The All results table exposes useful details through header/value tooltips, but
+the rows are now too dense and important memory context is hidden on hover.
+Review the row layout so baseline VRAM, estimated run VRAM, system peak, and
+related throughput values are readable without requiring hover. Consider a
+two-line row or grouped metric cells rather than adding more narrow columns.
+
 ### CPU + RAM as first-class metrics
 
 GPU metrics are strong; CPU and system RAM still need to become first-class

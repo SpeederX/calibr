@@ -75,7 +75,14 @@ export function PreferencesView({ onExit }: Props) {
           Warn when baseline VRAM already used by OS/apps is above this share of total VRAM.
         </Text>
         <Text dimColor>
-          This is system-level baseline VRAM, not reliable per-process attribution on Windows WDDM.
+          Baseline % = VRAM used before the run / total VRAM x 100.
+        </Text>
+        <Text dimColor>
+          Example: 1500 / 8192 = 18.3%; a 5%, 10%, or 15% threshold would warn.
+        </Text>
+        <Text dimColor>
+          Baseline is measured before the benchmark and each config. It is system-level,
+          not reliable per-process attribution on Windows WDDM.
         </Text>
       </Box>
 

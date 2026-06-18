@@ -194,7 +194,7 @@
   </div>
 
   <h2>Memory vs latency</h2>
-  <p class="meta">One dot per ok config. <b>Y</b> = VRAM peak + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). Winners for the current filter have a pulsing ring.</p>
+  <p class="meta">One dot per ok config. <b>Y</b> = estimated benchmark VRAM delta + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). Winners for the current filter have a pulsing ring.</p>
   <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
 
   <h2>Models (winners per current filter)</h2>
@@ -208,7 +208,9 @@
         <p><b>A. Fully in VRAM:</b> model weights, KV cache and compute buffers fit in GPU memory. This is the clean case; eval tokens/s usually stays stable.</p>
         <p><b>B. Near the cliff:</b> VRAM is almost saturated. Small changes in context, KV type, background apps, or MoE routing can push the run over the edge.</p>
         <p><b>C. Spill / paging:</b> Windows WDDM starts using shared system RAM. The model may still load, but token/s can drop hard because data crosses CPU/RAM/PCIe instead of staying in VRAM.</p>
-        <p><b>Baseline:</b> VRAM is measured at the start of each config, then sampled during the run. These are system-level NVIDIA readings; apps, 3D processes, browsers, overlays, or background work can change the peak and affect the benchmark.</p>
+        <p><b>Baseline:</b> Baseline is determined empirically by measuring system VRAM before starting the benchmark and before each configuration. Formula: baseline % = VRAM used before run / total VRAM × 100.</p>
+        <p><b>Example:</b> 1500 MiB used / 8192 MiB total = 18.3% already used by the system. A warning appears when the configured threshold (for example 5%, 10%, or 15%) is lower than or equal to that percentage.</p>
+        <p><b>Run VRAM:</b> The memory charts subtract that baseline from the system-level peak: estimated run VRAM = total peak - baseline. Apps, 3D processes, browsers, overlays, or background work can still change the peak and affect the benchmark.</p>
         <p><b>MoE note:</b> MoE can show the same pressure when experts do not fit cleanly. CPU expert offload may be intentional, but it is still a latency tradeoff.</p>
         <p><b>Latency fields:</b> TTFR is first streamed server response; e2e TTFT is first generated content/reasoning token; prompt ms is llama.cpp prefill time; request ms is the measured request wall time.</p>
       </span>
@@ -726,8 +728,19 @@ function vramHeadroom(d) {
   return '+' + left + ' MiB';
 }
 
+function systemVramPeakMib(d) {
+  if (d.vram_total_peak_mib != null) return Math.max(0, +d.vram_total_peak_mib || 0);
+  return Math.max(0, +d.vram_peak_mib || 0);
+}
+
+function benchmarkVramUsedMib(d) {
+  const peak = systemVramPeakMib(d);
+  if (d.vram_baseline_mib == null) return peak;
+  return Math.max(0, peak - (+d.vram_baseline_mib || 0));
+}
+
 function totalMemoryUsedMib(d) {
-  return (+d.vram_peak_mib || 0) + Math.max(0, +d.ram_used_peak_mib || 0);
+  return benchmarkVramUsedMib(d) + Math.max(0, +d.ram_used_peak_mib || 0);
 }
 
 function metricChip(label, value) {
@@ -740,18 +753,19 @@ function throughputNote(d) {
 }
 
 function memoryUsageNote(d) {
-  const vram = (+d.vram_peak_mib || 0);
+  const vram = benchmarkVramUsedMib(d);
   const ram = Math.max(0, +d.ram_used_peak_mib || 0);
   const shared = Math.max(0, +d.shared_peak_mib || 0);
   return metricChip('total', totalMemoryUsedMib(d) + ' MiB') +
          throughputNote(d) +
-         metricChip('VRAM', vram + ' MiB') +
+         metricChip('run VRAM', vram + ' MiB') +
          metricChip('RAM', ram + ' MiB') +
          metricChip('shared', shared > 0 ? '+' + shared : '-');
 }
 
 function vramUsageNote(d) {
-  return metricChip('VRAM', (+d.vram_peak_mib || 0) + ' MiB') +
+  return metricChip('run VRAM', benchmarkVramUsedMib(d) + ' MiB') +
+         metricChip('system peak', systemVramPeakMib(d) + ' MiB') +
          throughputNote(d) +
          metricChip('headroom', vramHeadroom(d));
 }
@@ -818,6 +832,8 @@ function vramCellTitle(d) {
     'Baseline before run: ' + (d.vram_baseline_mib != null ? d.vram_baseline_mib + ' MiB' : '-'),
     'Baseline %: ' + (baselinePct != null ? fmt1(baselinePct) + '%' : '-'),
     'Estimated run delta: ' + (runDelta != null ? runDelta + ' MiB' : '-'),
+    'Formula: baseline % = VRAM used before run / total VRAM x 100.',
+    'Example: 1500 / 8192 = 18.3%; warn when threshold <= 18.3%.',
     'Scope: system-level NVIDIA reading; not per-process attribution.'
   ].concat(baselineHint ? [baselineHint] : []);
   return escapeHtml(parts.join('\n'));
@@ -890,7 +906,7 @@ function renderBars() {
     sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
   } else { // vram
     field = 'vram_peak_mib'; unit = 'MiB'; annotate = vramUsageNote; fillClass = 'memory';
-    valueOf = d => +d.vram_peak_mib || 0;
+    valueOf = benchmarkVramUsedMib;
     maxv = (CFG.hardware && CFG.hardware.vram_total_mib) || 8192;
     pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
     fillStyleOf = () => '';
@@ -978,7 +994,7 @@ function renderScatter() {
   const pts = VIEW.filter(d => d.ok && d.time_total_sec != null).map(d => ({
     d: d,
     x: d.time_total_sec,
-    y: d.vram_peak_mib + Math.max(0, d.shared_peak_mib || 0)
+    y: benchmarkVramUsedMib(d) + Math.max(0, d.shared_peak_mib || 0)
   }));
   if (pts.length === 0) {
     svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" class="scatter-tick">No ok runs to plot.</text>';
@@ -1022,7 +1038,7 @@ function renderScatter() {
     const cy = ys(Math.min(pt.y, yMax));
     const fill = modelColor(d.model);
     const stroke = lvlColor(lvl(d));
-    const tip = d.label + ' · vram peak ' + d.vram_peak_mib + ' · shared +' + (d.shared_peak_mib || 0) +
+    const tip = d.label + ' · run vram ' + benchmarkVramUsedMib(d) + ' · system peak ' + systemVramPeakMib(d) + ' · shared +' + (d.shared_peak_mib || 0) +
                 ' · time ' + pt.x + 's · eval ' + (+d.eval_tps).toFixed(1) + ' t/s';
     const isWin = isWinnerId(d.id);
     const winCls = isWin ? ' is-winner' : '';
