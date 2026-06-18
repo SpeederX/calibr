@@ -99,6 +99,7 @@ function emptySample(now = new Date()): MetricSample {
     gpu_power_w: 0,
     gpu_temp_c: 0,
     gpu_util_pct: -1,
+    cpu_util_pct: -1,
     process_vram_mib: -1,
     shared_mib: -1,
     ram_avail_mib: Math.trunc(os.freemem() / 1024 / 1024),
@@ -171,6 +172,10 @@ async function runOne(
   const baseline = await collect(0).catch(() => emptySample(now()));
   const ramBaseline = baseline.ram_avail_mib;
   const sharedBaseline = baseline.shared_mib;
+  const vramTotal = payload.cfg.hardware?.vram_total_mib ?? 0;
+  const baselinePct = vramTotal > 0 ? round((baseline.gpu_mem_mib / vramTotal) * 100, 1) : 0;
+  const warningPct = Number(payload.cfg.preferences?.vram_usage_warning_pct ?? 10);
+  emit(payload.eventFile, `[baseline] vram_used=${baseline.gpu_mem_mib} vram_total=${vramTotal} pct=${baselinePct} threshold=${warningPct}`);
   let stderr = "";
   const child = (deps.spawnServer ?? ((exe, argv) => spawn(exe, argv, {
     windowsHide: true,
@@ -194,6 +199,7 @@ async function runOne(
     vram_external_peak_mib: null,
     shared_peak_mib: 0,
     load_sec: null,
+    load_ms: null,
     ready: false,
     ok: false,
     error: null,
@@ -207,6 +213,7 @@ async function runOne(
     gpu_power_peak_w: baseline.gpu_power_w,
     gpu_temp_peak_c: baseline.gpu_temp_c,
     gpu_util_avg_pct: 0,
+    cpu_util_avg_pct: 0,
     ram_baseline_mib: ramBaseline,
     ram_used_peak_mib: 0,
     disk_read_peak_mb_s: 0,
@@ -216,6 +223,8 @@ async function runOne(
   let loadPollStopped = false;
   let utilTotal = 0;
   let utilCount = 0;
+  let cpuUtilTotal = 0;
+  let cpuUtilCount = 0;
   const loadPoll = async () => {
     while (!loadPollStopped && child.exitCode === null) {
       const sample = await collect(child.pid ?? 0).catch(() => emptySample(now()));
@@ -224,8 +233,12 @@ async function runOne(
         utilTotal += sample.gpu_util_pct;
         utilCount++;
       }
+      if (sample.cpu_util_pct >= 0) {
+        cpuUtilTotal += sample.cpu_util_pct;
+        cpuUtilCount++;
+      }
       if (!payload.minimalPolling) {
-        emit(payload.eventFile, `[poll] gpu_mem=${sample.gpu_mem_mib} gpu_pow=${sample.gpu_power_w} gpu_temp=${sample.gpu_temp_c} gpu_util=${sample.gpu_util_pct} ram_used=${Math.max(0, ramBaseline - sample.ram_avail_mib)} disk_r=${round(sample.disk_read_mb_s, 1)}`);
+        emit(payload.eventFile, `[poll] gpu_mem=${sample.gpu_mem_mib} gpu_pow=${sample.gpu_power_w} gpu_temp=${sample.gpu_temp_c} gpu_util=${sample.gpu_util_pct} cpu_util=${sample.cpu_util_pct} ram_used=${Math.max(0, ramBaseline - sample.ram_avail_mib)} disk_r=${round(sample.disk_read_mb_s, 1)}`);
       }
       await sleep(500);
     }
@@ -237,6 +250,7 @@ async function runOne(
   loadPollStopped = true;
   await loadPollPromise;
   run.load_sec = round(readiness.loadMs / 1000, 2);
+  run.load_ms = round(readiness.loadMs, 2);
   run.ready = readiness.ready;
 
   if (readiness.ready) {
@@ -250,6 +264,10 @@ async function runOne(
         if (sample.gpu_util_pct >= 0) {
           utilTotal += sample.gpu_util_pct;
           utilCount++;
+        }
+        if (sample.cpu_util_pct >= 0) {
+          cpuUtilTotal += sample.cpu_util_pct;
+          cpuUtilCount++;
         }
         await sleep(150);
       }
@@ -301,7 +319,12 @@ async function runOne(
     utilTotal += finalSample.gpu_util_pct;
     utilCount++;
   }
+  if (finalSample.cpu_util_pct >= 0) {
+    cpuUtilTotal += finalSample.cpu_util_pct;
+    cpuUtilCount++;
+  }
   run.gpu_util_avg_pct = utilCount > 0 ? Math.trunc(utilTotal / utilCount) : 0;
+  run.cpu_util_avg_pct = cpuUtilCount > 0 ? Math.trunc(cpuUtilTotal / cpuUtilCount) : 0;
   stopChild(child);
   await sleep(300);
   run.load_sec = run.load_sec ?? round((Date.now() - loadStarted) / 1000, 2);

@@ -914,7 +914,6 @@ function Invoke-OneBenchRun {
     $sharedBaseline = if ($cfg.wddm_detection.enable_shared_mem_counter) { Get-SharedGPUMemoryMib } else { 0 }
     if ($sharedBaseline -lt 0) { $sharedBaseline = 0 }
     $ramBaseline = Get-AvailableMemoryMib   # MiB free before load
-
     "===== RUN $runIndex =====" | Out-File -Encoding utf8 -Append $logFile
     "[CMD] $exe $argStr" | Out-File -Encoding utf8 -Append $logFile
     "[VRAM before: $vramBefore MiB; shared baseline: $sharedBaseline MiB; RAM avail: $ramBaseline MiB]" | Out-File -Encoding utf8 -Append $logFile

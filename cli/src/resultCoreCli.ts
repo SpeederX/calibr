@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
   aggregateBenchResult,
+  buildReportRows,
   deriveResultFields,
   finalizeBenchRun,
   getFailureReason,
@@ -100,10 +101,7 @@ function handle(payload: ResultCorePayload): Record<string, unknown> {
     if (!Array.isArray(payload.results)) return failure("report-fields requires results[]");
     return {
       ok: true,
-      result: payload.results.map((result) => ({
-        derived: deriveResultFields(result, payload.vramTotalMib ?? 0),
-        run_stats: runStats(result),
-      })),
+      result: buildReportRows(payload.results, payload.vramTotalMib ?? 0),
     };
   }
   return failure(`unknown action: ${String(payload.action)}`);

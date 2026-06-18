@@ -99,7 +99,9 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'Eval rel %')            "Eval relative-percent header missing"
         Assert-True ($tpl -match 'normalized within the currently visible rows') "relative-percent tooltip missing"
         Assert-True ($tpl -match 'WDDM/shared GPU memory') "Shared tooltip missing"
-        Assert-True ($tpl -match 'Disk read happens just for the first config run of the model') "Disk tooltip should explain cold-load cache behavior"
+        Assert-True ($tpl -match 'Cold-load values are selected once per model') "model-level cold-load explanation missing"
+        Assert-True ($tpl -match 'Metric glossary') "metric glossary missing"
+        Assert-True ($tpl -match 'Average total CPU utilization') "CPU metric explanation missing"
         Assert-True ($tpl -match 'system-level NVIDIA reading') "VRAM tooltip should explain system-level scope"
         Assert-True ($tpl -match 'Estimated run delta') "VRAM tooltip should show baseline-subtracted estimate"
         Assert-True ($tpl -match 'function benchmarkVramUsedMib') "memory charts should subtract system baseline"
@@ -114,10 +116,11 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'req '' \+ m\[1\]')           "requested gpu-layers fallback missing"
         Assert-True ($tpl -match 'requested --gpu-layers')     "layers tooltip should explain requested fallback"
     }
-    It "groups the Disk read bar tab by model" {
-        Assert-True ($tpl -match 'bar-model-group')             "disk bar model group styling missing"
-        Assert-True ($tpl -match "STATE\.bars === 'disk'")      "disk bar grouping branch missing"
-        Assert-True ($tpl -match 'peak disk')                   "disk group summary missing"
+    It "reports cold load and disk once per model instead of per config" {
+        Assert-True ($tpl -match 'function coldLoadSummary') "model cold-load summary missing"
+        Assert-True ($tpl -match 'model_cold_load_ms') "model cold-load metric missing"
+        Assert-True ($tpl -match 'model_cold_disk_read_peak_mb_s') "model cold-disk metric missing"
+        Assert-False ($tpl -match 'data-bars="disk"') "per-config disk tab should be removed"
     }
     It "surfaces eval run stability in the Eval tokens/s tab" {
         Assert-True ($tpl -match 'function evalRunNote')         "eval run note helper missing"
@@ -216,7 +219,9 @@ Describe "Invoke-Report end-to-end on canned data" {
             Assert-True ($html -match '"gpu_power_peak_w"')   "DATA missing gpu_power_peak_w"
             Assert-True ($html -match '"gpu_temp_peak_c"')    "DATA missing gpu_temp_peak_c"
             Assert-True ($html -match '"gpu_util_avg_pct"')   "DATA missing gpu_util_avg_pct"
+            Assert-True ($html -match '"cpu_util_avg_pct"')   "DATA missing cpu_util_avg_pct"
             Assert-True ($html -match '"ram_used_peak_mib"')  "DATA missing ram_used_peak_mib"
+            Assert-True ($html -match '"model_cold_load_ms"') "DATA missing model cold-load metric"
             Assert-True ($html -match '"first_eval_tps"')     "DATA missing first_eval_tps"
             Assert-True ($html -match '"repeat_eval_tps"')    "DATA missing repeat_eval_tps"
             Assert-True ($html -match '"eval_spread_pct"')    "DATA missing eval_spread_pct"
