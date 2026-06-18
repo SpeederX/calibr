@@ -75,6 +75,19 @@ Describe "Resolve-TsBenchRunnerScript" {
     }
 }
 
+Describe "TypeScript repeated-run coordinator" {
+    $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+
+    It "owns the N-run path on CUDA and preserves the PowerShell fallback" {
+        Assert-True ($benchSource -match 'function Resolve-TsBenchCoordinatorScript') "coordinator resolver missing"
+        Assert-True ($benchSource -match 'function Invoke-TsBenchCoordinator') "coordinator launcher missing"
+        Assert-True ($benchSource -match 'benchCoordinatorCli\.js') "coordinator entrypoint missing"
+        Assert-True ($benchSource -match "gpu_backend_hint -ne 'cuda'") "non-CUDA fallback gate missing"
+        Assert-True ($benchSource -match '\$coordinated = Invoke-TsBenchCoordinator') "coordinator should run before PowerShell loop"
+        Assert-True ($benchSource -match 'for \(\$i = 0; \$i -lt \$N; \$i\+\+\)') "PowerShell fallback loop should remain"
+    }
+}
+
 Describe "Resolve-TsResultCoreScript" {
     It "finds the local cli/dist result-core runner for standalone repo runs" {
         $oldRoot = $script:CALIBR_ROOT

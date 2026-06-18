@@ -629,6 +629,85 @@ function Resolve-TsBenchRunnerScript {
     return ""
 }
 
+function Resolve-TsBenchCoordinatorScript {
+    if ($env:CALIBR_TS_COORDINATOR -eq '0') { return "" }
+    if ($env:CALIBR_TS_COORDINATOR_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_COORDINATOR_SCRIPT)) {
+        return $env:CALIBR_TS_COORDINATOR_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\benchCoordinatorCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\benchCoordinatorCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Invoke-TsBenchCoordinator {
+    param($item, $cfg, [int]$RunCount, [string]$logFile)
+    # The current TS metric provider has parity for NVIDIA/CUDA. Keep the full
+    # PowerShell coordinator on AMD/Metal/CPU until their native providers land.
+    if ([string]$cfg.hardware.gpu_backend_hint -ne 'cuda') { return $null }
+    $script = Resolve-TsBenchCoordinatorScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-coordinator-{0}" -f ([Guid]::NewGuid().ToString("N")))
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $payloadPath = Join-Path $root "payload.json"
+    $resultPath = Join-Path $root "result.json"
+    $eventPath = Join-Path $root "events.log"
+    $payload = [ordered]@{
+        item = $item
+        cfg = $cfg
+        runs = $RunCount
+        minimalPolling = [bool]$MinimalPolling
+        eventFile = $eventPath
+        logFile = $logFile
+        session = @{
+            bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+            bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+            llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+        }
+    } | ConvertTo-Json -Compress -Depth 30
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $node
+        $psi.Arguments = "{0} --json-file {1} --result-file {2}" -f (ConvertTo-ProcessArgument $script), (ConvertTo-ProcessArgument $payloadPath), (ConvertTo-ProcessArgument $resultPath)
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p) { return $null }
+        $shown = 0
+        while (-not $p.HasExited) {
+            Start-Sleep -Milliseconds 100
+            if (Test-Path -LiteralPath $eventPath) {
+                $lines = @(Get-Content -LiteralPath $eventPath -ErrorAction SilentlyContinue)
+                while ($shown -lt $lines.Count) {
+                    Write-Host $lines[$shown]
+                    $shown++
+                }
+            }
+        }
+        if (Test-Path -LiteralPath $eventPath) {
+            $lines = @(Get-Content -LiteralPath $eventPath -ErrorAction SilentlyContinue)
+            while ($shown -lt $lines.Count) {
+                Write-Host $lines[$shown]
+                $shown++
+            }
+        }
+        if (-not (Test-Path -LiteralPath $resultPath)) { return $null }
+        return (Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Resolve-TsMetricsPollerScript {
     if ($env:CALIBR_TS_METRICS -eq '0') { return "" }
     if ($env:CALIBR_TS_METRICS_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_METRICS_SCRIPT)) {
@@ -1304,6 +1383,14 @@ function Invoke-OneBench {
 
     # Fresh log for this bench session
     Set-Content -Encoding utf8 -Path $logFile -Value ""
+
+    $coordinated = Invoke-TsBenchCoordinator -item $item -cfg $cfg -RunCount $N -logFile $logFile
+    if ($null -ne $coordinated -and $null -ne $coordinated.result) {
+        $result = $coordinated.result
+        $result | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $jsonFile
+        Write-BenchStatusLine -item $item -result $result
+        return $result
+    }
 
     $runs = @()
     for ($i = 0; $i -lt $N; $i++) {

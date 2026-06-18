@@ -64,18 +64,19 @@ Decision — decouple throughput from latency:
 
 Remaining:
 
-- Move the repeated benchmark-run coordinator into TypeScript.
-- Fold the now-TypeScript stderr/per-run finalizer into the repeated-run
-  coordinator, removing the extra subprocess hop on the normal path.
+- Add native metric providers for AMD/Linux and Metal before enabling the
+  TypeScript coordinator there. CUDA/NVIDIA now uses the complete coordinator.
 - Do NOT delete the PowerShell request path.
 
 Lifecycle migration status:
 
-- `serverLifecycleCli` now owns `llama-server` spawn, readiness polling, real
-  server PID publication, explicit stop, and child cleanup.
-- PowerShell remains the transitional coordinator for GPU/RAM polling and
-  repeated runs. TypeScript owns stderr parsing, per-run finalization, and
-  successful-run aggregation.
+- `benchCoordinatorCli` owns `llama-server` spawn, readiness, repeated-run
+  cleanup, and signal cleanup on the normal CUDA path. `serverLifecycleCli`
+  remains the lifecycle bridge used by the PowerShell fallback.
+- TypeScript owns the complete CUDA/NVIDIA run path: lifecycle, metric polling,
+  HTTP sequence, stderr parsing, repeated runs, per-run finalization, and
+  aggregation. PowerShell is the adapter/persistence layer and remains the
+  fallback coordinator for non-CUDA metric providers.
 - `CALIBR_TS_LIFECYCLE=0` keeps the direct PowerShell lifecycle as a fallback.
 
 ### Engine pruning before deeper migration

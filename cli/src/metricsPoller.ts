@@ -14,6 +14,7 @@ export interface MetricSample {
   process_vram_mib: number;
   shared_mib: number;
   ram_avail_mib: number;
+  disk_read_mb_s: number;
 }
 
 export interface MetricPollerOptions {
@@ -95,17 +96,66 @@ async function sampleProcessVram(pid: number, command = "nvidia-smi"): Promise<n
   return parseStandardNvidiaSmi(await runNvidiaSmi([], command), pid);
 }
 
-export async function collectMetricSample(pid: number, command = "nvidia-smi", now = () => new Date()): Promise<MetricSample> {
+async function sampleWindowsSystemMetrics(): Promise<{ shared_mib: number; disk_read_mb_s: number }> {
+  if (process.platform !== "win32") return { shared_mib: -1, disk_read_mb_s: 0 };
+  const script = [
+    "$s=-1; $d=0",
+    "try { $c=Get-Counter '\\GPU Adapter Memory(*)\\Shared Usage' -MaxSamples 1 -ErrorAction Stop; $s=[int](($c.CounterSamples | Measure-Object CookedValue -Sum).Sum/1MB) } catch {}",
+    "try { $c=Get-Counter '\\PhysicalDisk(_Total)\\Disk Read Bytes/sec' -MaxSamples 1 -ErrorAction Stop; $d=[double](($c.CounterSamples | Select-Object -First 1).CookedValue/1MB) } catch {}",
+    "Write-Output (('{0},{1}' -f $s,$d))",
+  ].join("; ");
+  try {
+    const { stdout } = await execFileAsync("powershell.exe", ["-NoProfile", "-Command", script], {
+      windowsHide: true,
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    });
+    const [shared, disk] = stdout.trim().split(",");
+    return {
+      shared_mib: Math.trunc(num(shared, -1)),
+      disk_read_mb_s: num(disk, 0),
+    };
+  } catch {
+    return { shared_mib: -1, disk_read_mb_s: 0 };
+  }
+}
+
+let systemMetricsCache = { atMs: 0, value: { shared_mib: -1, disk_read_mb_s: 0 } };
+let systemMetricsPending: Promise<{ shared_mib: number; disk_read_mb_s: number }> | null = null;
+
+async function sampleWindowsSystemMetricsCached(nowMs: number): Promise<{ shared_mib: number; disk_read_mb_s: number }> {
+  if (nowMs - systemMetricsCache.atMs < 1000) return systemMetricsCache.value;
+  if (!systemMetricsPending) {
+    systemMetricsPending = sampleWindowsSystemMetrics().then((value) => {
+      systemMetricsCache = { atMs: Date.now(), value };
+      systemMetricsPending = null;
+      return value;
+    });
+  }
+  return systemMetricsPending;
+}
+
+export async function collectMetricSample(
+  pid: number,
+  command = "nvidia-smi",
+  now = () => new Date(),
+  includeSystemMetrics = false,
+): Promise<MetricSample> {
   const gpu = parseGpuQuery(await runNvidiaSmi(
     ["--query-gpu=memory.used,power.draw,temperature.gpu,utilization.gpu", "--format=csv,noheader,nounits"],
     command,
   ));
+  const at = now();
+  const system = includeSystemMetrics
+    ? await sampleWindowsSystemMetricsCached(at.getTime())
+    : { shared_mib: -1, disk_read_mb_s: 0 };
   return {
-    at: now().toISOString(),
+    at: at.toISOString(),
     ...gpu,
     process_vram_mib: await sampleProcessVram(pid, command),
-    shared_mib: -1,
+    shared_mib: system.shared_mib,
     ram_avail_mib: Math.trunc(os.freemem() / 1024 / 1024),
+    disk_read_mb_s: system.disk_read_mb_s,
   };
 }
 
