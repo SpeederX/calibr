@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { totalmem } from "node:os";
 import { pathToFileURL } from "node:url";
 import {
   aggregateBenchResult,
@@ -9,7 +10,7 @@ import {
   runStats,
 } from "./resultCore.js";
 
-type ResultCoreAction = "aggregate" | "finalize-run" | "derive" | "failure" | "run-stats" | "report-fields";
+type ResultCoreAction = "aggregate" | "finalize-run" | "derive" | "failure" | "run-stats" | "report-fields" | "report-payload";
 
 interface ResultCorePayload {
   action: ResultCoreAction;
@@ -102,6 +103,24 @@ function handle(payload: ResultCorePayload): Record<string, unknown> {
     return {
       ok: true,
       result: buildReportRows(payload.results, payload.vramTotalMib ?? 0),
+    };
+  }
+  if (payload.action === "report-payload") {
+    if (!Array.isArray(payload.results) || !payload.cfg || typeof payload.cfg !== "object") {
+      return failure("report-payload requires results[] and cfg");
+    }
+    const cfg = structuredClone(payload.cfg as Record<string, unknown>);
+    const hardware = cfg.hardware && typeof cfg.hardware === "object"
+      ? cfg.hardware as Record<string, unknown>
+      : {};
+    hardware.system_ram_total_mib = Math.round(totalmem() / 1024 / 1024);
+    cfg.hardware = hardware;
+    return {
+      ok: true,
+      result: {
+        rows: buildReportRows(payload.results, payload.vramTotalMib ?? 0),
+        cfg,
+      },
     };
   }
   return failure(`unknown action: ${String(payload.action)}`);

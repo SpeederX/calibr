@@ -20,6 +20,9 @@
   .meta { color: var(--c-muted); font-size: 12px; }
   .hw { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 10px 14px; margin: 10px 0; font-size: 12px; }
   .hw code { background:#1a1a1a; padding: 1px 5px; border-radius: 3px; color: var(--c-accent); }
+  .hw-main { display: flex; gap: 8px 16px; align-items: center; flex-wrap: wrap; }
+  .server-versions { margin-top: 7px; padding-top: 7px; border-top: 1px solid var(--c-border); color: var(--c-muted); }
+  .server-versions details { display: inline-block; margin-left: 6px; }
   table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12px; }
   th, td { padding: 6px 9px; text-align: left; border-bottom: 1px solid var(--c-border); }
   th { background:#242424; color: var(--c-accent); position: sticky; top: 0; }
@@ -76,6 +79,7 @@
   .winner-stat b { color: var(--c-accent); }
   .winner-actions { display: flex; gap: 6px; align-items: center; }
   .model-row .config-list { padding: 0 14px 12px 42px; }
+  .model-load-info { margin: 0 0 8px; color: var(--c-muted); font-size: 11px; }
   .model-row .config-list table { margin-top: 0; font-size: 11px; }
   .model-row .config-list th { background: transparent; border-bottom: 1px solid var(--c-border); color: var(--c-muted); font-weight: 400; }
   .model-row .config-list tr.is-winner { background: var(--c-win-bg); }
@@ -109,7 +113,7 @@
   .bar-row.mode-vram,
   .bar-row.mode-memory,
   .bar-row.mode-disk,
-  .bar-row.mode-latency { grid-template-columns: minmax(340px, 520px) minmax(420px, 1fr) minmax(520px, max-content); }
+  .bar-row.mode-latency { grid-template-columns: minmax(300px, 500px) minmax(300px, 1fr) minmax(270px, 360px); }
   .bar-row.mode-vram .val,
   .bar-row.mode-memory .val,
   .bar-row.mode-disk .val,
@@ -120,10 +124,10 @@
   .bar-row.mode-latency .ann { justify-content: end; }
   .bar-row.mode-eval.bar-row-ann { grid-template-columns: minmax(340px, 520px) minmax(280px, 1fr) 112px minmax(270px, 330px); }
   .bar-row.mode-eval .ann { display: grid; grid-template-columns: 82px 92px 82px; justify-content: end; }
-  .bar-row.mode-vram .ann { display: grid; grid-template-columns: 88px 100px 76px 92px 90px; }
-  .bar-row.mode-memory .ann { display: grid; grid-template-columns: 82px 76px 92px 88px 76px 76px; }
+  .bar-row.mode-vram .ann,
+  .bar-row.mode-memory .ann,
+  .bar-row.mode-latency .ann { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .bar-row.mode-disk .ann { display: grid; grid-template-columns: 118px 90px 110px; }
-  .bar-row.mode-latency .ann { display: grid; grid-template-columns: 104px 104px 104px 118px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-row.is-winner .name::before { content: '★ '; color: var(--c-win); }
   .bar-row .track { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; height: 16px; overflow: hidden; }
@@ -137,6 +141,10 @@
   .bar-row .val { font-family: Consolas, monospace; font-size: 11px; text-align: right; }
   .bar-row .ann { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; font-family: Consolas, monospace; font-size: 10px; color: var(--c-muted); }
   .bar-row .metric { background:#1a1a1a; border: 1px solid var(--c-border); border-radius: 3px; padding: 0 4px; white-space: nowrap; text-align: right; }
+  .bar-row .metric b { color: var(--c-muted); font-weight: 400; float: left; margin-right: 8px; }
+  .chart-toolbar { display:flex; align-items:center; gap:8px; margin:-2px 0 8px; color:var(--c-muted); font-size:12px; }
+  .chart-toolbar label { cursor:pointer; user-select:none; }
+  .chart-toolbar input { accent-color:var(--c-accent); vertical-align:middle; margin-right:5px; }
   @media (max-width: 1320px) {
     .bar-row.mode-vram,
     .bar-row.mode-memory,
@@ -224,22 +232,28 @@
   </div>
 
   <h2>Memory vs latency</h2>
-  <p class="meta">One dot per ok config. <b>Y</b> = estimated benchmark VRAM delta + WDDM-spilled RAM (MiB). <b>X</b> = total prompt + generation time (s). The dashed line marks GPU VRAM; dots above it spilled into shared memory (paging). Winners for the current filter have a pulsing ring.</p>
+  <p class="meta">One dot per ok config. <b>Y</b> = benchmark VRAM plus observed system-RAM growth. <b>X</b> = total prompt + generation time. The scale always spans installed RAM + VRAM; the dashed line marks dedicated GPU VRAM.</p>
+  <div class="chart-toolbar">
+    <label><input id="scatter-baseline-toggle" type="checkbox" checked>Adjust with baseline VRAM used memory</label>
+  </div>
   <svg id="scatter" width="100%" height="380" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 380"></svg>
 
   <details class="card">
     <summary><b>Metric glossary</b> <span class="meta">what each benchmark value measures</span></summary>
-    <table><tbody>
-      <tr><td><code>load_ms</code></td><td>Process start to <code>/v1/models</code> readiness: model load plus backend initialization.</td></tr>
-      <tr><td><code>prompt_ms</code> / <code>prompt_tps</code></td><td>llama.cpp prompt-processing (prefill) duration and throughput.</td></tr>
-      <tr><td><code>ttfr_ms</code></td><td>End-to-end time to the first streamed response event.</td></tr>
-      <tr><td><code>e2e_ttft_ms</code></td><td>End-to-end time to the first streamed generated content.</td></tr>
-      <tr><td><code>eval_tps</code></td><td>Decode throughput for generated tokens; the main speed metric.</td></tr>
-      <tr><td><code>VRAM baseline / peak</code></td><td>System dedicated VRAM before the run and the peak observed during it.</td></tr>
-      <tr><td><code>shared peak</code></td><td>Shared/spill GPU memory above baseline.</td></tr>
-      <tr><td><code>RAM Δ</code></td><td>Peak reduction in available system RAM relative to baseline.</td></tr>
-      <tr><td><code>CPU / GPU %</code></td><td>Average total CPU and GPU utilization across collected samples.</td></tr>
-    </tbody></table>
+    <table>
+      <thead><tr><th>Metric</th><th>Measures</th><th>Readable formula</th><th>Why it is useful</th></tr></thead>
+      <tbody>
+        <tr><td><code>load_ms</code></td><td>Cold server/model startup until <code>/v1/models</code> is ready.</td><td><code>ready time - process start</code></td><td>Separates one-time model loading cost from request latency.</td></tr>
+        <tr><td><code>prompt_ms</code> / <code>prompt_tps</code></td><td>Prompt processing (prefill) duration and throughput.</td><td><code>prompt tokens / prompt seconds</code></td><td>Shows how context length affects the wait before generation.</td></tr>
+        <tr><td><code>ttfr_ms</code></td><td>Time to the first non-terminal streamed server event.</td><td><code>first SSE event - request start</code></td><td>Diagnoses transport, buffering, or metadata sent before content.</td></tr>
+        <tr><td><code>e2e_ttft_ms</code></td><td>Time to the first generated content or reasoning text.</td><td><code>first text delta - request start</code></td><td>Best approximation of the user's perceived response start.</td></tr>
+        <tr><td><code>eval_tps</code></td><td>Decode throughput for generated tokens.</td><td><code>generated tokens / decode seconds</code></td><td>Main sustained generation-speed metric.</td></tr>
+        <tr><td><code>VRAM run</code></td><td>Dedicated VRAM attributed to the benchmark after baseline adjustment.</td><td><code>system peak - pre-run baseline</code></td><td>Avoids charging desktop/background VRAM to the model.</td></tr>
+        <tr><td><code>shared peak</code></td><td>Shared/spill GPU memory growth above baseline.</td><td><code>shared peak - shared baseline</code></td><td>Flags WDDM paging and likely PCIe/RAM latency penalties.</td></tr>
+        <tr><td><code>RAM Δ</code></td><td>Peak reduction in available system RAM.</td><td><code>available baseline - minimum available</code></td><td>Exposes host-memory pressure and CPU/offload cost.</td></tr>
+        <tr><td><code>CPU / GPU %</code></td><td>Average utilization across samples.</td><td><code>sum(sample %) / sample count</code></td><td>Shows whether a run is CPU-bound, GPU-bound, or underutilized.</td></tr>
+      </tbody>
+    </table>
   </details>
 
   <h2>Models (winners per current filter)</h2>
@@ -318,12 +332,53 @@ const baselineWarningPct = Number.isFinite(+CFG?.preferences?.vram_usage_warning
 // Hardware header + overall stats (unchanged from v1.1)
 // ===========================================================================
 const hw = CFG.hardware || {};
-document.getElementById('hw').innerHTML =
-  '<b>Hardware:</b> ' + (hw.gpu_name || '(unknown GPU)') +
-  ' (<code>' + (hw.vram_total_mib || '?') + ' MiB</code>, compute ' + (hw.gpu_compute_cap || '?') + ')' +
-  ' | CPU ' + (hw.cpu_cores_physical || '?') + 'C/' + (hw.cpu_threads_logical || '?') + 'T' +
-  ' | VRAM safety budget: <code>' + (hw.vram_safety_budget_mib || '?') + ' MiB</code>' +
-  ' | llama-server: <code>' + (CFG.llama_server_exe || 'n/a') + '</code>';
+
+function displayLlamaPath(path, version) {
+  const normalized = String(path || '').replace(/\\/g, '/');
+  if (!normalized) return '&lt;llama_server_path&gt;';
+  const parts = normalized.split('/').filter(Boolean);
+  let start = parts.findIndex(p => p.toLowerCase() === 'llama-bin');
+  if (start >= 0) start += 1;
+  if (start < 0 && version) {
+    start = parts.findIndex(p => p.toLowerCase() === String(version).toLowerCase());
+  }
+  if (start < 0) start = parts.findIndex(p => /^b\d+$/i.test(p));
+  const tail = parts.slice(start >= 0 ? start : Math.max(0, parts.length - 1)).join('/');
+  return '&lt;llama_server_path&gt;/' + escapeHtml(tail || 'llama-server');
+}
+
+function serverIdentities(rows) {
+  const seen = new Map();
+  rows.slice().sort((a, b) => String(b.bench_session_started_at || b.timestamp || '').localeCompare(String(a.bench_session_started_at || a.timestamp || '')))
+    .forEach(d => {
+      const version = d.llama_server_version || 'unknown';
+      const path = d.llama_server_exe || CFG.llama_server_exe || '';
+      const key = version + '|' + path;
+      if (!seen.has(key)) seen.set(key, { version, path });
+    });
+  if (seen.size === 0) seen.set('unknown', { version: 'unknown', path: CFG.llama_server_exe || '' });
+  return [...seen.values()];
+}
+
+function renderHardwareHeader() {
+  const versions = serverIdentities(VIEW);
+  const latest = versions[0];
+  const identity = v => '<b>llama ' + escapeHtml(v.version) + '</b> · <code>' + displayLlamaPath(v.path, v.version) + '</code>';
+  let versionsHtml = identity(latest);
+  if (versions.length > 1 && versions.length <= 3) {
+    versionsHtml = versions.map(identity).join(' &nbsp;|&nbsp; ');
+  } else if (versions.length > 3) {
+    versionsHtml += '<details><summary>other versions (' + (versions.length - 1) + ')</summary><div>' +
+      versions.slice(1).map(identity).join('<br>') + '</div></details>';
+  }
+  document.getElementById('hw').innerHTML =
+    '<div class="hw-main"><span><b>Hardware:</b> ' + (hw.gpu_name || '(unknown GPU)') +
+    ' (<code>' + (hw.vram_total_mib || '?') + ' MiB</code>, compute ' + (hw.gpu_compute_cap || '?') + ')</span>' +
+    '<span>CPU ' + (hw.cpu_cores_physical || '?') + 'C/' + (hw.cpu_threads_logical || '?') + 'T</span>' +
+    '<span>System RAM: <code>' + (hw.system_ram_total_mib || '?') + ' MiB</code></span>' +
+    '<span>VRAM safety budget: <code>' + (hw.vram_safety_budget_mib || '?') + ' MiB</code></span></div>' +
+    '<div class="server-versions">llama-server: ' + versionsHtml + '</div>';
+}
 
 function renderOverallStats() {
   const modelsSet = new Set(VIEW.map(d => d.model));
@@ -547,6 +602,7 @@ const STATE = {
   filter:  'safety',
   bars:    'eval',
   levelTab: 'all',
+  adjustScatterBaseline: true,
 };
 
 // Hardware level of a result (low/middle/high/ultra), or 'custom' for a
@@ -574,6 +630,7 @@ function rerender() {
   ANCHORS = computeAnchors(VIEW);
   currentWinners = computeWinners(STATE.filter);
   renderScopeBar();
+  renderHardwareHeader();
   renderOverallStats();
   renderFilterBar();
   renderScatter();
@@ -673,9 +730,6 @@ function winnerSummary(w) {
   if (w._fallback) {
     parts.push('<span class="winner-stat meta" title="No config of this model qualifies for the selected filter; speed winner shown instead.">(speed fallback)</span>');
   }
-  if (w.llama_server_version && w.llama_server_version !== 'unknown') {
-    parts.push('<span class="winner-stat" style="color:var(--c-muted)" title="llama-server build that produced this measurement">llama ' + escapeHtml(w.llama_server_version) + '</span>');
-  }
   return parts.join(' · ');
 }
 
@@ -704,14 +758,12 @@ function renderModelsList() {
     const summaryHtml = w
       ? '<span class="model-name">' + escapeHtml(model) + '</span>' +
         '<span class="winner-summary">' + winnerSummary(w) + '</span>' +
-        coldLoadSummary(w) +
         '<span class="winner-actions">' +
           (WINNERS_BY_MODEL[model] ? '<a class="bat-link" href="bats/' + WINNERS_BY_MODEL[model].bat + '" title="Pre-generated by the engine (safety-first pick)">default bat</a>' : '') +
           ' <a class="bat-link" href="#" data-cfg-id="' + w.id + '" title="Generate a .bat for this exact config (client-side)">&darr; bat</a>' +
         '</span>'
       : '<span class="model-name">' + escapeHtml(model) + '</span>' +
         '<span class="fail-summary">' + noWinnerSummary(configs) + '</span>' +
-        coldLoadSummary(configs[0]) +
         '<span></span>';
 
     // Per-model sub-table: every config benched, winner highlighted.
@@ -740,6 +792,7 @@ function renderModelsList() {
           summaryHtml +
         '</summary>' +
         '<div class="config-list">' +
+          coldLoadSummary(w || configs[0]) +
           '<table>' +
             '<thead><tr>' +
               '<th>Config</th><th>Level</th>' +
@@ -788,7 +841,7 @@ function totalMemoryUsedMib(d) {
 }
 
 function metricChip(label, value) {
-  return '<span class="metric">' + label + ' ' + value + '</span>';
+  return '<span class="metric"><b>' + label + '</b>' + value + '</span>';
 }
 
 function throughputNote(d) {
@@ -801,7 +854,6 @@ function memoryUsageNote(d) {
   const ram = Math.max(0, +d.ram_used_peak_mib || 0);
   const shared = Math.max(0, +d.shared_peak_mib || 0);
   return metricChip('total', totalMemoryUsedMib(d) + ' MiB') +
-         throughputNote(d) +
          metricChip('run VRAM', vram + ' MiB') +
          metricChip('RAM', ram + ' MiB') +
          metricChip('shared', shared > 0 ? '+' + shared : '-');
@@ -810,7 +862,6 @@ function memoryUsageNote(d) {
 function vramUsageNote(d) {
   return metricChip('run VRAM', benchmarkVramUsedMib(d) + ' MiB') +
          metricChip('system peak', systemVramPeakMib(d) + ' MiB') +
-         throughputNote(d) +
          metricChip('headroom', vramHeadroom(d));
 }
 
@@ -823,8 +874,8 @@ function coldLoadSummary(d) {
   if (!d) return '';
   const load = d.model_cold_load_ms != null ? fmt1(d.model_cold_load_ms) + ' ms' : '-';
   const disk = d.model_cold_disk_read_peak_mb_s != null ? fmt1(d.model_cold_disk_read_peak_mb_s) + ' MB/s' : '-';
-  return '<span class="winner-stat meta" title="Cold-load values are selected once per model, from the result with the strongest disk-read signal.">cold load ' +
-    load + ' · disk ' + disk + '</span>';
+  return '<div class="model-load-info" title="Selected once per model from the result with the strongest disk-read signal."><b>Cold load:</b> ' +
+    load + ' · disk ' + disk + ' · one-time process start, model read, and backend initialization before request latency is measured.</div>';
 }
 
 function evalRunNote(d) {
@@ -843,9 +894,11 @@ function latencyMs(d) {
 }
 
 function latencyNote(d) {
-  return metricChip('TTFR', d.ttfr_ms != null ? fmt1(d.ttfr_ms) + ' ms' : '-') +
-         metricChip('e2e TTFT', d.e2e_ttft_ms != null ? fmt1(d.e2e_ttft_ms) + ' ms' : '-') +
-         metricChip('prompt', d.prompt_ms != null ? fmt1(d.prompt_ms) + ' ms' : '-') +
+  const ttft = d.e2e_ttft_ms != null ? +d.e2e_ttft_ms : (d.ttfr_ms != null ? +d.ttfr_ms : null);
+  const lead = d.ttfr_ms != null && d.e2e_ttft_ms != null ? Math.max(0, +d.e2e_ttft_ms - +d.ttfr_ms) : null;
+  return metricChip('TTFT', ttft != null ? fmt1(ttft) + ' ms' : '-') +
+         (lead != null && lead >= 0.1 ? metricChip('response lead', fmt1(lead) + ' ms') : '') +
+         metricChip('prefill', d.prompt_ms != null ? fmt1(d.prompt_ms) + ' ms' : '-') +
          metricChip('request', d.latency_total_request_ms != null ? fmt1(d.latency_total_request_ms) + ' ms' : (d.total_request_ms != null ? fmt1(d.total_request_ms) + ' ms' : '-'));
 }
 
@@ -1037,10 +1090,12 @@ function renderScatter() {
   const W = 1000, H = 380, M = { l: 60, r: 16, t: 24, b: 36 };
   const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
   const cap = (CFG.hardware && CFG.hardware.vram_total_mib) ? CFG.hardware.vram_total_mib : 8192;
+  const ramTotal = (CFG.hardware && CFG.hardware.system_ram_total_mib) ? CFG.hardware.system_ram_total_mib : 0;
   const pts = VIEW.filter(d => d.ok && d.time_total_sec != null).map(d => ({
     d: d,
     x: d.time_total_sec,
-    y: benchmarkVramUsedMib(d) + Math.max(0, d.shared_peak_mib || 0)
+    y: (STATE.adjustScatterBaseline ? benchmarkVramUsedMib(d) : systemVramPeakMib(d)) +
+       Math.max(0, +d.ram_used_peak_mib || 0)
   }));
   if (pts.length === 0) {
     svg.innerHTML = '<text x="' + (W/2) + '" y="' + (H/2) + '" text-anchor="middle" class="scatter-tick">No ok runs to plot.</text>';
@@ -1050,7 +1105,8 @@ function renderScatter() {
   const xMaxRaw = Math.max(...pts.map(p => p.x)) * 1.5;
   const lxMin   = Math.log10(xMin);
   const lxMax   = Math.log10(Math.max(xMaxRaw, xMin * 10));
-  const yMaxRaw = Math.max(Math.max(...pts.map(p => p.y)), cap + 4096);
+  const systemTotal = cap + ramTotal;
+  const yMaxRaw = Math.max(Math.max(...pts.map(p => p.y)), systemTotal || cap + 4096);
   const yMax    = Math.ceil(yMaxRaw / 1024) * 1024;
   const xs = v => M.l + ((Math.log10(Math.max(v, xMin)) - lxMin) / (lxMax - lxMin)) * innerW;
   const ys = v => M.t + innerH - (v / yMax) * innerH;
@@ -1084,7 +1140,8 @@ function renderScatter() {
     const cy = ys(Math.min(pt.y, yMax));
     const fill = modelColor(d.model);
     const stroke = lvlColor(lvl(d));
-    const tip = d.label + ' · run vram ' + benchmarkVramUsedMib(d) + ' · system peak ' + systemVramPeakMib(d) + ' · shared +' + (d.shared_peak_mib || 0) +
+    const tip = d.label + ' · plotted vram ' + (STATE.adjustScatterBaseline ? benchmarkVramUsedMib(d) : systemVramPeakMib(d)) +
+                ' · system peak ' + systemVramPeakMib(d) + ' · RAM Δ ' + (+d.ram_used_peak_mib || 0) +
                 ' · time ' + pt.x + 's · eval ' + (+d.eval_tps).toFixed(1) + ' t/s';
     const isWin = isWinnerId(d.id);
     const winCls = isWin ? ' is-winner' : '';
@@ -1096,6 +1153,12 @@ function renderScatter() {
   });
   svg.innerHTML = p.join('');
 }
+
+const scatterBaselineToggle = document.getElementById('scatter-baseline-toggle');
+scatterBaselineToggle.addEventListener('change', () => {
+  STATE.adjustScatterBaseline = scatterBaselineToggle.checked;
+  renderScatter();
+});
 
 // ===========================================================================
 // WDDM watchlist (scope-aware: recomputed per rerender from VIEW)

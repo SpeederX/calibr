@@ -70,7 +70,8 @@ const WINNERS = [{ model:"M1", winner_id:"a", bat:"M1.bat" }, { model:"M2", winn
 const CFG = {
   llama_server_exe:"C:\\fake\\llama-server.exe",
   hardware:{ gpu_name:"Fake GPU", vram_total_mib:8192, gpu_compute_cap:"7.5",
-             cpu_cores_physical:6, cpu_threads_logical:12, vram_safety_budget_mib:7782 },
+             cpu_cores_physical:6, cpu_threads_logical:12, vram_safety_budget_mib:7782,
+             system_ram_total_mib:32768 },
   wddm_detection:{ shared_delta_confirm_mib:500 },
 };
 
@@ -83,14 +84,15 @@ body += "\nglobalThis.__currentWinners = currentWinners;\nglobalThis.__state = S
 // template performs. We track innerHTML writes so we can assert at least
 // SOMETHING was rendered into each known container.
 const writes = {};
+const rendered = {};
 const fakeEl = (id) => {
   const el = {
     id, _html: "", _text: "",
     get innerHTML() { return el._html; },
-    set innerHTML(v) { el._html = v; if (id) writes[id] = (writes[id] || 0) + 1; },
+    set innerHTML(v) { el._html = v; if (id) { writes[id] = (writes[id] || 0) + 1; rendered[id] = v; } },
     get textContent() { return el._text; },
     set textContent(v) { el._text = v; if (id) writes[id] = (writes[id] || 0) + 1; },
-    insertAdjacentHTML(_pos, html) { el._html += html; if (id) writes[id] = (writes[id] || 0) + 1; },
+    insertAdjacentHTML(_pos, html) { el._html += html; if (id) { writes[id] = (writes[id] || 0) + 1; rendered[id] = el._html; } },
     addEventListener() {},
     querySelector() { return fakeEl(); },
     querySelectorAll() { return []; },
@@ -143,6 +145,14 @@ if (missing.length) {
 
 if (sandbox.globalThis.__state.filter !== "safety") {
   console.error("FAIL: report should default to the safety-balanced filter");
+  process.exit(1);
+}
+if (rendered.hw?.includes("C:\\fake")) {
+  console.error("FAIL: hardware header exposed an absolute llama-server path");
+  process.exit(1);
+}
+if (!rendered.hw?.includes("&lt;llama_server_path&gt;")) {
+  console.error("FAIL: hardware header did not render the redacted llama-server placeholder");
   process.exit(1);
 }
 if (sandbox.globalThis.__currentWinners.M1?.id !== "a2") {

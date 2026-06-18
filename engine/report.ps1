@@ -76,24 +76,25 @@ function Get-ResultKvQuality {
     return 0
 }
 
-function Invoke-TsReportFields {
-    param($results, [int]$vramTotal)
+function Invoke-TsReportPayload {
+    param($results, $cfg, [int]$vramTotal)
     $script = Resolve-TsResultCoreScript
     if (-not $script) { return $null }
     $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
     $payload = [ordered]@{
-        action       = "report-fields"
+        action       = "report-payload"
         results      = @($results)
+        cfg          = $cfg
         vramTotalMib = $vramTotal
     } | ConvertTo-Json -Compress -Depth 20
-    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-report-fields-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-report-payload-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
     try {
         [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
         $out = & $node $script --json-file $payloadPath
         $text = (@($out) -join "`n").Trim()
         if (-not $text) { return $null }
         $resp = $text | ConvertFrom-Json
-        if ($resp.ok -and $null -ne $resp.result) { return @($resp.result) }
+        if ($resp.ok -and $null -ne $resp.result) { return $resp.result }
         return $null
     } catch {
         return $null
@@ -250,11 +251,11 @@ function Invoke-Report {
     }
 
     # Build HTML (compact, self-contained)
-    $cfgJson = $cfg | ConvertTo-Json -Depth 5 -Compress
     $vramTotal = if ($cfg.hardware -and $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
-    $reportRows = Invoke-TsReportFields -results $results -vramTotal $vramTotal
-    if (-not $reportRows) { throw "TypeScript report payload builder unavailable. Run 'npm run build' or reinstall calibr." }
-    $resJson = @($reportRows) | ConvertTo-Json -Depth 10 -Compress
+    $reportPayload = Invoke-TsReportPayload -results $results -cfg $cfg -vramTotal $vramTotal
+    if (-not $reportPayload) { throw "TypeScript report payload builder unavailable. Run 'npm run build' or reinstall calibr." }
+    $resJson = @($reportPayload.rows) | ConvertTo-Json -Depth 10 -Compress
+    $cfgJson = $reportPayload.cfg | ConvertTo-Json -Depth 10 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {
         [ordered]@{ model=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + $(if ($script:IsWin) { '.bat' } else { '.sh' })) }
     }) | ConvertTo-Json -Depth 5 -Compress

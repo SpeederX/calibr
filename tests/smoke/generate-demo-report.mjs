@@ -103,6 +103,7 @@ const CFG = {
     cpu_cores_physical: 6,
     cpu_threads_logical: 12,
     vram_safety_budget_mib: 7782,
+    system_ram_total_mib: 32768,
   },
   wddm_detection: { shared_delta_confirm_mib: 500 },
 };
