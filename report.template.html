@@ -113,7 +113,7 @@
   .bar-row.mode-vram,
   .bar-row.mode-memory,
   .bar-row.mode-disk,
-  .bar-row.mode-latency { grid-template-columns: minmax(300px, 500px) minmax(300px, 1fr) minmax(270px, 360px); }
+  .bar-row.mode-latency { grid-template-columns: minmax(300px, 500px) minmax(300px, 1fr) minmax(360px, max-content); }
   .bar-row.mode-vram .val,
   .bar-row.mode-memory .val,
   .bar-row.mode-disk .val,
@@ -126,7 +126,7 @@
   .bar-row.mode-eval .ann { display: grid; grid-template-columns: 82px 92px 82px; justify-content: end; }
   .bar-row.mode-vram .ann,
   .bar-row.mode-memory .ann,
-  .bar-row.mode-latency .ann { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bar-row.mode-latency .ann { display: flex; flex-wrap: nowrap; }
   .bar-row.mode-disk .ann { display: grid; grid-template-columns: 118px 90px 110px; }
   .bar-row .name { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bar-row.is-winner .name::before { content: '★ '; color: var(--c-win); }
@@ -145,21 +145,6 @@
   .chart-toolbar { display:flex; align-items:center; gap:8px; margin:-2px 0 8px; color:var(--c-muted); font-size:12px; }
   .chart-toolbar label { cursor:pointer; user-select:none; }
   .chart-toolbar input { accent-color:var(--c-accent); vertical-align:middle; margin-right:5px; }
-  @media (max-width: 1320px) {
-    .bar-row.mode-vram,
-    .bar-row.mode-memory,
-    .bar-row.mode-disk,
-    .bar-row.mode-latency {
-      grid-template-columns: minmax(280px, 38%) minmax(260px, 1fr);
-    }
-    .bar-row.mode-vram .ann,
-    .bar-row.mode-memory .ann,
-    .bar-row.mode-disk .ann,
-    .bar-row.mode-latency .ann {
-      grid-column: 2;
-      justify-content: start;
-    }
-  }
   @media (max-width: 900px) {
     .bar-row.mode-vram,
     .bar-row.mode-memory,
@@ -305,8 +290,8 @@
         <th class="num">Prompt rel % <span class="th-help" title="Prompt throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
         <th class="num">Eval t/s <span class="th-help" title="Decode throughput for generated tokens. This is the main speed metric used by winner selection.">?</span></th>
         <th class="num">Eval rel % <span class="th-help" title="Eval throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
-        <th class="num">VRAM <span class="th-help" title="Peak dedicated GPU memory observed with NVIDIA system-level sampling, in MiB. Hover a value for baseline, total peak, and run delta. Other apps/processes can affect this number.">?</span></th>
-        <th class="num">Shared <span class="th-help" title="WDDM/shared GPU memory delta. On Windows, positive values indicate spill into system RAM.">?</span></th>
+        <th class="num">VRAM run <span class="th-help" title="Baseline-adjusted run VRAM: total system peak minus VRAM already used before the run. Hover for baseline and total peak.">?</span></th>
+        <th class="num">Shared spill <span class="th-help" title="WDDM shared-memory growth is shown only when it exceeds the configured confirmation threshold; smaller positive deltas are treated as counter/background noise.">?</span></th>
         <th class="num">RAM Δ <span class="th-help" title="Peak system RAM increase observed during the run, in MiB.">?</span></th>
         <th class="num">CPU % <span class="th-help" title="Average total CPU utilization observed while calibr was polling metrics.">?</span></th>
         <th class="num">GPU W <span class="th-help" title="Peak GPU power draw observed during the run.">?</span></th>
@@ -351,7 +336,8 @@ function serverIdentities(rows) {
   const seen = new Map();
   rows.slice().sort((a, b) => String(b.bench_session_started_at || b.timestamp || '').localeCompare(String(a.bench_session_started_at || a.timestamp || '')))
     .forEach(d => {
-      const version = d.llama_server_version || 'unknown';
+      const rawVersion = d.llama_server_version || 'unknown';
+      const version = /^b\d{4,}$/i.test(rawVersion) ? rawVersion : 'unknown (legacy record)';
       const path = d.llama_server_exe || CFG.llama_server_exe || '';
       const key = version + '|' + path;
       if (!seen.has(key)) seen.set(key, { version, path });
@@ -717,9 +703,9 @@ function winnerSummary(w) {
   const parts = [];
   parts.push('<span class="level-' + lvl(w) + '">[' + lvl(w) + ']</span> <span class="winner-stat">' + escapeHtml(w.label) + '</span>');
   parts.push('<span class="winner-stat"><b>' + fmt1(w.eval_tps) + '</b> t/s</span>');
-  parts.push('<span class="winner-stat">' + w.vram_peak_mib + ' MiB</span>');
-  if (w.shared_peak_mib > 0) {
-    parts.push('<span class="winner-stat wddm">+' + w.shared_peak_mib + ' shared</span>');
+  parts.push('<span class="winner-stat">' + benchmarkVramUsedMib(w) + ' MiB run VRAM</span>');
+  if (confirmedSharedMib(w) > 0) {
+    parts.push('<span class="winner-stat wddm">+' + confirmedSharedMib(w) + ' shared</span>');
   }
   if (+w.gpu_power_peak_w > 0) {
     parts.push('<span class="winner-stat">' + fmt0(w.gpu_power_peak_w) + ' W</span>');
@@ -770,13 +756,13 @@ function renderModelsList() {
     let rows = '';
     for (const c of configs) {
       const isWin = w && c.id === w.id;
-      const wddm = (+c.shared_peak_mib > 0) ? '<span class="wddm">+' + c.shared_peak_mib + '</span>' : '-';
+      const wddm = confirmedSharedMib(c) > 0 ? '<span class="wddm">+' + confirmedSharedMib(c) + '</span>' : '-';
       rows += '<tr' + (isWin ? ' class="is-winner"' : '') + '>' +
               '<td><code>' + escapeHtml(c.label) + '</code></td>' +
               '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
               '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
-              '<td class="num" title="' + vramCellTitle(c) + '">' + (c.vram_peak_mib != null ? c.vram_peak_mib : '-') + '</td>' +
+              '<td class="num" title="' + vramCellTitle(c) + '">' + benchmarkVramUsedMib(c) + '</td>' +
               '<td class="num">' + wddm + '</td>' +
               '<td class="num">' + fmt2(c.ttft_sec) + '</td>' +
               '<td class="num">' + ((+c.gpu_power_peak_w > 0) ? fmt0(c.gpu_power_peak_w) + ' W' : '-') + '</td>' +
@@ -798,7 +784,7 @@ function renderModelsList() {
               '<th>Config</th><th>Level</th>' +
               '<th class="num">Prompt t/s</th>' +
               '<th class="num">Eval t/s</th>' +
-              '<th class="num">VRAM</th><th class="num">Shared</th>' +
+              '<th class="num">VRAM run</th><th class="num">Shared spill</th>' +
               '<th class="num">TTFT s</th>' +
               '<th class="num">GPU W</th>' +
               '<th>Fit</th><th></th>' +
@@ -836,6 +822,11 @@ function benchmarkVramUsedMib(d) {
   return Math.max(0, peak - (+d.vram_baseline_mib || 0));
 }
 
+function confirmedSharedMib(d) {
+  const shared = Math.max(0, +d.shared_peak_mib || 0);
+  return shared > CONFIRM_MIB ? shared : 0;
+}
+
 function totalMemoryUsedMib(d) {
   return benchmarkVramUsedMib(d) + Math.max(0, +d.ram_used_peak_mib || 0);
 }
@@ -852,11 +843,11 @@ function throughputNote(d) {
 function memoryUsageNote(d) {
   const vram = benchmarkVramUsedMib(d);
   const ram = Math.max(0, +d.ram_used_peak_mib || 0);
-  const shared = Math.max(0, +d.shared_peak_mib || 0);
+  const shared = confirmedSharedMib(d);
   return metricChip('total', totalMemoryUsedMib(d) + ' MiB') +
          metricChip('run VRAM', vram + ' MiB') +
          metricChip('RAM', ram + ' MiB') +
-         metricChip('shared', shared > 0 ? '+' + shared : '-');
+         metricChip('shared spill', shared > 0 ? '+' + shared + ' MiB' : '-');
 }
 
 function vramUsageNote(d) {
@@ -1094,7 +1085,7 @@ function renderScatter() {
   const pts = VIEW.filter(d => d.ok && d.time_total_sec != null).map(d => ({
     d: d,
     x: d.time_total_sec,
-    y: (STATE.adjustScatterBaseline ? benchmarkVramUsedMib(d) : systemVramPeakMib(d)) +
+    y: (STATE.adjustScatterBaseline ? systemVramPeakMib(d) : benchmarkVramUsedMib(d)) +
        Math.max(0, +d.ram_used_peak_mib || 0)
   }));
   if (pts.length === 0) {
@@ -1140,7 +1131,7 @@ function renderScatter() {
     const cy = ys(Math.min(pt.y, yMax));
     const fill = modelColor(d.model);
     const stroke = lvlColor(lvl(d));
-    const tip = d.label + ' · plotted vram ' + (STATE.adjustScatterBaseline ? benchmarkVramUsedMib(d) : systemVramPeakMib(d)) +
+    const tip = d.label + ' · plotted vram ' + (STATE.adjustScatterBaseline ? systemVramPeakMib(d) : benchmarkVramUsedMib(d)) +
                 ' · system peak ' + systemVramPeakMib(d) + ' · RAM Δ ' + (+d.ram_used_peak_mib || 0) +
                 ' · time ' + pt.x + 's · eval ' + (+d.eval_tps).toFixed(1) + ' t/s';
     const isWin = isWinnerId(d.id);
@@ -1173,8 +1164,8 @@ function renderWddmWatchlist() {
   let html = '<table><thead><tr><th>ID</th><th>Label</th><th class="num">VRAM</th><th class="num">Shared</th><th class="num">Sat.</th><th class="num">Eval t/s</th></tr></thead><tbody>';
   flagged.forEach(d => {
     html += '<tr><td><code>' + d.id + '</code></td><td>' + escapeHtml(d.label) + '</td>' +
-            '<td class="num">' + d.vram_peak_mib + '</td>' +
-            '<td class="num wddm">' + (d.shared_peak_mib > 0 ? '+' + d.shared_peak_mib : '-') + '</td>' +
+            '<td class="num">' + benchmarkVramUsedMib(d) + '</td>' +
+            '<td class="num wddm">' + (confirmedSharedMib(d) > 0 ? '+' + confirmedSharedMib(d) : '-') + '</td>' +
             '<td class="num">' + Math.round(d.wddm_vram_saturation*100) + '%</td>' +
             '<td class="num">' + (+d.eval_tps).toFixed(1) + '</td></tr>';
   });
@@ -1296,8 +1287,7 @@ function renderAllTable() {
   const promptExtent = metricExtent(rows, d => +d.prompt_tps);
   const evalExtent = metricExtent(rows, d => +d.eval_tps);
   rows.forEach(d => {
-    const wddm = d.wddm_flag_shared_pos ? '<span class="wddm">+' + d.shared_peak_mib + '</span>' :
-                 (d.shared_peak_mib >= 0 ? d.shared_peak_mib : '-');
+    const wddm = confirmedSharedMib(d) > 0 ? '<span class="wddm">+' + confirmedSharedMib(d) + '</span>' : '-';
     const winCls = isWinnerId(d.id) ? ' class="is-winner"' : '';
     const promptRel = normalizedPct(+d.prompt_tps, promptExtent);
     const evalRel = normalizedPct(+d.eval_tps, evalExtent);
@@ -1314,7 +1304,7 @@ function renderAllTable() {
         '<td class="num">' + fmtPct(promptRel) + '</td>' +
         '<td class="num"><b>' + (d.eval_tps ? (+d.eval_tps).toFixed(1) : '-') + '</b></td>' +
         '<td class="num">' + fmtPct(evalRel) + '</td>' +
-        '<td class="num" title="' + vramCellTitle(d) + '">' + d.vram_peak_mib + '</td>' +
+        '<td class="num" title="' + vramCellTitle(d) + '">' + benchmarkVramUsedMib(d) + '</td>' +
         '<td class="num">' + wddm + '</td>' +
         '<td class="num">' + (d.ram_used_peak_mib != null ? d.ram_used_peak_mib : '-') + '</td>' +
         '<td class="num">' + (d.cpu_util_avg_pct != null && d.cpu_util_avg_pct >= 0 ? d.cpu_util_avg_pct + '%' : '-') + '</td>' +

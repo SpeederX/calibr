@@ -98,7 +98,7 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'Prompt rel %')          "Prompt relative-percent header missing"
         Assert-True ($tpl -match 'Eval rel %')            "Eval relative-percent header missing"
         Assert-True ($tpl -match 'normalized within the currently visible rows') "relative-percent tooltip missing"
-        Assert-True ($tpl -match 'WDDM/shared GPU memory') "Shared tooltip missing"
+        Assert-True ($tpl -match 'WDDM shared-memory growth') "Shared tooltip missing"
         Assert-True ($tpl -match 'one-time process start, model read, and backend initialization') "model-level cold-load explanation missing"
         Assert-True ($tpl -match 'Metric glossary') "metric glossary missing"
         Assert-True ($tpl -match 'Readable formula') "metric glossary formula column missing"
@@ -115,6 +115,10 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'scatter-baseline-toggle') "scatter baseline toggle missing"
         Assert-True ($tpl -match 'system_ram_total_mib') "scatter should use total installed system RAM"
         Assert-True ($tpl -match '&lt;llama_server_path&gt;') "llama-server path should be redacted for display"
+        Assert-True ($tpl -match 'STATE\.adjustScatterBaseline \? systemVramPeakMib\(d\) : benchmarkVramUsedMib\(d\)') "enabled baseline adjustment should plot total system VRAM"
+        Assert-True ($tpl -match 'function confirmedSharedMib') "shared-memory display should use the confirmation threshold"
+        Assert-True ($tpl -match 'VRAM run') "report should label baseline-adjusted VRAM explicitly"
+        Assert-True ($tpl -match 'unknown \(legacy record\)') "invalid historical llama build tags should be identified as legacy"
     }
     It "falls back to requested gpu layers when llama.cpp does not report actual layers" {
         Assert-True ($tpl -match 'function layersLabel')       "layersLabel helper missing"

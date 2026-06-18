@@ -27,7 +27,8 @@ let body = m[1];
 // speed for the minimal record).
 const DATA = [
   { id:"a", label:"ctx16k_kv_q8", model:"M1", series:"M", variant:"Q8", level:"low", sweep:"context",
-    prompt_tps:100, eval_tps:50, vram_peak_mib:2000, shared_peak_mib:0, load_sec:2,
+    prompt_tps:100, eval_tps:50, vram_peak_mib:3500, vram_total_peak_mib:3500,
+    vram_baseline_mib:1500, shared_peak_mib:108, load_sec:2,
     layers_offloaded:"32/32", fit_status:"success", wddm_vram_saturation:0.2,
     wddm_flag_high_vram:false, wddm_flag_shared_pos:false, extra_args:"--ctx-size 16384",
     ok:true, time_total_sec:3.2, headroom_mib:6192, ctx_size:16384, kv_cache_mib:50,
@@ -79,6 +80,7 @@ body = body.replace(/%%DATA%%/, JSON.stringify(DATA))
            .replace(/%%WINNERS%%/, JSON.stringify(WINNERS))
            .replace(/%%CFG%%/, JSON.stringify(CFG));
 body += "\nglobalThis.__currentWinners = currentWinners;\nglobalThis.__state = STATE;\n";
+body += "globalThis.__reportMetrics = { benchmarkVramUsedMib, systemVramPeakMib, confirmedSharedMib };\n";
 
 // DOM stub. Each "element" is an object that swallows the mutations the
 // template performs. We track innerHTML writes so we can assert at least
@@ -153,6 +155,18 @@ if (rendered.hw?.includes("C:\\fake")) {
 }
 if (!rendered.hw?.includes("&lt;llama_server_path&gt;")) {
   console.error("FAIL: hardware header did not render the redacted llama-server placeholder");
+  process.exit(1);
+}
+if (sandbox.globalThis.__reportMetrics.systemVramPeakMib(DATA[0]) !== 3500) {
+  console.error("FAIL: system VRAM peak should include the pre-run baseline");
+  process.exit(1);
+}
+if (sandbox.globalThis.__reportMetrics.benchmarkVramUsedMib(DATA[0]) !== 2000) {
+  console.error("FAIL: run VRAM should subtract the 1500 MiB baseline");
+  process.exit(1);
+}
+if (sandbox.globalThis.__reportMetrics.confirmedSharedMib(DATA[0]) !== 0) {
+  console.error("FAIL: sub-threshold shared-memory drift should be hidden");
   process.exit(1);
 }
 if (sandbox.globalThis.__currentWinners.M1?.id !== "a2") {
