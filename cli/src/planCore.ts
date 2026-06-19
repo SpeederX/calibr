@@ -63,6 +63,9 @@ export interface PlanItem {
   template_note: string | null | undefined;
   gguf_context_length: number | null | undefined;
   gguf_architecture: string | null | undefined;
+  workload_kind: "baseline" | "prefill" | "kv-fill";
+  prefill_target_tokens: number;
+  kv_fill_target_tokens: number;
   label: string;
   extra_args: string;
 }
@@ -116,9 +119,31 @@ export function testCtxAllowedForModel(ctx: number, globalCap: number, perModelC
   return true;
 }
 
-export function newPlanItem(meta: PlanMeta, sweep: PlanItem["sweep"], level: string | null, extraArgs: string, label: string): PlanItem {
+export interface PlanWorkload {
+  kind?: PlanItem["workload_kind"];
+  prefillTokens?: number;
+  kvFillTokens?: number;
+}
+
+export function planWorkloadIdentity(workload: PlanWorkload = {}): string {
+  const kind = workload.kind ?? "baseline";
+  if (kind === "baseline") return "";
+  return `workload=${kind}_prefill=${asInt(workload.prefillTokens)}_kvfill=${asInt(workload.kvFillTokens)}`;
+}
+
+export function newPlanItem(
+  meta: PlanMeta,
+  sweep: PlanItem["sweep"],
+  level: string | null,
+  extraArgs: string,
+  label: string,
+  workload: PlanWorkload = {},
+): PlanItem {
   const sanitizedModel = `${meta.model}_${meta.variant}`.replace(/[^\w]/g, "_").slice(0, 40);
-  const sanitizedLabel = label.replace(/[^\w]/g, "_").slice(0, 30);
+  const workloadKind = workload.kind ?? "baseline";
+  const workloadIdentity = planWorkloadIdentity(workload);
+  const identityLabel = workloadIdentity ? `${label}_${workloadIdentity}` : label;
+  const sanitizedLabel = identityLabel.replace(/[^\w]/g, "_").slice(0, 80);
   return {
     id: `${sanitizedModel}__${sanitizedLabel}`,
     model_path: meta.path,
@@ -132,6 +157,9 @@ export function newPlanItem(meta: PlanMeta, sweep: PlanItem["sweep"], level: str
     template_note: meta.template_note,
     gguf_context_length: meta.gguf_context_length,
     gguf_architecture: meta.gguf_architecture,
+    workload_kind: workloadKind,
+    prefill_target_tokens: asInt(workload.prefillTokens),
+    kv_fill_target_tokens: asInt(workload.kvFillTokens),
     label: `${meta.model} ${meta.variant} @ ${label}`,
     extra_args: extraArgs,
   };

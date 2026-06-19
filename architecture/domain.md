@@ -45,6 +45,13 @@ models to consider; sweep chooses how each model is measured.
 One measured execution of one run config. In metric schema v4, a run uses one
 full-length streaming request after optional warm-up and KV reset.
 
+### Workload profile
+
+The input load applied to a run config: `baseline`, `prefill`, or `kv-fill`.
+Prefill and KV-fill profiles carry explicit token targets. The profile and its
+targets are part of config identity so cache/resume never mixes different
+loads.
+
 ### Winner
 
 The run config selected for a model under the active policy. Balanced policy

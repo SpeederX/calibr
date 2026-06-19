@@ -47,7 +47,8 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - context/KV sweep for models expected to fit;
    - CPU-expert sweep for MoE models;
    - GPU-layer offload sweep for oversized dense models;
-   - cap contexts at model metadata and selected policy limits.
+   - cap contexts at model metadata and selected policy limits;
+   - attach an explicit workload profile and token targets to every config.
 5. **Benchmark**
    - start llama-server and wait for readiness;
    - optionally warm up, then reset the KV slot;

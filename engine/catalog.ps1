@@ -47,10 +47,42 @@ function Select-CatalogByPreset {
     # subset of the catalog that the preset selects. Used by the `all`
     # dispatcher and tested independently.
     param($catalog, $preset)
-    if ($null -eq $preset) { return ,@($catalog) }
-    if ($preset.models -is [string] -and $preset.models -eq '*') { return ,@($catalog) }
-    $ids = @($preset.models)
-    return ,@($catalog | Where-Object { $ids -contains $_.id })
+    return Select-ModelCatalog -Catalog $catalog -Preset $preset
+}
+
+function Test-CatalogIdMatch {
+    param(
+        [string]$Id,
+        [string[]]$Patterns
+    )
+
+    foreach ($pattern in $Patterns) {
+        if ($Id -like $pattern) { return $true }
+    }
+    return $false
+}
+
+function Select-ModelCatalog {
+    param(
+        $Catalog,
+        $Preset = $null,
+        [string]$CatalogId = "",
+        [string]$ModelRegex = ""
+    )
+
+    $selected = @($Catalog)
+    if ($null -ne $Preset -and -not ($Preset.models -is [string] -and $Preset.models -eq '*')) {
+        $presetIds = @($Preset.models)
+        $selected = @($selected | Where-Object { $presetIds -contains $_.id })
+    }
+    if ($CatalogId) {
+        $patterns = @(($CatalogId -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $selected = @($selected | Where-Object { Test-CatalogIdMatch -Id $_.id -Patterns $patterns })
+    }
+    if ($ModelRegex) {
+        $selected = @($selected | Where-Object { $_.model -match $ModelRegex })
+    }
+    return $selected
 }
 
 # Download manifest: records which .gguf files calibr itself fetched. Used by
@@ -288,18 +320,7 @@ function Invoke-FetchModels {
     $cfg = Get-Config
     $samples = Get-ModelCatalog
 
-    # Filter by -Model or -CatalogId if provided
-    $filtered = $samples
-    if ($CatalogId)  {
-        # Accept comma-separated lists same as the 'all' dispatcher so the
-        # CLI's CustomBenchView can pass a multi-pick selection here too.
-        $idPatterns = @(($CatalogId -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $filtered = $filtered | Where-Object {
-            foreach ($pat in $idPatterns) { if ($_.id -like $pat) { return $true } }
-            return $false
-        }
-    }
-    if ($Model)    { $filtered = $filtered | Where-Object { $_.model -match $Model } }
+    $filtered = @(Select-ModelCatalog -Catalog $samples -CatalogId $CatalogId -ModelRegex $Model)
 
     Write-Host "=== get-models ===" -ForegroundColor Cyan
     Write-Host ("Model catalog: {0} entries" -f $samples.Count)

@@ -6,6 +6,9 @@ export interface BenchItem {
   series?: string;
   level?: string;
   sweep?: string;
+  workload_kind?: "baseline" | "prefill" | "kv-fill";
+  prefill_target_tokens?: number;
+  kv_fill_target_tokens?: number;
   reasoning_mode?: string | null;
   template_note?: string | null;
   gguf_context_length?: number | null;
@@ -422,6 +425,9 @@ export function aggregateBenchResult(payload: {
     series: item.series,
     level: item.level,
     sweep: item.sweep,
+    workload_kind: item.workload_kind ?? "baseline",
+    prefill_target_tokens: int(item.prefill_target_tokens),
+    kv_fill_target_tokens: int(item.kv_fill_target_tokens),
     reasoning_mode: item.reasoning_mode,
     template_note: item.template_note,
     gguf_context_length: item.gguf_context_length,

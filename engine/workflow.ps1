@@ -6,14 +6,17 @@
 
 function Invoke-All {
     Ensure-WorkflowEngine
+    $planningPolicy = New-PlanningPolicy -ContextSizes (ConvertTo-ContextSizeList -Value $ContextSizes)
 
     if (-not $FetchCatalog) {
-        Invoke-WorkflowBenchCycle
+        Invoke-WorkflowBenchCycle -PlanningPolicy $planningPolicy
         Invoke-Report
         return
     }
 
-    $catalogEntries = @(Resolve-WorkflowCatalogEntries)
+    $scope = Resolve-WorkflowCatalogScope
+    $catalogEntries = @($scope.entries)
+    $planningPolicy = $scope.planning_policy
     if ($catalogEntries.Count -eq 0) {
         Write-Host "No catalog entries match the current scope. Nothing to do." -ForegroundColor Yellow
         return
@@ -27,10 +30,10 @@ function Invoke-All {
     if (-not $CatalogId -and -not $Model) {
         Write-Host ""
         Write-Host "--- pre-existing models ---" -ForegroundColor DarkCyan
-        Invoke-WorkflowBenchCycle
+        Invoke-WorkflowBenchCycle -PlanningPolicy $planningPolicy
     }
 
-    Invoke-CatalogWorkflow -CatalogEntries $catalogEntries
+    Invoke-CatalogWorkflow -CatalogEntries $catalogEntries -PlanningPolicy $planningPolicy
 
     Write-Host ""
     Write-Host "--- final report ---" -ForegroundColor DarkCyan
@@ -67,61 +70,39 @@ function Ensure-WorkflowEngine {
 }
 
 function Invoke-WorkflowBenchCycle {
+    param([hashtable]$PlanningPolicy)
     Invoke-Discover
-    Invoke-Plan
+    Invoke-Plan -PlanningPolicy $PlanningPolicy
     Invoke-Bench
 }
 
-function Resolve-WorkflowCatalogEntries {
-    $entries = @(Get-ModelCatalog)
-
-    # These values are consumed by plan.ps1. Clear them first so a second
-    # workflow invocation in the same process cannot inherit an older preset.
-    $script:_presetMaxCtx = 0
-    $script:_presetCtxSizes = @()
-
+function Resolve-WorkflowCatalogScope {
+    $presetObject = $null
     if ($Preset) {
         $presetObject = Get-Preset -Name $Preset
         if ($null -eq $presetObject) {
             $knownPresets = ((Get-PresetCatalog).Keys | Sort-Object) -join ', '
             throw "Preset '$Preset' not found. Known: $knownPresets"
         }
+    }
 
-        $entries = @(Select-CatalogByPreset -catalog $entries -preset $presetObject)
-        if ($null -ne $presetObject.max_ctx) {
-            $script:_presetMaxCtx = [int]$presetObject.max_ctx
-        }
-        if ($presetObject.context_sizes) {
-            $script:_presetCtxSizes = @($presetObject.context_sizes)
-        }
+    $contextSizes = ConvertTo-ContextSizeList -Value $ContextSizes
+    if ($contextSizes.Count -eq 0 -and $presetObject -and $presetObject.context_sizes) {
+        $contextSizes = @($presetObject.context_sizes | ForEach-Object { [int]$_ })
+    }
+    $maxContext = if ($presetObject -and $null -ne $presetObject.max_ctx) { [int]$presetObject.max_ctx } else { 0 }
+    $policy = New-PlanningPolicy -MaxContext $maxContext -ContextSizes $contextSizes
+    $entries = @(Select-ModelCatalog -Catalog (Get-ModelCatalog) -Preset $presetObject -CatalogId $CatalogId -ModelRegex $Model)
 
-        $maxContextLabel = if ($script:_presetMaxCtx -gt 0) { $script:_presetMaxCtx } else { '(no cap)' }
+    if ($Preset) {
+        $maxContextLabel = if ($maxContext -gt 0) { $maxContext } else { '(no cap)' }
         Write-Host ("[all] preset '{0}': {1} entries, max_ctx={2}" -f $Preset, $entries.Count, $maxContextLabel) -ForegroundColor Cyan
     }
 
-    if ($CatalogId) {
-        $idPatterns = @(($CatalogId -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $entries = @($entries | Where-Object { Test-WorkflowCatalogId -Id $_.id -Patterns $idPatterns })
+    return @{
+        entries = $entries
+        planning_policy = $policy
     }
-    if ($Model) {
-        $entries = @($entries | Where-Object { $_.model -match $Model })
-    }
-
-    return $entries
-}
-
-function Test-WorkflowCatalogId {
-    param(
-        [string]$Id,
-        [string[]]$Patterns
-    )
-
-    foreach ($pattern in $Patterns) {
-        if ($Id -like $pattern) {
-            return $true
-        }
-    }
-    return $false
 }
 
 function Ensure-WorkflowScanPath {
@@ -138,7 +119,10 @@ function Ensure-WorkflowScanPath {
 }
 
 function Invoke-CatalogWorkflow {
-    param([object[]]$CatalogEntries)
+    param(
+        [object[]]$CatalogEntries,
+        [hashtable]$PlanningPolicy
+    )
 
     $savedCatalogId = $script:CatalogId
     $savedModel = $script:Model
@@ -148,7 +132,8 @@ function Invoke-CatalogWorkflow {
             Invoke-CatalogEntry `
                 -Entry $CatalogEntries[$index] `
                 -Number ($index + 1) `
-                -Total $CatalogEntries.Count
+                -Total $CatalogEntries.Count `
+                -PlanningPolicy $PlanningPolicy
         }
     } finally {
         $script:CatalogId = $savedCatalogId
@@ -160,7 +145,8 @@ function Invoke-CatalogEntry {
     param(
         [object]$Entry,
         [int]$Number,
-        [int]$Total
+        [int]$Total,
+        [hashtable]$PlanningPolicy
     )
 
     $outerCatalogId = $script:CatalogId
@@ -175,7 +161,7 @@ function Invoke-CatalogEntry {
 
     $script:CatalogId = $outerCatalogId
     Invoke-Discover
-    Invoke-Plan
+    Invoke-Plan -PlanningPolicy $PlanningPolicy
 
     $script:Model = $Entry.model
     Invoke-Bench
