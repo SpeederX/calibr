@@ -68,8 +68,10 @@ Describe "Resolve-TsBenchRunnerScript" {
     It "delegates the complete HTTP sequence in one TypeScript call" {
         $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
         Assert-True ($benchSource -match 'warmupMaxTokens\s*=\s*8') "TS sequence should own warmup"
-        Assert-True ($benchSource -match 'latencyMaxTokens\s*=\s*\[Math\]::Min') "TS sequence should own latency"
-        Assert-True ($benchSource -match 'Invoke-TsBenchRequest[\s\S]*-Warmup:\(\[bool\]\$cfg\.bench\.warmup\)') "PowerShell should invoke one sequence"
+        Assert-False ($benchSource -match 'latencyMaxTokens') "TS sequence should not create a short second request"
+        Assert-True ($benchSource -match 'slotId\s*=\s*0') "TS sequence should reset the measured slot"
+        Assert-True ($benchSource -match '--slot-save-path') "llama-server should enable slot erase"
+        Assert-True ($benchSource -match 'Invoke-TsBenchRequest[\s\S]*-Warmup:\(\[bool\]\$cfg\.bench\.warmup') "PowerShell should invoke one sequence"
         Assert-Equal 1 ([regex]::Matches($benchSource, '\$resp\s*=\s*Invoke-TsBenchRequest').Count) "PowerShell should invoke the TS sequence once"
         Assert-True ($benchSource -match '\$resp\.latency_total_request_ms') "PowerShell should map sequence latency"
     }

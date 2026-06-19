@@ -183,7 +183,17 @@ function Invoke-Plan {
         switch ($sweep) {
             "context" {
                 $skipped = 0
-                foreach ($c in $ctxCandidates) {
+                $modelCandidates = @($ctxCandidates)
+                if (-not $ctxOverride -and $perModelCap -gt 0 -and
+                    ($globalCtxCap -eq 0 -or $perModelCap -le $globalCtxCap) -and
+                    @($ctxCandidates | Where-Object { [int]$_.ctx -eq $perModelCap }).Count -eq 0) {
+                    $next = @($ctxCandidates | Where-Object { [int]$_.ctx -gt $perModelCap } | Sort-Object { [int]$_.ctx } | Select-Object -First 1)
+                    $fallback = @($ctxCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
+                    $kv = if ($next.Count -gt 0) { $next[0].kv } elseif ($fallback.Count -gt 0) { $fallback[0].kv } else { 'q8_0' }
+                    $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv = $kv })
+                    $modelCandidates = @($modelCandidates | Sort-Object { [int]$_.ctx })
+                }
+                foreach ($c in $modelCandidates) {
                     if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $globalCtxCap -PerModelCap $perModelCap)) {
                         $skipped++
                         continue

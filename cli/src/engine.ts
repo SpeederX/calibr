@@ -556,15 +556,31 @@ export interface Result {
   // Extended metrics (v0.1.3+). Null when not collected (failure before
   // bench POST, or pre-extended-metrics legacy result JSONs).
   ttft_sec?: number | null;
+  load_ms?: number | null;
   prompt_ms?: number | null;
   ttfr_ms?: number | null;
   e2e_ttft_ms?: number | null;
+  ttfh_ms?: number | null;
+  stream_open_ms?: number | null;
+  client_ttft_ms?: number | null;
+  e2e_first_reasoning_ms?: number | null;
+  e2e_first_content_ms?: number | null;
+  reasoning_delay_ms?: number | null;
+  e2e_latency_ms?: number | null;
+  server_prefill_ms?: number | null;
+  server_ttft_ms?: number | null;
+  tpot_ms?: number | null;
+  itl_p95_ms?: number | null;
+  delivery_gap_median_ms?: number | null;
+  delivery_gap_p95_ms?: number | null;
+  delivery_gap_max_ms?: number | null;
   total_request_ms?: number | null;
   latency_total_request_ms?: number | null;
   latency_error?: string | null;
   gpu_power_peak_w?: number;
   gpu_temp_peak_c?: number;
   gpu_util_avg_pct?: number;
+  cpu_util_avg_pct?: number;
   ram_baseline_mib?: number;
   ram_used_peak_mib?: number;
   disk_read_peak_mb_s?: number;

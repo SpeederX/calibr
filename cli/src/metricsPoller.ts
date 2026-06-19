@@ -11,6 +11,7 @@ export interface MetricSample {
   gpu_power_w: number;
   gpu_temp_c: number;
   gpu_util_pct: number;
+  cpu_util_pct: number;
   process_vram_mib: number;
   shared_mib: number;
   ram_avail_mib: number;
@@ -120,6 +121,24 @@ async function sampleWindowsSystemMetrics(): Promise<{ shared_mib: number; disk_
   }
 }
 
+let previousCpuTimes: { idle: number; total: number } | null = null;
+
+function sampleCpuUtilization(): number {
+  let idle = 0;
+  let total = 0;
+  for (const cpu of os.cpus()) {
+    idle += cpu.times.idle;
+    total += cpu.times.user + cpu.times.nice + cpu.times.sys + cpu.times.idle + cpu.times.irq;
+  }
+  const previous = previousCpuTimes;
+  previousCpuTimes = { idle, total };
+  if (!previous) return -1;
+  const totalDelta = total - previous.total;
+  const idleDelta = idle - previous.idle;
+  if (totalDelta <= 0) return -1;
+  return Math.max(0, Math.min(100, Math.round((1 - idleDelta / totalDelta) * 100)));
+}
+
 let systemMetricsCache = { atMs: 0, value: { shared_mib: -1, disk_read_mb_s: 0 } };
 let systemMetricsPending: Promise<{ shared_mib: number; disk_read_mb_s: number }> | null = null;
 
@@ -152,6 +171,7 @@ export async function collectMetricSample(
   return {
     at: at.toISOString(),
     ...gpu,
+    cpu_util_pct: sampleCpuUtilization(),
     process_vram_mib: await sampleProcessVram(pid, command),
     shared_mib: system.shared_mib,
     ram_avail_mib: Math.trunc(os.freemem() / 1024 / 1024),

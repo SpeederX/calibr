@@ -76,108 +76,25 @@ function Get-ResultKvQuality {
     return 0
 }
 
-function Get-ResultDerivedFields {
-    # Compute the derived metrics the report's charts need from a raw result.
-    # Pure: no I/O, no globals. Tested in tests/unit/report.Tests.ps1.
-    #   time_total_sec = prompt_n / prompt_tps + eval_n / eval_tps
-    #   headroom_mib   = max(0, vram_total_mib - vram_peak_mib)
-    #   ctx_size       = parsed from `--ctx-size N` in extra_args (else $null)
-    param($result, [int]$vramTotal)
-
-    $promptN  = if ($null -ne $result.prompt_n) { [int]$result.prompt_n } else { 0 }
-    $evalN    = if ($null -ne $result.eval_n)   { [int]$result.eval_n }   else { 0 }
-    $promptTs = if ($null -ne $result.prompt_tps) { [double]$result.prompt_tps } else { 0 }
-    $evalTs   = if ($null -ne $result.eval_tps)   { [double]$result.eval_tps }   else { 0 }
-
-    $timeTotal = $null
-    if ($promptN -gt 0 -and $evalN -gt 0 -and $promptTs -gt 0 -and $evalTs -gt 0) {
-        $timeTotal = [math]::Round(($promptN / $promptTs) + ($evalN / $evalTs), 2)
-    }
-
-    $vramPeak = if ($null -ne $result.vram_peak_mib) { [int]$result.vram_peak_mib } else { 0 }
-    $headroom = [Math]::Max(0, $vramTotal - $vramPeak)
-
-    $ctxSize = Get-ResultCtxSize $result
-    if ($ctxSize -eq 0) { $ctxSize = $null }
-
-    return @{
-        time_total_sec = $timeTotal
-        headroom_mib   = $headroom
-        ctx_size       = $ctxSize
-    }
-}
-
-function Get-ReportMedian {
-    param($values)
-    if ($null -eq $values) { return $null }
-    $nums = @($values | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
-    if ($nums.Count -eq 0) { return $null }
-    $sorted = $nums | Sort-Object
-    return $sorted[[int]([math]::Floor(($sorted.Count - 1) / 2))]
-}
-
-function Get-ResultRunStats {
-    # Reconstruct first/repeat/spread stats for report rows. New result JSONs
-    # carry these as top-level fields; older N-run JSONs still have `runs`, so
-    # the report can expose variance without re-running the benchmark.
-    param($result)
-
-    $runs = if ($null -ne $result.runs) { @($result.runs) } else { @() }
-    $evalSamples = @($runs | ForEach-Object { $_.eval_tps } | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
-    if ($evalSamples.Count -eq 0 -and $null -ne $result.eval_tps) {
-        $evalSamples = @([double]$result.eval_tps)
-    }
-
-    $runCount = if ($null -ne $result.run_count) { [int]$result.run_count }
-                elseif ($runs.Count -gt 0) { $runs.Count }
-                elseif ($null -ne $result.eval_tps) { 1 }
-                else { 0 }
-
-    $firstEval = if ($null -ne $result.first_eval_tps) { [double]$result.first_eval_tps }
-                 elseif ($evalSamples.Count -gt 0) { [double]$evalSamples[0] }
-                 else { $null }
-    $repeatEval = if ($null -ne $result.repeat_eval_tps) { [double]$result.repeat_eval_tps }
-                  elseif ($evalSamples.Count -gt 1) { Get-ReportMedian -values @($evalSamples | Select-Object -Skip 1) }
-                  else { $null }
-    $minEval = if ($null -ne $result.eval_min_tps) { [double]$result.eval_min_tps }
-               elseif ($evalSamples.Count -gt 0) { [double](($evalSamples | Measure-Object -Minimum).Minimum) }
-               else { $null }
-    $maxEval = if ($null -ne $result.eval_max_tps) { [double]$result.eval_max_tps }
-               elseif ($evalSamples.Count -gt 0) { [double](($evalSamples | Measure-Object -Maximum).Maximum) }
-               else { $null }
-    $spreadPct = if ($null -ne $result.eval_spread_pct) { [double]$result.eval_spread_pct }
-                 elseif ($evalSamples.Count -gt 1 -and $null -ne $result.eval_tps -and [double]$result.eval_tps -gt 0) {
-                     [math]::Round((($maxEval - $minEval) / [double]$result.eval_tps) * 100, 1)
-                 } else { 0.0 }
-
-    return @{
-        run_count       = $runCount
-        first_eval_tps  = if ($null -ne $firstEval)  { [math]::Round($firstEval, 2) } else { $null }
-        repeat_eval_tps = if ($null -ne $repeatEval) { [math]::Round($repeatEval, 2) } else { $null }
-        eval_min_tps    = if ($null -ne $minEval)    { [math]::Round($minEval, 2) } else { $null }
-        eval_max_tps    = if ($null -ne $maxEval)    { [math]::Round($maxEval, 2) } else { $null }
-        eval_spread_pct = $spreadPct
-    }
-}
-
-function Invoke-TsReportFields {
-    param($results, [int]$vramTotal)
+function Invoke-TsReportPayload {
+    param($results, $cfg, [int]$vramTotal)
     $script = Resolve-TsResultCoreScript
     if (-not $script) { return $null }
     $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
     $payload = [ordered]@{
-        action       = "report-fields"
+        action       = "report-payload"
         results      = @($results)
+        cfg          = $cfg
         vramTotalMib = $vramTotal
     } | ConvertTo-Json -Compress -Depth 20
-    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-report-fields-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-report-payload-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
     try {
         [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
         $out = & $node $script --json-file $payloadPath
         $text = (@($out) -join "`n").Trim()
         if (-not $text) { return $null }
         $resp = $text | ConvertFrom-Json
-        if ($resp.ok -and $null -ne $resp.result) { return @($resp.result) }
+        if ($resp.ok -and $null -ne $resp.result) { return $resp.result }
         return $null
     } catch {
         return $null
@@ -334,104 +251,11 @@ function Invoke-Report {
     }
 
     # Build HTML (compact, self-contained)
-    $cfgJson = $cfg | ConvertTo-Json -Depth 5 -Compress
     $vramTotal = if ($cfg.hardware -and $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
-    $tsReportFields = Invoke-TsReportFields -results $results -vramTotal $vramTotal
-    $script:_reportFieldIndex = -1
-    $resJson = ($results | ForEach-Object {
-        $r = $_
-        $script:_reportFieldIndex++
-        $tsFields = if ($tsReportFields -and $tsReportFields.Count -gt $script:_reportFieldIndex) { $tsReportFields[$script:_reportFieldIndex] } else { $null }
-        $derived = if ($tsFields -and $tsFields.derived) { $tsFields.derived } else { Get-ResultDerivedFields -result $r -vramTotal $vramTotal }
-        $runStats = if ($tsFields -and $tsFields.run_stats) { $tsFields.run_stats } else { Get-ResultRunStats -result $r }
-        $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
-        # Extended metrics may not exist on legacy result JSONs; fall back to
-        # $null so the JS side renders '-' for missing values without crashing
-        # the scorers (efficiency divides by gpu_power_peak_w; null is safe).
-        $ttft   = if ($null -ne $r.ttft_sec)           { [double]$r.ttft_sec } else { $null }
-        $promptMs = if ($null -ne $r.prompt_ms)        { [double]$r.prompt_ms } else { $null }
-        $ttfrMs = if ($null -ne $r.ttfr_ms)            { [double]$r.ttfr_ms } else { $null }
-        $e2eTtftMs = if ($null -ne $r.e2e_ttft_ms)     { [double]$r.e2e_ttft_ms } else { $null }
-        $totalReqMs = if ($null -ne $r.total_request_ms) { [double]$r.total_request_ms } else { $null }
-        $latencyTotalMs = if ($null -ne $r.latency_total_request_ms) { [double]$r.latency_total_request_ms } else { $null }
-        $latencyErr = if ($null -ne $r.latency_error)  { [string]$r.latency_error } else { $null }
-        $gpuPw  = if ($null -ne $r.gpu_power_peak_w)   { [double]$r.gpu_power_peak_w } else { $null }
-        $gpuTc  = if ($null -ne $r.gpu_temp_peak_c)    { [int]$r.gpu_temp_peak_c } else { $null }
-        $gpuUt  = if ($null -ne $r.gpu_util_avg_pct)   { [int]$r.gpu_util_avg_pct } else { $null }
-        $ramPk  = if ($null -ne $r.ram_used_peak_mib)  { [int]$r.ram_used_peak_mib } else { $null }
-        $ramBl  = if ($null -ne $r.ram_baseline_mib)   { [int]$r.ram_baseline_mib } else { $null }
-        $diskRd = if ($null -ne $r.disk_read_peak_mb_s) { [double]$r.disk_read_peak_mb_s } else { $null }
-        $vramBl = if ($null -ne $r.vram_baseline_mib)  { [int]$r.vram_baseline_mib } else { $null }
-        $vramBlPct = if ($null -ne $r.vram_baseline_pct) { [double]$r.vram_baseline_pct } else { $null }
-        $vramTotalPeak = if ($null -ne $r.vram_total_peak_mib) { [int]$r.vram_total_peak_mib } else { $null }
-        $vramProcessPeak = if ($null -ne $r.vram_process_peak_mib) { [int]$r.vram_process_peak_mib } else { $null }
-        $vramExternalPeak = if ($null -ne $r.vram_external_peak_mib) { [int]$r.vram_external_peak_mib } else { $null }
-        # Failure-classification fields. The report needs them to give a
-        # meaningful summary for failed configs (otherwise the row shows
-        # zeros + 'unknown' fit and the user thinks the config wasn't run).
-        $failReason   = if ($null -ne $r.failure_reason)           { [string]$r.failure_reason } else { $null }
-        $unsupportedArch = if ($null -ne $r.unsupported_architecture) { [string]$r.unsupported_architecture } else { $null }
-        $readyFlag    = if ($null -ne $r.ready) { [bool]$r.ready } else { $null }
-        [ordered]@{
-            id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; level=$r.level; sweep=$r.sweep
-            reasoning_mode=$r.reasoning_mode; template_note=$r.template_note
-            gguf_context_length=$r.gguf_context_length; gguf_architecture=$r.gguf_architecture
-            prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
-            run_count=$runStats.run_count
-            first_eval_tps=$runStats.first_eval_tps
-            repeat_eval_tps=$runStats.repeat_eval_tps
-            eval_min_tps=$runStats.eval_min_tps
-            eval_max_tps=$runStats.eval_max_tps
-            eval_spread_pct=$runStats.eval_spread_pct
-            vram_peak_mib=([int]$r.vram_peak_mib); shared_peak_mib=([int]$r.shared_peak_mib)
-            load_sec=([double]$r.load_sec); layers_offloaded=$r.layers_offloaded
-            fit_status=$r.fit_status; wddm_vram_saturation=([double]$r.wddm_vram_saturation)
-            wddm_flag_high_vram=$r.wddm_flag_high_vram; wddm_flag_shared_pos=$r.wddm_flag_shared_pos
-            extra_args=$r.extra_args; ok=$r.ok
-            # Paths exposed for client-side .bat generation in the report.
-            # Filesystem-local, fine to surface in the HTML (the report itself
-            # is meant to be opened on the same machine that ran the bench).
-            model_path=$r.model_path
-            mmproj_path=$r.mmproj_path
-            # Failure-classification fields (matched against Get-FailureReason
-            # in the engine). Null on successful runs.
-            failure_reason=$failReason
-            unsupported_architecture=$unsupportedArch
-            ready=$readyFlag
-            # Session + llama-server identity. Drives the report's
-            # latest-session / by-llama-version filter widget. Missing on
-            # pre-v0.1.6 result JSONs; the JS side falls back to "unknown".
-            bench_session_id         = if ($null -ne $r.bench_session_id)         { [string]$r.bench_session_id }         else { 'unknown' }
-            bench_session_started_at = if ($null -ne $r.bench_session_started_at) { [string]$r.bench_session_started_at } else { '' }
-            llama_server_version     = if ($null -ne $r.llama_server_version)     { [string]$r.llama_server_version }     else { 'unknown' }
-            llama_server_exe         = if ($null -ne $r.llama_server_exe)         { [string]$r.llama_server_exe }         else { '' }
-            # Derived for the new charts and the headroom annotation:
-            time_total_sec=$derived.time_total_sec
-            headroom_mib=$derived.headroom_mib
-            ctx_size=$derived.ctx_size
-            kv_cache_mib=$kvCache
-            # Extended metrics (added v1.2): used by the all-results table and
-            # by the 'efficiency' scoring profile in the new report UI.
-            ttft_sec=$ttft
-            prompt_ms=$promptMs
-            ttfr_ms=$ttfrMs
-            e2e_ttft_ms=$e2eTtftMs
-            total_request_ms=$totalReqMs
-            latency_total_request_ms=$latencyTotalMs
-            latency_error=$latencyErr
-            gpu_power_peak_w=$gpuPw
-            gpu_temp_peak_c=$gpuTc
-            gpu_util_avg_pct=$gpuUt
-            ram_used_peak_mib=$ramPk
-            ram_baseline_mib=$ramBl
-            disk_read_peak_mb_s=$diskRd
-            vram_baseline_mib=$vramBl
-            vram_baseline_pct=$vramBlPct
-            vram_total_peak_mib=$vramTotalPeak
-            vram_process_peak_mib=$vramProcessPeak
-            vram_external_peak_mib=$vramExternalPeak
-        }
-    }) | ConvertTo-Json -Depth 5 -Compress
+    $reportPayload = Invoke-TsReportPayload -results $results -cfg $cfg -vramTotal $vramTotal
+    if (-not $reportPayload) { throw "TypeScript report payload builder unavailable. Run 'npm run build' or reinstall calibr." }
+    $resJson = @($reportPayload.rows) | ConvertTo-Json -Depth 10 -Compress
+    $cfgJson = $reportPayload.cfg | ConvertTo-Json -Depth 10 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {
         [ordered]@{ model=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + $(if ($script:IsWin) { '.bat' } else { '.sh' })) }
     }) | ConvertTo-Json -Depth 5 -Compress

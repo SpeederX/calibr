@@ -176,7 +176,17 @@ export function invokePlan(
 
     const perModelCap = name && contextMap[name] ? contextMap[name] : asInt(meta.gguf_context_length);
     if (sweep === "context") {
-      for (const candidate of ctxCandidates) {
+      let modelCandidates = ctxCandidates;
+      if (!ctxOverride && perModelCap > 0 && (globalCtxCap === 0 || perModelCap <= globalCtxCap)
+        && !ctxCandidates.some((candidate) => candidate.ctx === perModelCap)) {
+        const next = ctxCandidates.find((candidate) => candidate.ctx > perModelCap);
+        const fallback = ctxCandidates.at(-1);
+        modelCandidates = [...ctxCandidates, {
+          ctx: perModelCap,
+          kv: next?.kv ?? fallback?.kv ?? "q8_0",
+        }].sort((a, b) => a.ctx - b.ctx);
+      }
+      for (const candidate of modelCandidates) {
         if (!testCtxAllowedForModel(candidate.ctx, globalCtxCap, perModelCap)) continue;
         const label = `ctx=${candidate.ctx}_kv=${candidate.kv}`;
         const args = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${candidate.kv} --cache-type-v ${candidate.kv}${suffix}`;

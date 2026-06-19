@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { runFromPayload, type BenchRunnerDeps } from "./benchRunnerCli.js";
 import { collectMetricSample, type MetricSample } from "./metricsPoller.js";
 import {
@@ -14,6 +14,7 @@ import {
   type ResultCoreSession,
 } from "./resultCore.js";
 import { waitForServerReady } from "./serverLifecycle.js";
+import type { StreamTelemetryEvent } from "./benchClient.js";
 
 export interface BenchCoordinatorPayload {
   item: BenchItem;
@@ -53,6 +54,54 @@ export interface CoordinatorDeps {
 const sleepDefault = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const activeChildren = new Set<ChildProcess>();
 
+export interface ProductionStreamState {
+  inferencePhase: "warmup" | "throughput" | "latency_prompt" | "latency_reasoning" | "latency_answer";
+  previousServerN: number | null;
+  previousServerMs: number | null;
+}
+
+export interface ProductionStreamConsumerOptions {
+  state: ProductionStreamState;
+  minimalPolling: boolean;
+  appendTelemetry: (extra: Record<string, unknown>) => void;
+  forward?: (event: StreamTelemetryEvent) => void;
+}
+
+export function createProductionStreamConsumer(
+  options: ProductionStreamConsumerOptions,
+): (event: StreamTelemetryEvent) => void {
+  return (event) => {
+    const state = options.state;
+    state.inferencePhase = event.kind === "reasoning" ? "latency_reasoning"
+      : event.kind === "answer" ? "latency_answer" : "latency_prompt";
+    const serverN = Number(event.timings?.predicted_n);
+    const serverMs = Number(event.timings?.predicted_ms);
+    const deltaN = Number.isFinite(serverN) && state.previousServerN !== null
+      ? serverN - state.previousServerN : null;
+    const deltaMs = Number.isFinite(serverMs) && state.previousServerMs !== null
+      ? serverMs - state.previousServerMs : null;
+    const localTps = deltaN !== null && deltaMs !== null && deltaN > 0 && deltaMs >= 0
+      ? round(deltaN / Math.max(0.001, deltaMs / 1000), 2) : null;
+    if (Number.isFinite(serverN)) state.previousServerN = serverN;
+    if (Number.isFinite(serverMs)) state.previousServerMs = serverMs;
+    if (!options.minimalPolling) {
+      options.appendTelemetry({
+        event_index: event.index,
+        event_kind: event.kind,
+        server_predicted_n: Number.isFinite(serverN) ? serverN : null,
+        server_predicted_ms: Number.isFinite(serverMs) ? serverMs : null,
+        server_tps: localTps,
+        delivery_gap_ms: event.delivery_gap_ms ?? null,
+        prompt_processed: event.prompt_progress?.processed ?? null,
+        prompt_total: event.prompt_progress?.total ?? null,
+        prompt_cache: event.prompt_progress?.cache ?? null,
+        prompt_time_ms: event.prompt_progress?.time_ms ?? null,
+      });
+    }
+    options.forward?.(event);
+  };
+}
+
 function round(value: number, digits: number): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
@@ -68,10 +117,15 @@ function splitArgs(value: string | undefined): string[] {
 
 function serverArgs(payload: BenchCoordinatorPayload): string[] {
   const port = payload.cfg.bench?.port ?? 18080;
+  const slotSavePath = join(dirname(payload.logFile), "slots");
+  mkdirSync(slotSavePath, { recursive: true });
   const args = ["-m", String(payload.item.model_path ?? "")];
   if (payload.item.mmproj_path) args.push("--mmproj", payload.item.mmproj_path);
   args.push(...splitArgs(payload.item.extra_args));
-  args.push("--port", String(port), "--host", "127.0.0.1", "--no-warmup", "--cache-ram", "128");
+  args.push(
+    "--port", String(port), "--host", "127.0.0.1", "--no-warmup",
+    "--cache-ram", "128", "--slot-save-path", slotSavePath,
+  );
   return args;
 }
 
@@ -99,6 +153,7 @@ function emptySample(now = new Date()): MetricSample {
     gpu_power_w: 0,
     gpu_temp_c: 0,
     gpu_util_pct: -1,
+    cpu_util_pct: -1,
     process_vram_mib: -1,
     shared_mib: -1,
     ram_avail_mib: Math.trunc(os.freemem() / 1024 / 1024),
@@ -171,6 +226,10 @@ async function runOne(
   const baseline = await collect(0).catch(() => emptySample(now()));
   const ramBaseline = baseline.ram_avail_mib;
   const sharedBaseline = baseline.shared_mib;
+  const vramTotal = payload.cfg.hardware?.vram_total_mib ?? 0;
+  const baselinePct = vramTotal > 0 ? round((baseline.gpu_mem_mib / vramTotal) * 100, 1) : 0;
+  const warningPct = Number(payload.cfg.preferences?.vram_usage_warning_pct ?? 10);
+  emit(payload.eventFile, `[baseline] vram_used=${baseline.gpu_mem_mib} vram_total=${vramTotal} pct=${baselinePct} threshold=${warningPct}`);
   let stderr = "";
   const child = (deps.spawnServer ?? ((exe, argv) => spawn(exe, argv, {
     windowsHide: true,
@@ -194,6 +253,7 @@ async function runOne(
     vram_external_peak_mib: null,
     shared_peak_mib: 0,
     load_sec: null,
+    load_ms: null,
     ready: false,
     ok: false,
     error: null,
@@ -201,21 +261,39 @@ async function runOne(
     prompt_ms: null,
     ttfr_ms: null,
     e2e_ttft_ms: null,
+    ttfh_ms: null,
+    stream_open_ms: null,
+    client_ttft_ms: null,
+    e2e_first_reasoning_ms: null,
+    e2e_first_content_ms: null,
+    reasoning_delay_ms: null,
+    e2e_latency_ms: null,
+    server_prefill_ms: null,
+    server_ttft_ms: null,
+    tpot_ms: null,
+    itl_p95_ms: null,
+    delivery_gap_median_ms: null,
+    delivery_gap_p95_ms: null,
+    delivery_gap_max_ms: null,
     total_request_ms: null,
     latency_total_request_ms: null,
     latency_error: null,
     gpu_power_peak_w: baseline.gpu_power_w,
     gpu_temp_peak_c: baseline.gpu_temp_c,
     gpu_util_avg_pct: 0,
+    cpu_util_avg_pct: 0,
     ram_baseline_mib: ramBaseline,
     ram_used_peak_mib: 0,
     disk_read_peak_mb_s: 0,
+    telemetry: [],
   };
 
   const loadStarted = Date.now();
   let loadPollStopped = false;
   let utilTotal = 0;
   let utilCount = 0;
+  let cpuUtilTotal = 0;
+  let cpuUtilCount = 0;
   const loadPoll = async () => {
     while (!loadPollStopped && child.exitCode === null) {
       const sample = await collect(child.pid ?? 0).catch(() => emptySample(now()));
@@ -224,8 +302,12 @@ async function runOne(
         utilTotal += sample.gpu_util_pct;
         utilCount++;
       }
+      if (sample.cpu_util_pct >= 0) {
+        cpuUtilTotal += sample.cpu_util_pct;
+        cpuUtilCount++;
+      }
       if (!payload.minimalPolling) {
-        emit(payload.eventFile, `[poll] gpu_mem=${sample.gpu_mem_mib} gpu_pow=${sample.gpu_power_w} gpu_temp=${sample.gpu_temp_c} gpu_util=${sample.gpu_util_pct} ram_used=${Math.max(0, ramBaseline - sample.ram_avail_mib)} disk_r=${round(sample.disk_read_mb_s, 1)}`);
+        emit(payload.eventFile, `[poll] gpu_mem=${sample.gpu_mem_mib} gpu_pow=${sample.gpu_power_w} gpu_temp=${sample.gpu_temp_c} gpu_util=${sample.gpu_util_pct} cpu_util=${sample.cpu_util_pct} ram_used=${Math.max(0, ramBaseline - sample.ram_avail_mib)} disk_r=${round(sample.disk_read_mb_s, 1)}`);
       }
       await sleep(500);
     }
@@ -237,39 +319,89 @@ async function runOne(
   loadPollStopped = true;
   await loadPollPromise;
   run.load_sec = round(readiness.loadMs / 1000, 2);
+  run.load_ms = round(readiness.loadMs, 2);
   run.ready = readiness.ready;
 
   if (readiness.ready) {
     emit(payload.eventFile, "[phase] server_ready");
     emit(payload.eventFile, "[phase] sending_prompt");
     let inferenceStopped = false;
+    const inferenceStartedMs = Date.now();
+    const streamState: ProductionStreamState = {
+      inferencePhase: "warmup",
+      previousServerN: null,
+      previousServerMs: null,
+    };
+    let lastInferenceSample = baseline;
+    const appendTelemetry = (sample: MetricSample, extra: Record<string, unknown> = {}) => {
+      const elapsedMs = Math.max(0, Date.now() - inferenceStartedMs);
+      const points = run.telemetry ?? (run.telemetry = []);
+      points.push({
+        elapsed_ms: elapsedMs,
+        phase: streamState.inferencePhase,
+        ...extra,
+        vram_total_mib: Math.max(0, sample.gpu_mem_mib),
+        vram_run_mib: Math.max(0, sample.gpu_mem_mib - baseline.gpu_mem_mib),
+        ram_used_mib: Math.max(0, ramBaseline - sample.ram_avail_mib),
+        shared_mib: Math.max(0, sample.shared_mib - sharedBaseline),
+        gpu_util_pct: sample.gpu_util_pct >= 0 ? sample.gpu_util_pct : null,
+        cpu_util_pct: sample.cpu_util_pct >= 0 ? sample.cpu_util_pct : null,
+      });
+    };
     const inferencePoll = async () => {
       while (!inferenceStopped && child.exitCode === null) {
         const sample = await collect(child.pid ?? 0).catch(() => emptySample(now()));
+        lastInferenceSample = sample;
         mergeSample(run, sample, ramBaseline, sharedBaseline);
+        appendTelemetry(sample);
         if (sample.gpu_util_pct >= 0) {
           utilTotal += sample.gpu_util_pct;
           utilCount++;
+        }
+        if (sample.cpu_util_pct >= 0) {
+          cpuUtilTotal += sample.cpu_util_pct;
+          cpuUtilCount++;
         }
         await sleep(150);
       }
     };
     const inferencePollPromise = payload.minimalPolling ? Promise.resolve() : inferencePoll();
+    const consumeProductionStreamEvent = createProductionStreamConsumer({
+      state: streamState,
+      minimalPolling: Boolean(payload.minimalPolling),
+      appendTelemetry: (extra) => appendTelemetry(lastInferenceSample, extra),
+      forward: deps.httpDeps?.onStreamEvent,
+    });
     const http = await runHttp({
       baseUrl,
       prompt: payload.cfg.bench?.prompt ?? "",
       maxTokens: payload.cfg.bench?.n_predict ?? 128,
-      warmup: payload.cfg.bench?.warmup ?? true,
+      // b9608 cannot erase slots for multimodal servers. Skip the otherwise
+      // optional warmup there so the measured request still starts cold.
+      warmup: (payload.cfg.bench?.warmup ?? true) && !payload.item.mmproj_path,
       reasoningOff: payload.item.reasoning_mode === "off",
       timeoutMs: 900000,
-    }, deps.httpDeps);
+    }, {
+      ...deps.httpDeps,
+      onPhase: (phase) => {
+        streamState.inferencePhase = phase;
+        deps.httpDeps?.onPhase?.(phase);
+      },
+      onStreamEvent: consumeProductionStreamEvent,
+    });
     inferenceStopped = true;
     await inferencePollPromise;
     run.total_request_ms = http.total_request_ms;
     run.ttfr_ms = http.ttfr_ms;
     run.e2e_ttft_ms = http.e2e_ttft_ms;
+    for (const field of [
+      "ttfh_ms", "stream_open_ms", "client_ttft_ms", "e2e_first_reasoning_ms",
+      "e2e_first_content_ms", "reasoning_delay_ms", "e2e_latency_ms", "server_prefill_ms",
+      "server_ttft_ms", "tpot_ms", "itl_p95_ms", "delivery_gap_median_ms",
+      "delivery_gap_p95_ms", "delivery_gap_max_ms",
+    ] as const) run[field] = http[field];
     run.latency_total_request_ms = http.latency_total_request_ms;
-    run.latency_error = http.latency_error ?? null;
+    run.latency_error = null;
     run.ok = http.ok;
     run.error = http.ok ? null : (http.error ?? "HTTP benchmark failed");
     if (http.timings) {
@@ -285,8 +417,9 @@ async function runOne(
         && http.timings.predicted_per_second !== null
         ? round(http.timings.predicted_per_second, 2)
         : null;
-      run.ttft_sec = run.e2e_ttft_ms !== null && run.e2e_ttft_ms !== undefined
-        ? round(Number(run.e2e_ttft_ms) / 1000, 3)
+      const headlineTtft = run.server_ttft_ms ?? run.client_ttft_ms ?? run.e2e_ttft_ms;
+      run.ttft_sec = headlineTtft !== null && headlineTtft !== undefined
+        ? round(Number(headlineTtft) / 1000, 3)
         : run.prompt_ms !== null && run.prompt_ms !== undefined
           ? round(Number(run.prompt_ms) / 1000, 3)
           : null;
@@ -301,7 +434,12 @@ async function runOne(
     utilTotal += finalSample.gpu_util_pct;
     utilCount++;
   }
+  if (finalSample.cpu_util_pct >= 0) {
+    cpuUtilTotal += finalSample.cpu_util_pct;
+    cpuUtilCount++;
+  }
   run.gpu_util_avg_pct = utilCount > 0 ? Math.trunc(utilTotal / utilCount) : 0;
+  run.cpu_util_avg_pct = cpuUtilCount > 0 ? Math.trunc(cpuUtilTotal / cpuUtilCount) : 0;
   stopChild(child);
   await sleep(300);
   run.load_sec = run.load_sec ?? round((Date.now() - loadStarted) / 1000, 2);

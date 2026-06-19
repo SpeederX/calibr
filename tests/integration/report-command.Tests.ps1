@@ -92,14 +92,18 @@ Describe "report.template.html structure (v1.2 redesign)" {
     }
     It "adds explainers to All results headers" {
         Assert-True ($tpl -match 'class="th-help"')       "header help affordance missing"
-        Assert-True ($tpl -match 'Time to first streamed response chunk') "TTFR header tooltip missing"
+        Assert-True ($tpl -match 'Client time to the first SSE frame') "stream-open header tooltip missing"
         Assert-True ($tpl -match 'prompt processing / prefill time')      "Prompt ms tooltip missing"
         Assert-True ($tpl -match 'Decode throughput')     "Eval t/s tooltip missing"
         Assert-True ($tpl -match 'Prompt rel %')          "Prompt relative-percent header missing"
         Assert-True ($tpl -match 'Eval rel %')            "Eval relative-percent header missing"
         Assert-True ($tpl -match 'normalized within the currently visible rows') "relative-percent tooltip missing"
-        Assert-True ($tpl -match 'WDDM/shared GPU memory') "Shared tooltip missing"
-        Assert-True ($tpl -match 'Disk read happens just for the first config run of the model') "Disk tooltip should explain cold-load cache behavior"
+        Assert-True ($tpl -match 'WDDM shared-memory growth') "Shared tooltip missing"
+        Assert-True ($tpl -match 'one-time process start, model read, and backend initialization') "model-level cold-load explanation missing"
+        Assert-True ($tpl -match 'Metric glossary') "metric glossary missing"
+        Assert-True ($tpl -match 'Readable formula') "metric glossary formula column missing"
+        Assert-True ($tpl -match 'Why it is useful') "metric glossary usefulness column missing"
+        Assert-True ($tpl -match 'Average total CPU utilization') "CPU metric explanation missing"
         Assert-True ($tpl -match 'system-level NVIDIA reading') "VRAM tooltip should explain system-level scope"
         Assert-True ($tpl -match 'Estimated run delta') "VRAM tooltip should show baseline-subtracted estimate"
         Assert-True ($tpl -match 'function benchmarkVramUsedMib') "memory charts should subtract system baseline"
@@ -108,16 +112,32 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'apps, 3D processes, browsers, overlays') "VRAM explainer should warn about external activity"
         Assert-True ($tpl -match 'baselineWarningPct') "VRAM tooltip should use configurable baseline warning threshold"
         Assert-True ($tpl -match 'Baseline warning') "VRAM tooltip should warn on high baseline usage"
+        Assert-True ($tpl -match 'scatter-baseline-toggle') "scatter baseline toggle missing"
+        Assert-True ($tpl -match 'system_ram_total_mib') "scatter should use total installed system RAM"
+        Assert-True ($tpl -match '&lt;llama_server_path&gt;') "llama-server path should be redacted for display"
+        Assert-True ($tpl -match 'effectiveMemoryUsedMib\(d, STATE\.adjustScatterBaseline\)') "scatter should use effective-memory semantics"
+        Assert-True ($tpl -match 'withRam <= cap \? vram : withRam') "RAM should only be added after VRAM capacity is exceeded"
+        Assert-True ($tpl -match 'function confirmedSharedMib') "shared-memory display should use the confirmation threshold"
+        Assert-True ($tpl -match 'id="timeline"') "run timeline chart missing"
+        Assert-True ($tpl -match 'function renderTimeline') "run timeline renderer missing"
+        Assert-True ($tpl -match 'data-config-id') "scatter points should open the linked timeline"
+        Assert-True ($tpl -match 'show all runs') "timeline should support an all-runs overlay"
+        Assert-True ($tpl -match 'latency_prompt.*latency_eval') "timeline should focus its domain on latency phases"
+        Assert-False ($tpl -match 'timeline-shared') "timeline should not render shared memory"
+        Assert-True ($tpl -match 'timeline-legend') "timeline color legend missing"
+        Assert-True ($tpl -match 'VRAM run') "report should label baseline-adjusted VRAM explicitly"
+        Assert-True ($tpl -match 'unknown \(legacy record\)') "invalid historical llama build tags should be identified as legacy"
     }
     It "falls back to requested gpu layers when llama.cpp does not report actual layers" {
         Assert-True ($tpl -match 'function layersLabel')       "layersLabel helper missing"
         Assert-True ($tpl -match 'req '' \+ m\[1\]')           "requested gpu-layers fallback missing"
         Assert-True ($tpl -match 'requested --gpu-layers')     "layers tooltip should explain requested fallback"
     }
-    It "groups the Disk read bar tab by model" {
-        Assert-True ($tpl -match 'bar-model-group')             "disk bar model group styling missing"
-        Assert-True ($tpl -match "STATE\.bars === 'disk'")      "disk bar grouping branch missing"
-        Assert-True ($tpl -match 'peak disk')                   "disk group summary missing"
+    It "reports cold load and disk once per model instead of per config" {
+        Assert-True ($tpl -match 'function coldLoadSummary') "model cold-load summary missing"
+        Assert-True ($tpl -match 'model_cold_load_ms') "model cold-load metric missing"
+        Assert-True ($tpl -match 'model_cold_disk_read_peak_mb_s') "model cold-disk metric missing"
+        Assert-False ($tpl -match 'data-bars="disk"') "per-config disk tab should be removed"
     }
     It "surfaces eval run stability in the Eval tokens/s tab" {
         Assert-True ($tpl -match 'function evalRunNote')         "eval run note helper missing"
@@ -216,7 +236,9 @@ Describe "Invoke-Report end-to-end on canned data" {
             Assert-True ($html -match '"gpu_power_peak_w"')   "DATA missing gpu_power_peak_w"
             Assert-True ($html -match '"gpu_temp_peak_c"')    "DATA missing gpu_temp_peak_c"
             Assert-True ($html -match '"gpu_util_avg_pct"')   "DATA missing gpu_util_avg_pct"
+            Assert-True ($html -match '"cpu_util_avg_pct"')   "DATA missing cpu_util_avg_pct"
             Assert-True ($html -match '"ram_used_peak_mib"')  "DATA missing ram_used_peak_mib"
+            Assert-True ($html -match '"model_cold_load_ms"') "DATA missing model cold-load metric"
             Assert-True ($html -match '"first_eval_tps"')     "DATA missing first_eval_tps"
             Assert-True ($html -match '"repeat_eval_tps"')    "DATA missing repeat_eval_tps"
             Assert-True ($html -match '"eval_spread_pct"')    "DATA missing eval_spread_pct"
@@ -231,6 +253,9 @@ Describe "Invoke-Report end-to-end on canned data" {
         It "embeds paths for client-side .bat generation (Phase F)" {
             Assert-True ($html -match '"model_path"')         "DATA missing model_path"
             Assert-True ($html -match '"mmproj_path"')        "DATA missing mmproj_path"
+        }
+        It "adds installed system RAM to the TypeScript-built report config" {
+            Assert-True ($html -match '"system_ram_total_mib":\d+') "CFG missing system RAM total"
         }
         It "embeds failure-classification fields (so the report explains why a config failed)" {
             Assert-True ($html -match '"failure_reason"')             "DATA missing failure_reason"

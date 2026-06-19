@@ -138,10 +138,16 @@ shared spill. On AMD/Linux, GTT via `radeontop` feeds the same
 instead of silently spilling.
 
 The report also records RAM, VRAM/shared memory, GPU power, temperature,
-utilization, headroom, and load/throughput fields. Those are shown for
-inspection and secondary scoring, but calibr does not yet optimize for "largest
-parameter count that fits" or "lowest memory use". Those are useful future
-profiles once the quality/performance tradeoffs are better understood.
+utilization, headroom, and load/throughput fields. New full-metrics runs retain
+a per-run timeline covering warm-up, streaming prefill, reasoning/answer
+phases, server-side generation rate, client delivery gaps, and memory pressure.
+Official throughput and timeline diagnostics now come from the same measured
+streaming request. Those are shown for
+inspection and secondary scoring, but calibr does not yet optimize for
+"largest parameter count that fits" or "lowest memory use".
+
+See [`METRICS.md`](METRICS.md) for metric formulas, clock ownership,
+aggregation rules, compatibility aliases, and interpretation limits.
 
 On Windows/NVIDIA, dedicated VRAM is reported as a system-level baseline and
 peak. NVML / `nvidia-smi` do not expose reliable per-PID dedicated-memory
@@ -154,8 +160,10 @@ The warning percentage is calculated as:
 `VRAM used before the run / total VRAM * 100`. Baseline is measured before the
 benchmark and again before each configuration. For example, `1500 / 8192`
 means 18.3% of VRAM was already occupied; thresholds of 5%, 10%, or 15% would
-therefore show a warning. Memory charts display estimated benchmark VRAM as
-`system peak - baseline`, while retaining the raw system peak in the tooltip.
+therefore show a warning. The scatter keeps a config on its VRAM footprint
+while VRAM plus observed RAM remains within physical GPU capacity, and adds
+RAM only after that boundary is exceeded. Its baseline toggle switches between
+the total system VRAM peak and the baseline-subtracted run estimate.
 
 It does not rank instruction-following quality, coding ability, multilingual
 performance, or preference alignment. Treat the winner as "this is the best
@@ -341,12 +349,12 @@ layout.
   accepting a license (notably some Gemma variants) may return 401. Accept the
   license once on the website, or download those particular files with
   `huggingface-cli` separately.
-- **Per-model `max_context` only honored for curated samples.** Entries in
-  `models_catalog.json` carry `max_context` (scraped from the upstream model card),
-  and `plan` skips context-sweep candidates above it. User-owned `.gguf` files
-  outside `models_catalog.json` fall back to the global `max_context_cap` (default
-  262 144) — a future GGUF metadata parser would derive the per-model cap
-  from the file itself.
+- **Context sweeps stop at each model's real limit.** Curated entries carry the
+  exact `max_position_embeddings` value from the upstream Hugging Face
+  `config.json`. The default sweep uses 16K, 32K, 64K, 128K and 256K, skips
+  unsupported points, and adds the model's exact maximum when it falls between
+  them. User-owned `.gguf` files use their embedded context metadata when
+  available, then fall back to the global `max_context_cap` (default 262 144).
 
 ## Roadmap
 

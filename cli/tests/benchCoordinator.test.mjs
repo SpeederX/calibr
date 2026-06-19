@@ -38,7 +38,7 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
         bench: { prompt: "hi", n_predict: 8, port: 18080, wait_sec_ready: 1, warmup: true },
       },
       runs: 2,
-      minimalPolling: true,
+      minimalPolling: false,
       eventFile: join(root, "events.log"),
       logFile: join(root, "bench.log"),
     }, {
@@ -50,13 +50,17 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
         gpu_power_w: 100,
         gpu_temp_c: 50,
         gpu_util_pct: 75,
+        cpu_util_pct: 30,
         process_vram_mib: 3000,
         shared_mib: -1,
         ram_avail_mib: 10000,
         disk_read_mb_s: 0,
       }),
-      runHttp: async () => {
+      runHttp: async (_payload, hooks) => {
         httpCalls++;
+        hooks.onPhase?.("latency_prompt");
+        hooks.onStreamEvent?.({ at_ms: 10, index: 1, kind: "reasoning", timings: { predicted_n: 1, predicted_ms: 10 } });
+        hooks.onStreamEvent?.({ at_ms: 30, index: 2, kind: "answer", timings: { predicted_n: 2, predicted_ms: 30 }, delivery_gap_ms: 20 });
         return {
           ok: true,
           status: 200,
@@ -82,6 +86,13 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
     assert.equal(out.result.run_count, 2);
     assert.equal(out.result.eval_tps, 40);
     assert.equal(httpCalls, 2);
+    const tokenPoints = out.runs[0].telemetry.filter(point => point.event_index != null);
+    assert.equal(tokenPoints.length, 2);
+    assert.equal(tokenPoints[0].phase, "latency_reasoning");
+    assert.equal(tokenPoints[1].phase, "latency_answer");
+    assert.equal(tokenPoints[1].event_index, 2);
+    assert.equal(tokenPoints[1].server_tps, 50);
+    assert.equal(tokenPoints[1].delivery_gap_ms, 20);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -112,6 +123,7 @@ test("runBenchCoordinator stops after the first failed run", async () => {
         gpu_power_w: 100,
         gpu_temp_c: 50,
         gpu_util_pct: 75,
+        cpu_util_pct: 30,
         process_vram_mib: 3000,
         shared_mib: -1,
         ram_avail_mib: 10000,

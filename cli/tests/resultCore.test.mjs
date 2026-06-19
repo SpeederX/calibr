@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   aggregateBenchResult,
+  buildReportRows,
   deriveResultFields,
   finalizeBenchRun,
   getFailureReason,
@@ -205,6 +206,17 @@ test("derived fields and run stats can be reconstructed from existing result JSO
   });
 });
 
+test("buildReportRows assigns cold load and disk once per model", () => {
+  const rows = buildReportRows([
+    { model: "A", timestamp: "2026-01-02", load_sec: 2, disk_read_peak_mb_s: 0, eval_tps: 20 },
+    { model: "A", timestamp: "2026-01-01", load_ms: 1500, disk_read_peak_mb_s: 400, eval_tps: 30 },
+  ], 8192);
+  assert.equal(rows[0].model_cold_load_ms, 1500);
+  assert.equal(rows[0].model_cold_disk_read_peak_mb_s, 400);
+  assert.equal(rows[1].model_cold_load_ms, 1500);
+  assert.equal(rows[1].metric_schema_version, 4);
+});
+
 test("resultCoreCli reads a JSON-file aggregate payload", () => {
   const dir = mkdtempSync(join(tmpdir(), "calibr-result-core-"));
   const payloadPath = join(dir, "payload.json");
@@ -255,8 +267,8 @@ test("resultCoreCli returns bulk report fields for existing result JSONs", () =>
     assert.equal(proc.status, 0);
     const out = JSON.parse(proc.stdout.trim());
     assert.equal(out.ok, true);
-    assert.equal(out.result[0].derived.headroom_mib, 6192);
-    assert.equal(out.result[0].run_stats.first_eval_tps, 45);
+    assert.equal(out.result[0].headroom_mib, 6192);
+    assert.equal(out.result[0].first_eval_tps, 45);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
