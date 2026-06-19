@@ -59,7 +59,7 @@ fit, speed, headroom, and spill behavior on your machine.
 - [Technical details](#technical-details)
 - [Known limitations](#known-limitations)
 - [Troubleshooting](TROUBLESHOOTING.md)
-- [Roadmap](#roadmap)
+- [Direction](#direction)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -309,9 +309,10 @@ of truth for exact ids, variants, sizes, and upstream repositories.
 ## Technical details
 
 The README is intentionally product-facing. The lower-level process notes live
-in [HOW-IT-WORKS.md](HOW-IT-WORKS.md): setup details, the legacy raw engine
-path, discover/plan/bench/report stages, WDDM/GTT spill detection, and output
-layout.
+in [HOW-IT-WORKS.md](HOW-IT-WORKS.md): guided-run ownership, the TypeScript /
+PowerShell boundary, internal engine stages, streaming telemetry, WDDM/GTT
+spill detection, and output layout. Metric definitions and formulas live in
+[METRICS.md](METRICS.md).
 
 ## Known limitations
 
@@ -344,7 +345,7 @@ layout.
   generates faster, even though BF16 has higher fidelity. If you care about
   the tradeoff, look at the report's per-model table and pick by hand —
   every number is preserved. (A future opt-in quality bench is being
-  explored — see Roadmap.)
+  explored — see Direction.)
 - **No HuggingFace authentication for catalog downloads.** Models that require
   accepting a license (notably some Gemma variants) may return 401. Accept the
   license once on the website, or download those particular files with
@@ -356,39 +357,13 @@ layout.
   them. User-owned `.gguf` files use their embedded context metadata when
   available, then fall back to the global `max_context_cap` (default 262 144).
 
-## Roadmap
+## Direction
 
-Direction lives in [`AGENTS.md`](AGENTS.md) (the project pivoted from a
-strict SemVer + spec-driven backlog to a three-phase product approach:
-CLI → backend → web UI). Concrete near-term ideas being explored:
-
-- **Real-time metrics during bench**: stream CPU/GPU load + temperature,
-  system-RAM pressure, disk read/write, GPU power draw into the CLI run
-  view — and persist them on each result for the report.
-- **TTFT (time-to-first-token)** as a first-class metric alongside
-  `prompt_tps` / `eval_tps`. Free to measure, captures the felt latency
-  for chat-style use.
-- **KV-fill stub**: synthesize a long prompt to fill the KV cache to
-  25/50/75/95% before timing, so `prompt_tps` reflects the attention-scaling
-  cost at real-world context lengths instead of an empty-cache best case.
-- **Optional quality bench**: integrate a small abstention test suite
-  (the no-auth tasks only, opt-in via flag, multi-hour) and surface a
-  per-model honesty score alongside speed.
-- **Scoring profiles in the report**: weighted matrices over speed,
-  efficiency, honesty, hardware stress, etc., so the same data renders
-  multiple leaderboards.
-- **GGUF metadata parser** for user-owned models: derive `max_context` and
-  the architecture key from the binary header so the plan filter is exact
-  for any model, not just curated samples.
-- **Phase 2 — NestJS backend** that exposes the engine operations the CLI
-  invokes today. Enables clients other than the CLI and a shared online
-  leaderboard.
-- **Phase 3 — Angular UI** on top of the backend.
-- **Cross-platform support**: Windows/NVIDIA is the strongest path today;
-  Linux/NVIDIA works with clean OOM behavior; AMD/Linux uses `radeontop` GTT
-  for spill detection when installed, with experimental `amd-smi` metrics.
-  Metal detection is experimental and needs macOS validation; Android remains a
-  later direct-adapter/client track.
+The current product phase and working rules live in [`AGENTS.md`](AGENTS.md).
+Near-term work focuses on deeper load characterization (prefill sweeps and
+KV-fill), MTP-aware measurements, and leaderboard integration. A service or
+web UI is a later phase, started only when the shipped CLI creates a concrete
+need for it.
 
 ## Contributing
 

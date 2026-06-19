@@ -506,8 +506,8 @@ function Get-LlamaServerVersion {
 
 function Initialize-BenchSession {
     # Set $script:BENCH_* and $script:LLAMA_SERVER_VERSION once per outer
-    # command invocation. `all` calls Invoke-Bench in a loop (one per
-    # sample); each inner call should share the same session, so this
+    # command invocation. The catalog workflow calls Invoke-Bench once per
+    # model; each inner call should share the same session, so this
     # helper is idempotent: a second call within the same process is a
     # no-op. The fields end up stamped on every result JSON so the report
     # can answer "show me only the results from THIS session" and "did

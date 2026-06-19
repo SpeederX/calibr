@@ -1877,8 +1877,7 @@ function Invoke-Bench {
     }
 
     # Stamp session metadata on every result this bench writes. Idempotent
-    # so 'all' (which calls Invoke-Bench in a per-sample loop) keeps one
-    # session across all its inner invocations.
+    # so the catalog workflow keeps one session across all model invocations.
     Initialize-BenchSession -LlamaServerExe $cfg.llama_server_exe
     Write-Host ("bench session {0} . llama-server {1} . started {2}" -f $script:BENCH_SESSION_ID, $script:LLAMA_SERVER_VERSION, $script:BENCH_SESSION_STARTED_AT) -ForegroundColor DarkGray
 

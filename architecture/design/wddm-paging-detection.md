@@ -1,5 +1,9 @@
 # WDDM paging detection on Windows
 
+> **Current mechanism, historical measurements.** Metric names remain current;
+> the example data and winner-policy wording describe the experiment that
+> established the heuristic.
+
 ## Why
 
 Windows does not raise OOM when llama.cpp tries to allocate more VRAM than

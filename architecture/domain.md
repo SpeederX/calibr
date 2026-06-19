@@ -1,111 +1,106 @@
 # Domain glossary
 
-Single authoritative source for vocabulary used across the project. Every
-spec, plan, design doc, code comment, and user-facing string must use these
-terms in the sense defined here. If the project ever diverges, this file is
-updated **first**, then the code follows.
+Authoritative vocabulary for code, documentation, and UI.
 
-## Taxonomy of GGUF models
+## Model taxonomy
 
-A `.gguf` file represents one **variant** of one **model** within one
-**series** within one **lineage**. The levels nest:
-
-| Level | What it identifies | Examples |
+| Term | Meaning | Example |
 |---|---|---|
-| **Lineage** | The developer or brand | `Qwen`, `Gemma`, `Llama`, `Mistral` |
-| **Series** | One specific generation within a lineage | `Qwen3.5`, `Qwen3.6`, `Gemma-4`, `Llama-3` |
-| **Model** | One size or shape within a series | `Qwen3.5-9B`, `Qwen3.5-27B`, `Gemma-4-E2B`, `Qwen3.6-35B-A3B` |
-| **Variant** | The quantization or precision applied to the model | `Q4_K_M`, `BF16`, `UD-Q4_K_XL`, `Q8_0` |
-| **Run config** | The bench-time flags applied to a variant | `ctx=16384, kv=q8_0`, `--n-cpu-moe 32`, `--gpu-layers 28` |
+| **Lineage** | Developer or brand | Qwen, Gemma, Llama |
+| **Series** | One generation within a lineage | Qwen3.5, Gemma-4 |
+| **Model** | One size/shape within a series | Qwen3.5-9B |
+| **Variant** | Quantization or precision of a model | Q4_K_M, BF16 |
+| **Run config** | Runtime flags measured for a variant | ctx=65536, KV=q8_0 |
 
-The code uses these names directly: `model`, `series`, `variant`. Pre-v1.0
-results may still carry the old `family` / `quant` field names; the report
-migrates them on first run.
+Use `model`, `series`, and `variant` in data. `family` and `quant` are legacy
+aliases only.
 
-## Bench domain
+## Benchmark vocabulary
+
+### Guided run
+
+The primary product workflow: setup, source selection, scope/policies,
+benchmark execution, ranking, and report generation as one user journey.
+
+### Internal stage
+
+A resumable implementation boundary inside guided run. Discovery, planning,
+benchmarking, and report generation are stages, not separate product flows.
 
 ### Sweep
-The planning dimension that applies to a model, computed from its own
-properties (`Get-SweepKind`). Replaces the former A/B/C "tier" — it names what
-varies, not a letter:
 
-- **context** — dense model whose weights + mmproj + overhead fit inside the
-  VRAM safety budget. Sweep over `(ctx, KV-quant)` pairs. (was Tier A)
-- **moe-cpu** — MoE (Mixture of Experts) model. Sweep over `--n-cpu-moe`
-  values to find the optimal CPU-vs-GPU expert split. (was Tier B)
-- **offload** — dense model that exceeds the VRAM safety budget and is not
-  MoE. Sweep over `--gpu-layers` for partial offload. (was Tier C)
+The dimension varied for a model:
+
+- **context** — context size and KV-cache precision;
+- **moe-cpu** — number of MoE expert/FFN layers assigned to CPU;
+- **offload** — number of model layers offloaded to the GPU.
 
 ### Level
-The hardware class a curated model belongs to: `low` / `middle` / `high` /
-`ultra`. The bench presets (`default_bench_presets.json`) partition the curated
-catalog disjointly, so each curated model maps to exactly one level; user-owned
-models not in any preset have no level (shown as `custom`). Level is what the
-CLI's "which models" selector and the report's level column/tabs use. It is
-orthogonal to **sweep**: level says *which hardware tier of models*, sweep says
-*how a given model is benchmarked*.
 
-### VRAM safety budget
-`vram_total_mib × vram_safety_budget_pct` (default 0.95). The threshold
-below which a fully-GPU config is considered safe from WDDM paging.
-See `architecture/design/vram-safety-budget.md`.
+Curated model scope: `low`, `middle`, `high`, or `ultra`. Level chooses which
+models to consider; sweep chooses how each model is measured.
 
-### WDDM paging
-Windows Display Driver Model behavior where the NVIDIA driver silently
-spills GPU memory to system RAM ("Shared GPU memory") via PCIe instead of
-raising OOM. Inference continues but throughput collapses 2-4×. The bench
-detects this via the perf counter `\GPU Adapter Memory(*)\Shared Usage`,
-delta-corrected against a pre-launch baseline. See
-`architecture/design/wddm-paging-detection.md`.
+### Run
 
-### Saturation
-`vram_peak_mib / vram_total_mib`. A run is flagged "WDDM-suspect" when
-this exceeds `wddm_detection.vram_saturation_threshold` (default 0.92),
-even if no shared-memory delta was observed (paging may happen between
-poll samples).
-
-### Headroom
-`vram_total_mib - vram_peak_mib`. The VRAM left over after a run.
-Combined with that run's measured `kv_cache_mib`, projected into
-"approximate extra context tokens this config could absorb" in the report.
+One measured execution of one run config. In metric schema v4, a run uses one
+full-length streaming request after optional warm-up and KV reset.
 
 ### Winner
-The configuration selected by `Invoke-Report` per group key (default: per
-model). The picker prefers a non-paging config over a paging one; with
-`-PreferSpeed` the safety preference is bypassed and the highest
-`eval_tps` wins. "Paging" is `shared_peak_mib > shared_delta_confirm_mib`
-(default 500 MiB) — the same threshold used by the WDDM watchlist.
+
+The run config selected for a model under the active policy. Balanced policy
+prefers configs without confirmed spill, then compares speed and tie-breakers.
+Speed policy chooses raw decode throughput.
 
 ### Backend
-The compute backend baked into a llama.cpp build: CUDA, Vulkan, HIP, SYCL,
-Metal, or CPU-only. Detected from sibling `ggml-*.dll` files of
-`llama-server.exe`. The bench warns when the build's backend doesn't match
-the GPU vendor (e.g. NVIDIA + Vulkan-only build → ~10-15 % slower than CUDA).
 
-## Memory accounting on Windows
+The llama.cpp compute backend: CUDA, Vulkan, HIP/ROCm, SYCL, Metal, or CPU.
 
-Three layers of memory addressable by a llama.cpp run on Windows. The
-report's *"Memory vs latency"* scatter draws a horizontal reference line
-for each.
+## Memory vocabulary
 
-- **GPU VRAM** — `vram_total_mib`, dedicated GPU memory. Reading from
-  `nvidia-smi --query-gpu=memory.total`.
-- **WDDM shared budget** — additional memory the OS lets the GPU
-  driver page into. Default Windows policy: ~50 % of system RAM. The
-  total addressable GPU-side memory is `vram_total + shared_available`.
-  Once this is hit the model fails to load.
-- **System RAM total** — full installed RAM. Beyond `vram_total +
-  shared_available` the run cannot occur.
+### VRAM baseline
 
-Sub-cases: `vram < ram` (typical desktop), `vram == ram` (rare,
-balanced), `vram > ram` (data-center cards on a small workstation).
+System dedicated VRAM already used before the run.
 
-## Vocabulary ratchet
+### VRAM peak
 
-When introducing a new term:
+Highest system dedicated VRAM observed during the run. On Windows/WDDM this is
+system-level, not reliably attributable to llama-server alone.
 
-1. Propose its definition in the same PR/branch that introduces it.
-2. Update this file in the first commit of that branch.
-3. Then write the code, spec, or plan that uses it.
+### Run VRAM
 
-This keeps the docs ahead of the code rather than the other way around.
+`VRAM peak - VRAM baseline`, an estimate of the benchmark's dedicated-memory
+increment.
+
+### Shared spill
+
+GPU-addressable system memory above the pre-run baseline. On Windows this is
+WDDM shared memory; on supported AMD/Linux setups it is GTT.
+
+### Saturation
+
+`VRAM peak / installed VRAM`. High saturation is a risk signal, not direct
+proof of spill.
+
+### Headroom
+
+`installed VRAM - VRAM peak`.
+
+### VRAM safety budget
+
+Planning heuristic based on installed VRAM, configured safety percentage, and
+estimated non-weight overhead. It narrows candidate configs; measured fit and
+spill determine actual safety.
+
+## Timing vocabulary
+
+### Server clock
+
+llama-server timing fields. Used for prefill, decode throughput, TPOT, ITL, and
+server TTFT.
+
+### Client clock
+
+calibr timestamps around HTTP and SSE delivery. Used for headers, stream open,
+first delivered reasoning/content, delivery gaps, and end-to-end latency.
+
+Never present a client delivery interval as model generation throughput.

@@ -200,7 +200,7 @@ function Invoke-Init {
 
     $out | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $CALIBR_LOCAL_CFG
     Write-Host "`nWrote $CALIBR_LOCAL_CFG" -ForegroundColor Green
-    Write-Host "Next: calibr discover" -ForegroundColor Cyan
+    Write-Host "Next: start guided run, or use the raw 'all' command for automation." -ForegroundColor Cyan
 }
 
 
@@ -477,168 +477,6 @@ function Invoke-Uninstall {
 
 
 # ============================================================================
-# SUBCOMMAND: all
-# ============================================================================
-function Invoke-All {
-        # Auto-init when llama_server_exe is missing/invalid. Saves the
-        # user from having to know they were supposed to run 'init'
-        # first; on a fresh box the engine auto-detects llama-server in
-        # PATH or sibling folders and writes config.json. Only if the
-        # auto-init can't find anything do we throw - and at that point
-        # the message tells them WHERE we looked.
-        $cfgUp = Get-Config
-        if (Test-ConfigNeedsInit -cfg $cfgUp) {
-            Write-Host "[all] setup incomplete - running 'init' first..." -ForegroundColor Cyan
-            $savedNI = $script:NonInteractive
-            $savedForce = $script:Force
-            $script:NonInteractive = $true   # don't prompt mid-pipeline
-            $script:Force          = $false  # preserve partial config values from the CLI picker
-            try {
-                Invoke-Init
-            } catch {
-                Write-Host ("[all] init failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
-            } finally {
-                $script:NonInteractive = $savedNI
-                $script:Force          = $savedForce
-            }
-            $cfgUp = Get-Config
-            if (-not $cfgUp.llama_server_exe -or -not (Test-Path $cfgUp.llama_server_exe)) {
-                throw "llama-server$script:ExeExt could not be configured. Run 'calibr init -AutoFetchLlama' to download llama.cpp automatically, or run 'calibr init -LlamaServer <path>' if you already have a build."
-            }
-            Write-Host ("[all] init done. llama_server_exe = {0}" -f $cfgUp.llama_server_exe) -ForegroundColor Green
-        }
-        if ($FetchCatalog) {
-            # Interleaved rotation: instead of fetching the entire curated set
-            # up-front (~88 GB peak) and benching afterwards, we walk one
-            # sample at a time - download -> discover -> plan -> bench just this
-            # model -> rotation deletes it - so the working set on disk stays
-            # bounded to one model. This is what makes -KeepDownloads=off
-            # actually deliver the 'peak ~ largest single file' promise the
-            # CLI's pre-flight gate shows.
-            $samples = Get-ModelCatalog
-            # Preset narrows the catalog to a hardware-level-curated subset
-            # (low / middle / high / user-saved). Applied BEFORE the
-            # other filters so -CatalogId / -Model can further narrow
-            # inside the preset.
-            $presetMaxCtx = 0
-            if ($Preset) {
-                $presetObj = Get-Preset -Name $Preset
-                if ($null -eq $presetObj) {
-                    $known = ((Get-PresetCatalog).Keys | Sort-Object) -join ', '
-                    throw "Preset '$Preset' not found. Known: $known"
-                }
-                $samples = Select-CatalogByPreset -catalog $samples -preset $presetObj
-                if ($null -ne $presetObj.max_ctx) {
-                    $presetMaxCtx = [int]$presetObj.max_ctx
-                    $script:_presetMaxCtx = $presetMaxCtx
-                }
-                # A user-saved preset (CustomBenchView v2) may pin an exact ctx
-                # set, not just a ceiling - honor it for the context sweep.
-                if ($presetObj.context_sizes) {
-                    $script:_presetCtxSizes = @($presetObj.context_sizes)
-                }
-                Write-Host ("[all] preset '{0}': {1} entries, max_ctx={2}" -f $Preset, $samples.Count, $(if ($presetMaxCtx -gt 0) { $presetMaxCtx } else { '(no cap)' })) -ForegroundColor Cyan
-            }
-            if ($CatalogId) {
-                # Accept a comma-separated list (e.g. 'qwen3.5-9b-q4km,gemma-4-e2b')
-                # so the CLI's CustomBenchView can pass a multi-pick selection,
-                # while a single id with wildcards (e.g. 'qwen*') keeps the
-                # old -like semantics.
-                $idPatterns = @(($CatalogId -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-                $samples = $samples | Where-Object {
-                    foreach ($pat in $idPatterns) { if ($_.id -like $pat) { return $true } }
-                    return $false
-                }
-            }
-            if ($Model)    { $samples = $samples | Where-Object { $_.model -match $Model } }
-            $samples = @($samples)
-            if ($samples.Count -eq 0) {
-                Write-Host "No samples match the current -CatalogId / -Model filters. Nothing to do." -ForegroundColor Yellow
-                return
-            }
-
-            # Point scan_paths at the download destination if the user hasn't
-            # configured it; otherwise discover would later throw 'scan_paths
-            # is empty'.
-            $cfgInit = Get-Config
-            $scanEmpty = (-not $cfgInit.scan_paths -or $cfgInit.scan_paths.Count -eq 0)
-            $cliEmpty  = (-not $script:ScanPath  -or $script:ScanPath.Count  -eq 0)
-            if ($scanEmpty -and $cliEmpty) {
-                $defaultDl = if ($Destination) { $Destination } else { $CALIBR_DOWNLOADED_MODELS_DIR }
-                $script:ScanPath = @($defaultDl)
-                Write-Host "[all] No scan_paths configured. Will scan $defaultDl." -ForegroundColor Cyan
-            }
-
-            Write-Host ""
-            Write-Host ("=== all -FetchCatalog : {0} sample(s), rotated ===" -f $samples.Count) -ForegroundColor Cyan
-
-            # Phase 0: bench whatever is already on disk so existing models
-            # don't get orphaned by the per-sample loop (each iteration's
-            # bench is narrowed to the current sample's model). Skipped if
-            # the user explicitly scoped with -CatalogId or -Model - then
-            # they want a narrow run, not a sweep over everything.
-            if (-not $CatalogId -and -not $Model) {
-                Write-Host ""
-                Write-Host "--- pre-existing models ---" -ForegroundColor DarkCyan
-                Invoke-Discover
-                Invoke-Plan
-                Invoke-Bench
-            }
-
-            # Phase 1+: per-sample download + bench + rotate.
-            Invoke-SampleFetchBench -Samples $samples
-
-            Write-Host ""
-            Write-Host "--- final report ---" -ForegroundColor DarkCyan
-            Invoke-Report
-        } else {
-            Invoke-Discover; Invoke-Plan; Invoke-Bench; Invoke-Report
-        }
-}
-
-# ============================================================================
-# SHARED: interleaved download + bench + rotate over a set of curated samples
-# ============================================================================
-function Invoke-SampleFetchBench {
-    # Walk curated samples one at a time: download -> discover -> plan -> bench
-    # just that model -> rotation deletes it. Keeps peak disk bounded to one
-    # model. Used by 'all -FetchCatalog'.
-    param([object[]]$Samples)
-    $savedCatalogId = $script:CatalogId
-    $savedModel     = $script:Model
-    $idx = 0
-    foreach ($s in $Samples) {
-        $idx++
-        $sampleTimer = [System.Diagnostics.Stopwatch]::StartNew()
-        Write-Host ""
-        # Two prefixes: the bracketed [sample X/N] is CLI-parseable (RunView
-        # surfaces it as the outer progress strip); the second is human-readable.
-        Write-Host ("[sample {0}/{1}] {2}" -f $idx, $Samples.Count, $s.id)
-        Write-Host ("--- sample {0}/{1} : {2} ({3}) ---" -f $idx, $Samples.Count, $s.id, $s.model) -ForegroundColor Cyan
-
-        $script:CatalogId = $s.id
-        $script:Model     = ""   # CatalogId narrows enough on its own
-        Invoke-FetchModels
-
-        # Re-discover so the freshly-downloaded file enters the catalog;
-        # re-plan because the catalog grew.
-        $script:CatalogId = $savedCatalogId
-        Invoke-Discover
-        Invoke-Plan
-
-        # Bench narrows to this sample's model - Invoke-RotationCheck then has a
-        # chance to delete the .gguf the moment its last config finishes.
-        $script:Model = $s.model
-        Invoke-Bench
-
-        $sampleTimer.Stop()
-        Write-Host ("[sample-done {0}/{1}] {2} elapsed_ms={3}" -f $idx, $Samples.Count, $s.id, $sampleTimer.ElapsedMilliseconds)
-    }
-    $script:CatalogId = $savedCatalogId
-    $script:Model     = $savedModel
-}
-
-# ============================================================================
 # SUBCOMMAND: help
 # ============================================================================
 function Invoke-Help {
@@ -648,7 +486,7 @@ function Invoke-Help {
         "plan"              = "Expand the catalog into a sweep of test configs (data/plan.json)."
         "bench"             = "Run pending tests against llama-server, save data/results/*.json."
         "report"            = "Build data/report.html and data/bats/{model}.bat per winner."
-        "all"               = "discover + plan + bench + report (optionally + fetch from model catalog)."
+        "all"               = "Run the unified raw workflow used by guided run."
         "status"            = "Show config + counts (catalog/plan/results) + global-install state."
         "config"            = "Get / set / list / unset config values from CLI."
         "get-models" = "List or download entries from the curated model catalog (HuggingFace)."
@@ -724,6 +562,8 @@ function Invoke-Help {
         "all" = @{
             Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-VramUsageWarningPct N] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
             Flags    = @(
+                "Runs setup, model acquisition, benchmark policy, and report"
+                "generation as one workflow. Internal artifacts remain resumable."
                 "-AutoFetchLlama       Run init with automatic llama.cpp download when setup is incomplete"
                 "-LlamaCppBuild bNNNN   With -AutoFetchLlama, pin a specific llama.cpp release"
                 "-FetchCatalog         Interleaved mode: walk catalog entries one-by-one,"

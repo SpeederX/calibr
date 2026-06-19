@@ -1,5 +1,9 @@
 # Design: priority-ordered backlog as the roadmap shape
 
+> **Archived.** Strict SemVer and the version-ordered backlog are suspended.
+> Current direction and working rules live in
+> [`../../AGENTS.md`](../../AGENTS.md).
+
 ## Why
 
 The project is a single-maintainer effort with no service-level

@@ -180,6 +180,7 @@ $script:CALIBR_ENGINE_MODULES = @(
     'plan.ps1'
     'bench.ps1'
     'report.ps1'
+    'workflow.ps1'
     'catalog.ps1'
     'doctor.ps1'
 )

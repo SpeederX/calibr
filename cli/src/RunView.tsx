@@ -38,11 +38,11 @@ const MAX_LINES = 500;
 const VIEWPORT = 30;
 
 // Match the engine's `Write-Host "[X/Y] <label>"` progress lines.
-// Source: calibr.ps1 Invoke-Bench inner loop.
+// Source: engine/bench.ps1 Invoke-Bench inner loop.
 const PROGRESS_RE = /^\s*\[(\d+)\/(\d+)\]\s+(.+?)\s*$/;
 
-// Outer-level progress emitted by the 'all -DownloadSamples' per-sample
-// loop in calibr.ps1: `[sample X/N] sampleId`. Lets us show two-level
+// Outer-level progress emitted by engine/workflow.ps1 for catalog models:
+// `[sample X/N] catalogId`. Lets us show two-level
 // progress so the inner [config X/Y] doesn't look like it 'reset' every
 // time a new sample's bench begins.
 const SAMPLE_RE = /^\s*\[sample\s+(\d+)\/(\d+)\]\s+(.+?)\s*$/;
