@@ -1,5 +1,8 @@
 # Override-only local config
 
+> **Current engine reference.** Guided preferences are the primary user
+> surface; the raw PowerShell adapter still uses this merge model.
+
 ## Why
 
 Two competing needs:

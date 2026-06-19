@@ -182,7 +182,7 @@ measure reasoning quality.
 
 ### `e2e_latency_ms`
 
-Full client-observed duration of the streaming diagnostic request:
+Full client-observed duration of the measured streaming request:
 
 ```text
 e2e_latency_ms = stream completed - request start
