@@ -65,6 +65,7 @@ const ROTATE_FAIL_RE   = /^\s*\[rotate\]\s+FAILED\s+(.+?)\s*$/;
 //   [poll] gpu_mem=7032 gpu_pow=180.5 gpu_temp=72 gpu_util=87 ram_used=512 disk_r=420.5
 // Filtered from the visible log so it doesn't bloat the scroll buffer.
 const POLL_RE = /^\s*\[poll\]\s+(.+?)\s*$/;
+const BASELINE_RE = /^\s*\[baseline\]\s+(.+?)\s*$/;
 
 // Phase + download markers (added v0.1.5). All grep-stable, all filtered
 // from the visible log.
@@ -127,9 +128,17 @@ interface LiveMetrics {
   gpu_pow: number;
   gpu_temp: number;
   gpu_util: number;
+  cpu_util: number;
   ram_used: number;
   disk_r: number;
   updatedAt: number; // ms since epoch; goes stale after a few seconds
+}
+
+interface BaselineWarning {
+  vramUsed: number;
+  vramTotal: number;
+  pct: number;
+  threshold: number;
 }
 
 interface DownloadState {
@@ -251,6 +260,7 @@ export function RunView({ args, label, trace, onExit }: Props) {
   const [lastSampleDone, setLastSampleDone] = useState<SampleDone | null>(null);
   const [rotation, setRotation] = useState<RotationStats>({ deleted: 0, kept: 0, failed: 0, lastEvent: null });
   const [live, setLive] = useState<LiveMetrics | null>(null);
+  const [baseline, setBaseline] = useState<BaselineWarning | null>(null);
   const [download, setDownload] = useState<DownloadState | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
   const [runCount, setRunCount] = useState<RunCount | null>(null);
@@ -308,7 +318,7 @@ export function RunView({ args, label, trace, onExit }: Props) {
       // facing log content; we parse them below to drive the live widgets.
       const complete = allLines;
       const visible = complete.filter(l =>
-        !POLL_RE.test(l) && !DLPROG_RE.test(l) && !DLDONE_RE.test(l) && !PHASE_RE.test(l)
+        !POLL_RE.test(l) && !BASELINE_RE.test(l) && !DLPROG_RE.test(l) && !DLDONE_RE.test(l) && !PHASE_RE.test(l)
       );
       if (visible.length > 0) {
         setLines((prev) => {
@@ -365,6 +375,7 @@ export function RunView({ args, label, trace, onExit }: Props) {
       let lastRot: string | null = null;
       // Most recent [poll] line wins for the live strip.
       let lastPoll: Record<string, number> | null = null;
+      let lastBaseline: Record<string, number> | null = null;
       // Most recent [dlprog] / [dldone] / [phase] / run X/Y wins for the
       // corresponding widget. Each handled per-line below.
       let lastDl: Record<string, number> | null = null;
@@ -378,6 +389,7 @@ export function RunView({ args, label, trace, onExit }: Props) {
         if (ROTATE_KEEP_RE.test(line))       { kDelta++; lastRot = line.trim(); continue; }
         if (ROTATE_FAIL_RE.test(line))       { fDelta++; lastRot = line.trim(); continue; }
         const pm = POLL_RE.exec(line);     if (pm) { lastPoll = parseKvLine(pm[1]); continue; }
+        const bm = BASELINE_RE.exec(line); if (bm) { lastBaseline = parseKvLine(bm[1]); continue; }
         const dm = DLPROG_RE.exec(line);   if (dm) { lastDl = parseKvLine(dm[1]); continue; }
         if (DLDONE_RE.test(line))             { lastDlDone = true; continue; }
         const phm = PHASE_RE.exec(line);   if (phm) { lastPhase = phm[1] as Phase; continue; }
@@ -408,9 +420,18 @@ export function RunView({ args, label, trace, onExit }: Props) {
           gpu_pow:  lastPoll.gpu_pow  ?? 0,
           gpu_temp: lastPoll.gpu_temp ?? 0,
           gpu_util: lastPoll.gpu_util ?? 0,
+          cpu_util: lastPoll.cpu_util ?? 0,
           ram_used: lastPoll.ram_used ?? 0,
           disk_r:   lastPoll.disk_r   ?? 0,
           updatedAt: Date.now(),
+        });
+      }
+      if (lastBaseline) {
+        setBaseline({
+          vramUsed: lastBaseline.vram_used ?? 0,
+          vramTotal: lastBaseline.vram_total ?? 0,
+          pct: lastBaseline.pct ?? 0,
+          threshold: lastBaseline.threshold ?? 10,
         });
       }
       if (lastDl) {
@@ -664,13 +685,20 @@ export function RunView({ args, label, trace, onExit }: Props) {
         <Box marginTop={1}>
           {compact ? (
             <Text color="cyan">
-              live · GPU {live.gpu_mem} MiB / {live.gpu_util}% · RAM Δ {live.ram_used} MiB
+              live · GPU {live.gpu_mem} MiB / {live.gpu_util}% · CPU {live.cpu_util}% · RAM Δ {live.ram_used} MiB
             </Text>
           ) : (
             <Text color="cyan">
-              live · GPU {live.gpu_mem} MiB / {live.gpu_pow.toFixed(0)} W / {live.gpu_temp}°C / {live.gpu_util}%  ·  RAM Δ {live.ram_used} MiB  ·  disk r {live.disk_r.toFixed(0)} MB/s
+              live · GPU {live.gpu_mem} MiB / {live.gpu_pow.toFixed(0)} W / {live.gpu_temp}°C / {live.gpu_util}%  ·  CPU {live.cpu_util}%  ·  RAM Δ {live.ram_used} MiB  ·  disk r {live.disk_r.toFixed(0)} MB/s
             </Text>
           )}
+        </Box>
+      )}
+      {baseline && baseline.vramTotal > 0 && baseline.pct >= baseline.threshold && (
+        <Box marginTop={1}>
+          <Text color="yellow" bold>
+            VRAM baseline warning · {baseline.vramUsed}/{baseline.vramTotal} MiB ({baseline.pct.toFixed(1)}%) already used · threshold {baseline.threshold.toFixed(1)}%
+          </Text>
         </Box>
       )}
       <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>

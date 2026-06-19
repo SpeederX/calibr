@@ -58,6 +58,98 @@ function Get-Median {
     return $sorted[[int]([math]::Floor(($sorted.Count - 1) / 2))]
 }
 
+function Resolve-FitStatus {
+    # Newer llama.cpp builds may stop printing the historical
+    # "successfully/failed to fit params" lines. When that happens, infer the
+    # useful report label from the signals calibr already trusts: a successful
+    # run with confirmed shared-memory spill did not fit cleanly in VRAM;
+    # otherwise it did.
+    param(
+        [string]$Status,
+        [bool]$Ok,
+        [int]$SharedPeakMib,
+        [int]$SharedConfirmMib = 500
+    )
+    if ($Status -eq "success" -or $Status -eq "failed_but_running") { return $Status }
+    if (-not $Ok) { return $Status }
+    if ($SharedPeakMib -gt $SharedConfirmMib) { return "failed_but_running" }
+    return "success"
+}
+
+function Resolve-TsResultCoreScript {
+    if ($env:CALIBR_TS_RESULT_CORE -eq '0') { return "" }
+    if ($env:CALIBR_TS_RESULT_CORE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_RESULT_CORE_SCRIPT)) {
+        return $env:CALIBR_TS_RESULT_CORE_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\resultCoreCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\resultCoreCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Invoke-TsAggregateBenchResult {
+    param($item, $cfg, $runs)
+    $script = Resolve-TsResultCoreScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $payload = [ordered]@{
+        action  = "aggregate"
+        item    = $item
+        cfg     = $cfg
+        runs    = @($runs)
+        session = @{
+            bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+            bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+            llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+        }
+    } | ConvertTo-Json -Compress -Depth 20
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-result-core-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $out = & $node $script --json-file $payloadPath
+        $text = (@($out) -join "`n").Trim()
+        if (-not $text) { return $null }
+        $resp = $text | ConvertFrom-Json
+        if ($resp.ok -and $null -ne $resp.result) { return $resp.result }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-TsFinalizeBenchRun {
+    param($run, [string]$stderr, $cfg)
+    $script = Resolve-TsResultCoreScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $payload = [ordered]@{
+        action = "finalize-run"
+        run    = $run
+        stderr = $stderr
+        cfg    = $cfg
+    } | ConvertTo-Json -Compress -Depth 20
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-finalize-run-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $out = & $node $script --json-file $payloadPath
+        $text = (@($out) -join "`n").Trim()
+        if (-not $text) { return $null }
+        $resp = $text | ConvertFrom-Json
+        if ($resp.ok -and $null -ne $resp.result) { return $resp.result }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function New-AggregatedBenchResult {
     # Combine N per-run hashtables (from Invoke-OneBenchRun) plus the
     # planning $item metadata into a single top-level successful result.
@@ -68,20 +160,53 @@ function New-AggregatedBenchResult {
     # tests/unit/bench.Tests.ps1. See spec/n-run-median.md.
     param($item, $cfg, $runs)
 
+    $tsResult = Invoke-TsAggregateBenchResult -item $item -cfg $cfg -runs $runs
+    if ($null -ne $tsResult) { return $tsResult }
+
     $first = $runs[0]
     $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
     $confirmThresh = if ($null -ne $cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
     $satThresh = if ($null -ne $cfg.wddm_detection.vram_saturation_threshold) { [double]$cfg.wddm_detection.vram_saturation_threshold } else { 0.92 }
 
     $vramPeakMed   = [int](Get-Median -values @($runs | ForEach-Object { $_.vram_peak_mib }))
+    $vramTotalPeakMed = [int](Get-Median -values @($runs | ForEach-Object { if ($null -ne $_.vram_total_peak_mib) { $_.vram_total_peak_mib } else { $_.vram_peak_mib } }))
+    $vramProcessPeakMed = Get-Median -values @($runs | ForEach-Object { $_.vram_process_peak_mib })
+    $vramExternalPeakMed = Get-Median -values @($runs | ForEach-Object { $_.vram_external_peak_mib })
+    $vramBaselineMed = Get-Median -values @($runs | ForEach-Object { if ($null -ne $_.vram_baseline_mib) { $_.vram_baseline_mib } else { $_.vram_before_mib } })
+    $vramBaselinePctMed = Get-Median -values @($runs | ForEach-Object { $_.vram_baseline_pct })
     $sharedPeakMed = [int](Get-Median -values @($runs | ForEach-Object { $_.shared_peak_mib }))
     $promptTpsMed  = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.prompt_tps })), 2)
     $evalTpsMed    = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.eval_tps })),   2)
+    $evalSamples    = @($runs | ForEach-Object { $_.eval_tps } | Where-Object { $null -ne $_ } | ForEach-Object { [double]$_ })
+    $firstEvalRaw   = if ($evalSamples.Count -gt 0) { $evalSamples[0] } else { $null }
+    $repeatEvalRaw  = if ($evalSamples.Count -gt 1) { Get-Median -values @($evalSamples | Select-Object -Skip 1) } else { $null }
+    $evalMinRaw     = if ($evalSamples.Count -gt 0) { ($evalSamples | Measure-Object -Minimum).Minimum } else { $null }
+    $evalMaxRaw     = if ($evalSamples.Count -gt 0) { ($evalSamples | Measure-Object -Maximum).Maximum } else { $null }
+    $evalSpreadPct  = if ($evalSamples.Count -gt 1 -and $evalTpsMed -gt 0) { [math]::Round((($evalMaxRaw - $evalMinRaw) / $evalTpsMed) * 100, 1) } else { 0.0 }
 
     # Extended-metric medians/aggregates. ttft and util are median over runs;
     # power, temp, ram are max-over-runs (peaks are what matter for thermal
     # / pressure analysis, not the typical reading).
     $ttftMed       = [math]::Round((Get-Median -values @($runs | ForEach-Object { $_.ttft_sec })),         3)
+    $promptMsRaw   = Get-Median -values @($runs | ForEach-Object { $_.prompt_ms })
+    $ttfrMsRaw     = Get-Median -values @($runs | ForEach-Object { $_.ttfr_ms })
+    $e2eTtftMsRaw  = Get-Median -values @($runs | ForEach-Object { $_.e2e_ttft_ms })
+    $ttfhMsRaw     = Get-Median -values @($runs | ForEach-Object { $_.ttfh_ms })
+    $streamOpenRaw = Get-Median -values @($runs | ForEach-Object { $_.stream_open_ms })
+    $clientTtftRaw = Get-Median -values @($runs | ForEach-Object { $_.client_ttft_ms })
+    $firstReasonRaw = Get-Median -values @($runs | ForEach-Object { $_.e2e_first_reasoning_ms })
+    $firstContentRaw = Get-Median -values @($runs | ForEach-Object { $_.e2e_first_content_ms })
+    $reasoningDelayRaw = Get-Median -values @($runs | ForEach-Object { $_.reasoning_delay_ms })
+    $e2eLatencyRaw = Get-Median -values @($runs | ForEach-Object { $_.e2e_latency_ms })
+    $serverPrefillRaw = Get-Median -values @($runs | ForEach-Object { $_.server_prefill_ms })
+    $serverTtftRaw = Get-Median -values @($runs | ForEach-Object { $_.server_ttft_ms })
+    $tpotRaw = Get-Median -values @($runs | ForEach-Object { $_.tpot_ms })
+    $itlP95Raw = Get-Median -values @($runs | ForEach-Object { $_.itl_p95_ms })
+    $deliveryMedianRaw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_median_ms })
+    $deliveryP95Raw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_p95_ms })
+    $deliveryMaxRaw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_max_ms })
+    $totalReqRaw   = Get-Median -values @($runs | ForEach-Object { $_.total_request_ms })
+    $latReqRaw     = Get-Median -values @($runs | ForEach-Object { $_.latency_total_request_ms })
     $utilAvgMed    = [int](Get-Median   -values @($runs | ForEach-Object { $_.gpu_util_avg_pct }))
     $powerPeakMax  = [math]::Round((@($runs | ForEach-Object { $_.gpu_power_peak_w }) | Measure-Object -Maximum).Maximum, 1)
     $tempPeakMax   = [int]((@($runs | ForEach-Object { $_.gpu_temp_peak_c })  | Measure-Object -Maximum).Maximum)
@@ -93,6 +218,7 @@ function New-AggregatedBenchResult {
     $flagSharedPos = ($sharedPeakMed -gt $confirmThresh)
 
     $result = [ordered]@{
+        metric_schema_version = 4
         id              = $item.id
         label           = $item.label
         model           = $item.model
@@ -111,6 +237,8 @@ function New-AggregatedBenchResult {
 
         # Deterministic / first-run fields
         vram_before_mib  = $first.vram_before_mib
+        vram_baseline_mib = if ($null -ne $vramBaselineMed) { [int]$vramBaselineMed } else { $null }
+        vram_baseline_pct = if ($null -ne $vramBaselinePctMed) { [math]::Round([double]$vramBaselinePctMed, 4) } else { $null }
         load_sec         = $first.load_sec
         ready            = $first.ready
         prompt_n         = $first.prompt_n
@@ -121,17 +249,45 @@ function New-AggregatedBenchResult {
         compute_cuda_mib = $first.compute_cuda_mib
         compute_host_mib = $first.compute_host_mib
         layers_offloaded = $first.layers_offloaded
-        fit_status       = $first.fit_status
+        fit_status       = Resolve-FitStatus -Status $first.fit_status -Ok $true -SharedPeakMib $sharedPeakMed -SharedConfirmMib $confirmThresh
 
         # Median over runs for varying metrics
         vram_peak_mib    = $vramPeakMed
+        vram_total_peak_mib = $vramTotalPeakMed
+        vram_process_peak_mib = if ($null -ne $vramProcessPeakMed) { [int]$vramProcessPeakMed } else { $null }
+        vram_external_peak_mib = if ($null -ne $vramExternalPeakMed) { [int]$vramExternalPeakMed } else { $null }
         shared_peak_mib  = $sharedPeakMed
         prompt_tps       = $promptTpsMed
         eval_tps         = $evalTpsMed
+        run_count        = $runs.Count
+        first_eval_tps   = if ($null -ne $firstEvalRaw)  { [math]::Round($firstEvalRaw, 2) } else { $null }
+        repeat_eval_tps  = if ($null -ne $repeatEvalRaw) { [math]::Round($repeatEvalRaw, 2) } else { $null }
+        eval_min_tps     = if ($null -ne $evalMinRaw)    { [math]::Round($evalMinRaw, 2) } else { $null }
+        eval_max_tps     = if ($null -ne $evalMaxRaw)    { [math]::Round($evalMaxRaw, 2) } else { $null }
+        eval_spread_pct  = $evalSpreadPct
 
         # Extended metrics: medians for ttft/util (typical), maxes for
         # power/temp/ram/disk (peaks are what matter).
         ttft_sec             = $ttftMed
+        prompt_ms            = if ($null -ne $promptMsRaw)  { [math]::Round($promptMsRaw, 2) } else { $null }
+        ttfr_ms              = if ($null -ne $ttfrMsRaw)    { [math]::Round($ttfrMsRaw, 2) } else { $null }
+        e2e_ttft_ms          = if ($null -ne $e2eTtftMsRaw) { [math]::Round($e2eTtftMsRaw, 2) } else { $null }
+        ttfh_ms              = if ($null -ne $ttfhMsRaw) { [math]::Round($ttfhMsRaw, 2) } else { $null }
+        stream_open_ms       = if ($null -ne $streamOpenRaw) { [math]::Round($streamOpenRaw, 2) } elseif ($null -ne $ttfrMsRaw) { [math]::Round($ttfrMsRaw, 2) } else { $null }
+        client_ttft_ms       = if ($null -ne $clientTtftRaw) { [math]::Round($clientTtftRaw, 2) } elseif ($null -ne $e2eTtftMsRaw) { [math]::Round($e2eTtftMsRaw, 2) } else { $null }
+        e2e_first_reasoning_ms = if ($null -ne $firstReasonRaw) { [math]::Round($firstReasonRaw, 2) } else { $null }
+        e2e_first_content_ms = if ($null -ne $firstContentRaw) { [math]::Round($firstContentRaw, 2) } else { $null }
+        reasoning_delay_ms   = if ($null -ne $reasoningDelayRaw) { [math]::Round($reasoningDelayRaw, 2) } else { $null }
+        e2e_latency_ms       = if ($null -ne $e2eLatencyRaw) { [math]::Round($e2eLatencyRaw, 2) } elseif ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
+        server_prefill_ms    = if ($null -ne $serverPrefillRaw) { [math]::Round($serverPrefillRaw, 2) } elseif ($null -ne $promptMsRaw) { [math]::Round($promptMsRaw, 2) } else { $null }
+        server_ttft_ms       = if ($null -ne $serverTtftRaw) { [math]::Round($serverTtftRaw, 2) } else { $null }
+        tpot_ms              = if ($null -ne $tpotRaw) { [math]::Round($tpotRaw, 3) } else { $null }
+        itl_p95_ms           = if ($null -ne $itlP95Raw) { [math]::Round($itlP95Raw, 3) } else { $null }
+        delivery_gap_median_ms = if ($null -ne $deliveryMedianRaw) { [math]::Round($deliveryMedianRaw, 2) } else { $null }
+        delivery_gap_p95_ms  = if ($null -ne $deliveryP95Raw) { [math]::Round($deliveryP95Raw, 2) } else { $null }
+        delivery_gap_max_ms  = if ($null -ne $deliveryMaxRaw) { [math]::Round($deliveryMaxRaw, 2) } else { $null }
+        total_request_ms     = if ($null -ne $totalReqRaw)  { [math]::Round($totalReqRaw, 2) } else { $null }
+        latency_total_request_ms = if ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
         gpu_util_avg_pct     = $utilAvgMed
         gpu_power_peak_w     = $powerPeakMax
         gpu_temp_peak_c      = $tempPeakMax
@@ -183,6 +339,179 @@ function Get-GpuSnapshot {
         temp_c   = if ($parts[2] -match '^\d') { [int]$parts[2] }      else { 0 }
         util_pct = if ($parts[3] -match '^\d') { [int]$parts[3] }      else { 0 }
     }
+}
+
+function Get-GpuProcessMemoryMib {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return -1 }
+    try {
+        $lines = @(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>$null)
+        $total = 0
+        $seen = $false
+        foreach ($line in $lines) {
+            $parts = @($line -split ',' | ForEach-Object { $_.Trim() })
+            if ($parts.Count -lt 3) { continue }
+            $pidText = $parts[0]
+            $memText = $parts[2]
+            if ($pidText -notmatch '^\d+$' -or [int]$pidText -ne $ProcessId) { continue }
+            if ($memText -match '(\d+)') {
+                $total += [int]$Matches[1]
+                $seen = $true
+            }
+        }
+        if ($seen) { return $total }
+    } catch {
+    }
+    try {
+        $lines = @(nvidia-smi 2>$null)
+        $total = 0
+        $seen = $false
+        foreach ($line in $lines) {
+            if ($line -notmatch "(?<!\d)$ProcessId(?!\d)") { continue }
+            if ($line -notmatch 'llama-server') { continue }
+            if ($line -match '(\d+)\s*MiB') {
+                $total += [int]$Matches[1]
+                $seen = $true
+            }
+        }
+        if ($seen) { return $total }
+        return -1
+    } catch {
+        return -1
+    }
+}
+
+function Start-BenchMetricPoller {
+    param(
+        [int]$ProcessId,
+        [int]$IntervalMs = 150
+    )
+    $tsPoller = Start-TsBenchMetricPoller -ProcessId $ProcessId -IntervalMs $IntervalMs
+    if ($tsPoller) { return $tsPoller }
+
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-bench-poll-{0}.jsonl" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        $job = Start-Job -ArgumentList $ProcessId, $IntervalMs, $path, $script:IsWin -ScriptBlock {
+            param($targetPid, $intervalMs, $outPath, $isWin)
+            function _num($v) {
+                if ($null -eq $v) { return 0 }
+                $s = ([string]$v).Trim()
+                if ($s -match '^-?[\d.]+') { return [double]$Matches[0] }
+                return 0
+            }
+            function _ramAvailMib {
+                if ($isWin) {
+                    try {
+                        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+                        return [int]($os.FreePhysicalMemory / 1024)
+                    } catch { return -1 }
+                }
+                try {
+                    $line = Select-String -Path /proc/meminfo -Pattern '^MemAvailable:\s+(\d+)\s*kB' -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($line) { return [int]([int64]$line.Matches[0].Groups[1].Value / 1024) }
+                } catch { }
+                return -1
+            }
+            while ($true) {
+                $mem = 0; $power = 0.0; $temp = 0; $util = -1; $procMem = -1; $shared = -1
+                try {
+                    $line = (nvidia-smi --query-gpu=memory.used,power.draw,temperature.gpu,utilization.gpu --format=csv,noheader,nounits) -replace '\s',''
+                    $parts = if ($line) { $line -split ',' } else { @() }
+                    if ($parts.Count -ge 4) {
+                        $mem = [int](_num $parts[0])
+                        $power = [double](_num $parts[1])
+                        $temp = [int](_num $parts[2])
+                        $util = [int](_num $parts[3])
+                    }
+                } catch { }
+                try {
+                    $lines = @(nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader,nounits 2>$null)
+                    $sum = 0; $seen = $false
+                    foreach ($line in $lines) {
+                        $parts = @($line -split ',' | ForEach-Object { $_.Trim() })
+                        if ($parts.Count -lt 3) { continue }
+                        if ($parts[0] -match '^\d+$' -and [int]$parts[0] -eq $targetPid -and $parts[2] -match '(\d+)') {
+                            $sum += [int]$Matches[1]
+                            $seen = $true
+                        }
+                    }
+                    if ($seen) { $procMem = $sum }
+                } catch { }
+                if ($procMem -lt 0) {
+                    try {
+                        $lines = @(nvidia-smi 2>$null)
+                        $sum = 0; $seen = $false
+                        foreach ($line in $lines) {
+                            if ($line -notmatch "(?<!\d)$targetPid(?!\d)") { continue }
+                            if ($line -notmatch 'llama-server') { continue }
+                            if ($line -match '(\d+)\s*MiB') {
+                                $sum += [int]$Matches[1]
+                                $seen = $true
+                            }
+                        }
+                        if ($seen) { $procMem = $sum }
+                    } catch { }
+                }
+                if ($isWin) {
+                    try {
+                        $c = Get-Counter "\GPU Adapter Memory(*)\Shared Usage" -ErrorAction SilentlyContinue -MaxSamples 1
+                        if ($c) {
+                            $total = ($c.CounterSamples | Measure-Object -Property CookedValue -Sum).Sum
+                            $shared = [int]($total / 1MB)
+                        }
+                    } catch { }
+                }
+                $sample = [ordered]@{
+                    at = (Get-Date).ToUniversalTime().ToString('o')
+                    gpu_mem_mib = $mem
+                    gpu_power_w = $power
+                    gpu_temp_c = $temp
+                    gpu_util_pct = $util
+                    process_vram_mib = $procMem
+                    shared_mib = $shared
+                    ram_avail_mib = (_ramAvailMib)
+                }
+                try {
+                    [System.IO.File]::AppendAllText($outPath, (($sample | ConvertTo-Json -Compress) + "`n"), [System.Text.Encoding]::UTF8)
+                } catch { }
+                Start-Sleep -Milliseconds $intervalMs
+            }
+        }
+        return @{ job = $job; path = $path }
+    } catch {
+        return $null
+    }
+}
+
+function Stop-BenchMetricPoller {
+    param($Poller)
+    if (-not $Poller) { return @() }
+    try {
+        if ($Poller.process) {
+            try {
+                if (-not $Poller.process.HasExited) {
+                    $Poller.process.Kill()
+                    $Poller.process.WaitForExit(500) | Out-Null
+                }
+            } catch { }
+            try { $Poller.process.Dispose() } catch { }
+        } elseif ($Poller.job) {
+            Stop-Job -Job $Poller.job -ErrorAction SilentlyContinue | Out-Null
+            Receive-Job -Job $Poller.job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job -Job $Poller.job -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+    } catch { }
+    $samples = @()
+    try {
+        if ($Poller.path -and (Test-Path -LiteralPath $Poller.path)) {
+            foreach ($line in (Get-Content -LiteralPath $Poller.path -ErrorAction SilentlyContinue)) {
+                if (-not $line) { continue }
+                try { $samples += ($line | ConvertFrom-Json) } catch { }
+            }
+            Remove-Item -LiteralPath $Poller.path -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+    return @($samples)
 }
 
 function Get-AvailableMemoryMib {
@@ -272,6 +601,316 @@ function Get-DiskReadBytesPerSec {
     } catch { return 0 }
 }
 
+function Invoke-TsBenchRequest {
+    # Hand the complete HTTP sequence to TypeScript in one subprocess:
+    # optional warmup, KV reset, then one measured streaming request. The
+    # request's final server timings and per-token events feed every metric.
+    param(
+        [int]$Port,
+        [string]$Prompt,
+        [int]$MaxTokens,
+        [switch]$ReasoningOff,
+        [switch]$Warmup
+    )
+    $node   = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $script = $env:CALIBR_TS_BENCH_SCRIPT
+    $payload = [ordered]@{
+        baseUrl      = "http://127.0.0.1:$Port"
+        prompt       = $Prompt
+        maxTokens    = $MaxTokens
+        warmup       = [bool]$Warmup
+        warmupMaxTokens = 8
+        slotId       = 0
+        seed         = 42
+        reasoningOff = [bool]$ReasoningOff
+        timeoutMs    = 900000
+    } | ConvertTo-Json -Compress -Depth 5
+    # Use a UTF-8 temp file instead of stdin. Windows PowerShell can pipe
+    # native-process stdin as UTF-16, which made Node read invalid JSON.
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-bench-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $out  = & $node $script --json-file $payloadPath
+        $text = (@($out) -join "`n").Trim()
+        if (-not $text) { return [pscustomobject]@{ ok = $false; error = 'ts bench runner produced no output' } }
+        try { return ($text | ConvertFrom-Json) }
+        catch { return [pscustomobject]@{ ok = $false; error = "ts bench runner returned non-JSON: $($text.Substring(0, [Math]::Min(200, $text.Length)))" } }
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Resolve-TsBenchRunnerScript {
+    # CLI runs inject CALIBR_TS_BENCH_SCRIPT directly. For local standalone
+    # repo runs (`.\calibr.ps1 bench/all`), fall back to cli/dist so latency
+    # measurements still work after `npm run build`. For packaged npm installs,
+    # calibr.ps1 lives in package/engine while dist lives in package/dist.
+    if ($env:CALIBR_TS_BENCH -eq '0') { return "" }
+    if ($env:CALIBR_TS_BENCH_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_BENCH_SCRIPT)) {
+        return $env:CALIBR_TS_BENCH_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\benchRunnerCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\benchRunnerCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Resolve-TsBenchCoordinatorScript {
+    if ($env:CALIBR_TS_COORDINATOR -eq '0') { return "" }
+    if ($env:CALIBR_TS_COORDINATOR_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_COORDINATOR_SCRIPT)) {
+        return $env:CALIBR_TS_COORDINATOR_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\benchCoordinatorCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\benchCoordinatorCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Invoke-TsBenchCoordinator {
+    param($item, $cfg, [int]$RunCount, [string]$logFile)
+    # The current TS metric provider has parity for NVIDIA/CUDA. Keep the full
+    # PowerShell coordinator on AMD/Metal/CPU until their native providers land.
+    if ([string]$cfg.hardware.gpu_backend_hint -ne 'cuda') { return $null }
+    $script = Resolve-TsBenchCoordinatorScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-coordinator-{0}" -f ([Guid]::NewGuid().ToString("N")))
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $payloadPath = Join-Path $root "payload.json"
+    $resultPath = Join-Path $root "result.json"
+    $eventPath = Join-Path $root "events.log"
+    $payload = [ordered]@{
+        item = $item
+        cfg = $cfg
+        runs = $RunCount
+        minimalPolling = [bool]$MinimalPolling
+        eventFile = $eventPath
+        logFile = $logFile
+        session = @{
+            bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
+            bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
+            llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
+        }
+    } | ConvertTo-Json -Compress -Depth 30
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $node
+        $psi.Arguments = "{0} --json-file {1} --result-file {2}" -f (ConvertTo-ProcessArgument $script), (ConvertTo-ProcessArgument $payloadPath), (ConvertTo-ProcessArgument $resultPath)
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p) { return $null }
+        $shown = 0
+        while (-not $p.HasExited) {
+            Start-Sleep -Milliseconds 100
+            if (Test-Path -LiteralPath $eventPath) {
+                $lines = @(Get-Content -LiteralPath $eventPath -ErrorAction SilentlyContinue)
+                while ($shown -lt $lines.Count) {
+                    Write-Host $lines[$shown]
+                    $shown++
+                }
+            }
+        }
+        if (Test-Path -LiteralPath $eventPath) {
+            $lines = @(Get-Content -LiteralPath $eventPath -ErrorAction SilentlyContinue)
+            while ($shown -lt $lines.Count) {
+                Write-Host $lines[$shown]
+                $shown++
+            }
+        }
+        if (-not (Test-Path -LiteralPath $resultPath)) { return $null }
+        return (Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Resolve-TsMetricsPollerScript {
+    if ($env:CALIBR_TS_METRICS -eq '0') { return "" }
+    if ($env:CALIBR_TS_METRICS_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_METRICS_SCRIPT)) {
+        return $env:CALIBR_TS_METRICS_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\metricsPollerCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\metricsPollerCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Resolve-TsServerLifecycleScript {
+    if ($env:CALIBR_TS_LIFECYCLE -eq '0') { return "" }
+    if ($env:CALIBR_TS_LIFECYCLE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_LIFECYCLE_SCRIPT)) {
+        return $env:CALIBR_TS_LIFECYCLE_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\serverLifecycleCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\serverLifecycleCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function ConvertTo-ProcessArgument {
+    param([string]$Value)
+    if ($null -eq $Value) { return '""' }
+    return '"' + ($Value -replace '\\', '\\' -replace '"', '\"') + '"'
+}
+
+function Get-TsServerLifecycleStatus {
+    param($Lifecycle)
+    if (-not $Lifecycle -or -not (Test-Path -LiteralPath $Lifecycle.status_file)) { return $null }
+    try {
+        return (Get-Content -LiteralPath $Lifecycle.status_file -Raw -ErrorAction Stop | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Start-TsServerLifecycle {
+    param(
+        [string]$Executable,
+        [string[]]$Arguments,
+        [string]$BaseUrl,
+        [int]$TimeoutMs
+    )
+    $script = Resolve-TsServerLifecycleScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $id = [Guid]::NewGuid().ToString("N")
+    $root = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-lifecycle-{0}" -f $id)
+    New-Item -ItemType Directory -Path $root -Force | Out-Null
+    $payloadPath = Join-Path $root "payload.json"
+    $statusPath = Join-Path $root "status.json"
+    $stopPath = Join-Path $root "stop"
+    $stdoutPath = Join-Path $root "server.stdout.log"
+    $stderrPath = Join-Path $root "server.stderr.log"
+    $payload = [ordered]@{
+        executable = $Executable
+        args = @($Arguments)
+        baseUrl = $BaseUrl
+        timeoutMs = $TimeoutMs
+        pollIntervalMs = 250
+        statusFile = $statusPath
+        stopFile = $stopPath
+        stdoutFile = $stdoutPath
+        stderrFile = $stderrPath
+        parentPid = $PID
+    } | ConvertTo-Json -Compress -Depth 10
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $node
+        $psi.Arguments = "{0} --json-file {1}" -f (ConvertTo-ProcessArgument $script), (ConvertTo-ProcessArgument $payloadPath)
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p) { throw "could not start TS lifecycle supervisor" }
+        $stdoutTask = $p.StandardOutput.ReadToEndAsync()
+        $stderrTask = $p.StandardError.ReadToEndAsync()
+        $deadline = (Get-Date).AddSeconds(5)
+        $status = $null
+        while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
+            Start-Sleep -Milliseconds 25
+            $status = Get-TsServerLifecycleStatus -Lifecycle @{ status_file = $statusPath }
+            if ($status -and $status.serverPid) { break }
+            if ($status -and $status.state -eq 'error') { break }
+        }
+        if (-not $status -or -not $status.serverPid) {
+            try { if (-not $p.HasExited) { $p.Kill() } } catch { }
+            throw "TS lifecycle supervisor did not publish a server PID"
+        }
+        return @{
+            process = $p
+            server_pid = [int]$status.serverPid
+            status_file = $statusPath
+            stop_file = $stopPath
+            stdout_file = $stdoutPath
+            stderr_file = $stderrPath
+            payload_file = $payloadPath
+            root = $root
+            stdout_task = $stdoutTask
+            stderr_task = $stderrTask
+            kind = 'ts'
+        }
+    } catch {
+        try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+        return $null
+    }
+}
+
+function Stop-TsServerLifecycle {
+    param($Lifecycle)
+    if (-not $Lifecycle) { return "" }
+    try {
+        [System.IO.File]::WriteAllText($Lifecycle.stop_file, "stop", (New-Object System.Text.UTF8Encoding($false)))
+        $deadline = (Get-Date).AddSeconds(5)
+        while ((Get-Date) -lt $deadline -and -not $Lifecycle.process.HasExited) {
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not $Lifecycle.process.HasExited) {
+            try { $Lifecycle.process.Kill() } catch { }
+        }
+        Start-Sleep -Milliseconds 100
+        if (Test-Path -LiteralPath $Lifecycle.stderr_file) {
+            return (Get-Content -LiteralPath $Lifecycle.stderr_file -Raw -ErrorAction SilentlyContinue)
+        }
+        return ""
+    } finally {
+        try { Remove-Item -LiteralPath $Lifecycle.root -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    }
+}
+
+function Start-TsBenchMetricPoller {
+    param(
+        [int]$ProcessId,
+        [int]$IntervalMs = 150
+    )
+    $script = Resolve-TsMetricsPollerScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-bench-poll-{0}.jsonl" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $node
+        $psi.Arguments = "{0} --pid {1} --interval-ms {2} --out-file {3}" -f (ConvertTo-ProcessArgument $script), $ProcessId, $IntervalMs, (ConvertTo-ProcessArgument $path)
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        if (-not $p) { return $null }
+        Start-Sleep -Milliseconds 40
+        if ($p.HasExited) {
+            try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { }
+            return $null
+        }
+        return @{ process = $p; path = $path; kind = 'ts' }
+    } catch {
+        try { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue } catch { }
+        return $null
+    }
+}
+
 function Invoke-OneBenchRun {
     # Execute one warmup-then-bench cycle for $item: spawn llama-server,
     # wait for ready, optional warmup, bench, parse stderr, tear down.
@@ -292,30 +931,52 @@ function Invoke-OneBenchRun {
 
     $argStr = "-m `"$($item.model_path)`""
     if ($item.mmproj_path) { $argStr += " --mmproj `"$($item.mmproj_path)`"" }
-    $argStr += " $($item.extra_args) --port $port --host 127.0.0.1 --no-warmup --cache-ram 128"
+    $slotSavePath = Join-Path (Split-Path $logFile -Parent) "slots"
+    New-Item -ItemType Directory -Path $slotSavePath -Force | Out-Null
+    $argStr += " $($item.extra_args) --port $port --host 127.0.0.1 --no-warmup --cache-ram 128 --slot-save-path `"$slotSavePath`""
+    $serverArgs = @("-m", [string]$item.model_path)
+    if ($item.mmproj_path) { $serverArgs += @("--mmproj", [string]$item.mmproj_path) }
+    $serverArgs += @([string]$item.extra_args -split '\s+' | Where-Object { $_ })
+    $serverArgs += @(
+        "--port", [string]$port, "--host", "127.0.0.1", "--no-warmup",
+        "--cache-ram", "128", "--slot-save-path", $slotSavePath
+    )
 
     $gpuBaseline = Get-GpuSnapshot
     $vramBefore = $gpuBaseline.mem_mib
+    $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
+    $vramBaselinePct = if ($vramTotal -gt 0) { [math]::Round($vramBefore / $vramTotal, 4) } else { $null }
     $sharedBaseline = if ($cfg.wddm_detection.enable_shared_mem_counter) { Get-SharedGPUMemoryMib } else { 0 }
     if ($sharedBaseline -lt 0) { $sharedBaseline = 0 }
     $ramBaseline = Get-AvailableMemoryMib   # MiB free before load
-
     "===== RUN $runIndex =====" | Out-File -Encoding utf8 -Append $logFile
     "[CMD] $exe $argStr" | Out-File -Encoding utf8 -Append $logFile
     "[VRAM before: $vramBefore MiB; shared baseline: $sharedBaseline MiB; RAM avail: $ramBaseline MiB]" | Out-File -Encoding utf8 -Append $logFile
 
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $exe
-    $psi.Arguments = $argStr
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError  = $true
-    $psi.UseShellExecute = $false
-    $psi.CreateNoWindow  = $true
-
     $loadStart = Get-Date
-    $p = [System.Diagnostics.Process]::Start($psi)
-    $outTask = $p.StandardOutput.ReadToEndAsync()
-    $errTask = $p.StandardError.ReadToEndAsync()
+    $lifecycle = Start-TsServerLifecycle `
+        -Executable $exe `
+        -Arguments $serverArgs `
+        -BaseUrl "http://127.0.0.1:$port" `
+        -TimeoutMs ([int]$cfg.bench.wait_sec_ready * 1000)
+    if ($lifecycle) {
+        $p = $lifecycle.process
+        $serverPid = [int]$lifecycle.server_pid
+        $outTask = $null
+        $errTask = $null
+    } else {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = $argStr
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow  = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $serverPid = $p.Id
+        $outTask = $p.StandardOutput.ReadToEndAsync()
+        $errTask = $p.StandardError.ReadToEndAsync()
+    }
 
     # Phase marker: CLI uses these to drive the per-run flow widget. Grep-
     # stable single-word state name. See RunView's PHASE_RE / RUN_PHASES.
@@ -324,6 +985,7 @@ function Invoke-OneBenchRun {
     $deadline = (Get-Date).AddSeconds([int]$cfg.bench.wait_sec_ready)
     $ready = $false
     $peakVram = $vramBefore
+    $vramTrack = @{ process_peak = -1; external_peak = -1 }
     $peakShared = 0
     $peakPower = 0.0
     $peakTemp = 0
@@ -331,7 +993,16 @@ function Invoke-OneBenchRun {
     $utilCount = 0
     $minRam = $ramBaseline       # min available => peak used
     $peakDiskRead = 0            # bytes/sec, load phase only
-    $wc = New-Object System.Net.WebClient
+    $trackProcessVram = {
+        param([int]$totalVramNow)
+        $procVram = Get-GpuProcessMemoryMib -ProcessId $serverPid
+        if ($procVram -ge 0) {
+            if ($procVram -gt $vramTrack.process_peak) { $vramTrack.process_peak = $procVram }
+            $external = [Math]::Max(0, $totalVramNow - $procVram)
+            if ($external -gt $vramTrack.external_peak) { $vramTrack.external_peak = $external }
+        }
+    }
+    $wc = if ($lifecycle) { $null } else { New-Object System.Net.WebClient }
     while ((Get-Date) -lt $deadline -and -not $p.HasExited) {
         Start-Sleep -Milliseconds 500
         if ($MinimalPolling) {
@@ -341,6 +1012,7 @@ function Invoke-OneBenchRun {
             # sysfs on Linux, so this never throws when nvidia-smi is absent.
             $vNow = (Get-GpuSnapshot).mem_mib
             if ($vNow -gt $peakVram) { $peakVram = $vNow }
+            & $trackProcessVram $vNow
             if ($cfg.wddm_detection.enable_shared_mem_counter) {
                 $s = Get-SharedGPUMemoryMib
                 if ($s -ge 0) {
@@ -351,6 +1023,7 @@ function Invoke-OneBenchRun {
         } else {
             $snap = Get-GpuSnapshot
             if ($snap.mem_mib  -gt $peakVram)  { $peakVram  = $snap.mem_mib }
+            & $trackProcessVram $snap.mem_mib
             if ($snap.power_w  -gt $peakPower) { $peakPower = $snap.power_w }
             if ($snap.temp_c   -gt $peakTemp)  { $peakTemp  = $snap.temp_c }
             if ($snap.util_pct -ge 0) { $utilSum += $snap.util_pct; $utilCount++ }
@@ -378,13 +1051,27 @@ function Invoke-OneBenchRun {
             $diskStr = $diskMBNow.ToString($inv)
             Write-Host ("[poll] gpu_mem={0} gpu_pow={1} gpu_temp={2} gpu_util={3} ram_used={4} disk_r={5}" -f $snap.mem_mib, $powStr, $snap.temp_c, $snap.util_pct, $ramUsedNow, $diskStr)
         }
-        try {
-            $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
-            if ($content.Length -gt 10) { $ready = $true; break }
-        } catch { }
+        if ($lifecycle) {
+            $lifecycleStatus = Get-TsServerLifecycleStatus -Lifecycle $lifecycle
+            if ($lifecycleStatus -and $lifecycleStatus.state -eq 'ready') {
+                $ready = $true
+                break
+            }
+            if ($lifecycleStatus -and $lifecycleStatus.state -in @('timeout', 'exited', 'error')) { break }
+        } else {
+            try {
+                $content = $wc.DownloadString("http://127.0.0.1:$port/v1/models")
+                if ($content.Length -gt 10) { $ready = $true; break }
+            } catch { }
+        }
     }
-    $wc.Dispose()
-    $loadSec = [math]::Round(((Get-Date) - $loadStart).TotalSeconds, 2)
+    if ($wc) { $wc.Dispose() }
+    $lifecycleStatus = if ($lifecycle) { Get-TsServerLifecycleStatus -Lifecycle $lifecycle } else { $null }
+    $loadSec = if ($lifecycleStatus -and $null -ne $lifecycleStatus.loadMs) {
+        [math]::Round([double]$lifecycleStatus.loadMs / 1000, 2)
+    } else {
+        [math]::Round(((Get-Date) - $loadStart).TotalSeconds, 2)
+    }
 
     if ($ready) { Write-Host "[phase] server_ready" }
 
@@ -393,6 +1080,11 @@ function Invoke-OneBenchRun {
         timestamp       = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")
         vram_before_mib = $vramBefore
         vram_peak_mib   = $peakVram
+        vram_baseline_mib = $vramBefore
+        vram_baseline_pct = $vramBaselinePct
+        vram_total_peak_mib = $peakVram
+        vram_process_peak_mib = if ($vramTrack.process_peak -ge 0) { $vramTrack.process_peak } else { $null }
+        vram_external_peak_mib = if ($vramTrack.external_peak -ge 0) { $vramTrack.external_peak } else { $null }
         shared_peak_mib = $peakShared
         load_sec        = $loadSec
         ready           = $ready
@@ -401,6 +1093,26 @@ function Invoke-OneBenchRun {
         # Extended metrics (added in v0.1.3). Defaults are sensible
         # null/zero so the schema stays uniform across all runs.
         ttft_sec             = $null   # set after the bench POST returns
+        prompt_ms            = $null
+        ttfr_ms              = $null
+        e2e_ttft_ms          = $null
+        ttfh_ms              = $null
+        stream_open_ms       = $null
+        client_ttft_ms       = $null
+        e2e_first_reasoning_ms = $null
+        e2e_first_content_ms = $null
+        reasoning_delay_ms   = $null
+        e2e_latency_ms       = $null
+        server_prefill_ms    = $null
+        server_ttft_ms       = $null
+        tpot_ms              = $null
+        itl_p95_ms           = $null
+        delivery_gap_median_ms = $null
+        delivery_gap_p95_ms  = $null
+        delivery_gap_max_ms  = $null
+        total_request_ms     = $null
+        latency_total_request_ms = $null
+        latency_error        = $null
         gpu_power_peak_w     = [math]::Round($peakPower, 1)
         gpu_temp_peak_c      = $peakTemp
         gpu_util_avg_pct     = if ($utilCount -gt 0) { [int]($utilSum / $utilCount) } else { 0 }
@@ -421,21 +1133,6 @@ function Invoke-OneBenchRun {
         # prompt_per_second, predicted_n, predicted_per_second, prompt_ms) is
         # returned by llama-server on this endpoint too, so the metric
         # pipeline below is untouched.
-        if ($cfg.bench.warmup) {
-            try {
-                $warmupReq = @{
-                    messages    = @(@{ role = 'user'; content = $prompt })
-                    max_tokens  = 8
-                    temperature = 0.0
-                    stream      = $false
-                    cache_prompt = $true
-                }
-                if ($item.reasoning_mode -eq "off") { $warmupReq["enable_thinking"] = $false }
-                $wBody = $warmupReq | ConvertTo-Json -Compress -Depth 5
-                Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
-            } catch { }
-        }
-
         $reqBody = @{
             messages    = @(@{ role = 'user'; content = $prompt })
             max_tokens  = $nPred
@@ -446,12 +1143,61 @@ function Invoke-OneBenchRun {
         if ($item.reasoning_mode -eq "off") { $reqBody["enable_thinking"] = $false }
         $body = $reqBody | ConvertTo-Json -Compress -Depth 5
         Write-Host "[phase] sending_prompt"
+        $requestStart = Get-Date
+        $inferencePoller = if (-not $MinimalPolling) { Start-BenchMetricPoller -ProcessId $serverPid } else { $null }
         try {
-            $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
+            $tsBenchScript = Resolve-TsBenchRunnerScript
+            if ($tsBenchScript) {
+                # One Node call owns warmup + reset + the measured streaming
+                # request while this poller samples the complete sequence.
+                $env:CALIBR_TS_BENCH_SCRIPT = $tsBenchScript
+                $resp = Invoke-TsBenchRequest `
+                    -Port $port `
+                    -Prompt $prompt `
+                    -MaxTokens $nPred `
+                    -ReasoningOff:($item.reasoning_mode -eq "off") `
+                    -Warmup:([bool]$cfg.bench.warmup -and -not [bool]$item.mmproj_path)
+                if (-not $resp.ok) { throw "ts bench runner: $($resp.error)" }
+                if ($null -ne $resp.total_request_ms) { $run.total_request_ms = [math]::Round([double]$resp.total_request_ms, 2) }
+                if ($null -ne $resp.ttfr_ms) { $run.ttfr_ms = [math]::Round([double]$resp.ttfr_ms, 2) }
+                if ($null -ne $resp.e2e_ttft_ms) { $run.e2e_ttft_ms = [math]::Round([double]$resp.e2e_ttft_ms, 2) }
+                foreach ($metric in @(
+                    'ttfh_ms', 'stream_open_ms', 'client_ttft_ms',
+                    'e2e_first_reasoning_ms', 'e2e_first_content_ms', 'reasoning_delay_ms',
+                    'e2e_latency_ms', 'server_prefill_ms', 'server_ttft_ms', 'tpot_ms',
+                    'itl_p95_ms', 'delivery_gap_median_ms', 'delivery_gap_p95_ms', 'delivery_gap_max_ms'
+                )) {
+                    if ($null -ne $resp.$metric) { $run.$metric = [math]::Round([double]$resp.$metric, 3) }
+                }
+                if ($null -ne $resp.latency_total_request_ms) {
+                    $run.latency_total_request_ms = [math]::Round([double]$resp.latency_total_request_ms, 2)
+                }
+                if ($resp.latency_error) { $run.latency_error = [string]$resp.latency_error }
+            } else {
+                if ($cfg.bench.warmup) {
+                    try {
+                        $warmupReq = @{
+                            messages    = @(@{ role = 'user'; content = $prompt })
+                            max_tokens  = 8
+                            temperature = 0.0
+                            stream      = $false
+                            cache_prompt = $true
+                        }
+                        if ($item.reasoning_mode -eq "off") { $warmupReq["enable_thinking"] = $false }
+                        $wBody = $warmupReq | ConvertTo-Json -Compress -Depth 5
+                        Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $wBody -ContentType "application/json" -TimeoutSec 300 | Out-Null
+                    } catch { }
+                }
+                $resp = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v1/chat/completions" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 900
+            }
+            if ($null -eq $run.total_request_ms) {
+                $run.total_request_ms = [math]::Round(((Get-Date) - $requestStart).TotalMilliseconds, 2)
+            }
             $run.ok = $true
             if ($resp.timings) {
                 $run.prompt_n   = $resp.timings.prompt_n
                 $run.prompt_tps = [math]::Round($resp.timings.prompt_per_second, 2)
+                if ($null -ne $resp.timings.prompt_ms) { $run.prompt_ms = [math]::Round([double]$resp.timings.prompt_ms, 2) }
                 $run.eval_n     = $resp.timings.predicted_n
                 # eval_tps guard: when the model emits ~1 token (e.g. it hits
                 # EOS immediately on a bare prompt), predicted_ms rounds to 0
@@ -466,23 +1212,61 @@ function Invoke-OneBenchRun {
                 } else {
                     $run.eval_tps = $null   # unmeasured: too few tokens to time
                 }
-                # Time-to-first-token: llama.cpp reports prompt_ms (total
-                # time spent processing the input prompt). The first
-                # generated token comes out immediately after, so prompt_ms
-                # is effectively the felt latency before the model
-                # responds. Dominates total time for long prompts because
-                # prompt eval is O(N^2) in input length.
-                if ($null -ne $resp.timings.prompt_ms) {
-                    $run.ttft_sec = [math]::Round([double]$resp.timings.prompt_ms / 1000, 3)
+                # Legacy report field: prefer the real streamed time-to-first
+                # content when available, otherwise keep the old prompt-ms
+                # approximation so older report views remain meaningful.
+                $headlineTtft = if ($null -ne $run.server_ttft_ms) { $run.server_ttft_ms } elseif ($null -ne $run.client_ttft_ms) { $run.client_ttft_ms } else { $run.e2e_ttft_ms }
+                if ($null -ne $headlineTtft) {
+                    $run.ttft_sec = [math]::Round([double]$headlineTtft / 1000, 3)
+                } elseif ($null -ne $run.prompt_ms) {
+                    $run.ttft_sec = [math]::Round([double]$run.prompt_ms / 1000, 3)
                 }
             }
-        } catch { $run.error = $_.Exception.Message }
+        } catch {
+            $run.total_request_ms = [math]::Round(((Get-Date) - $requestStart).TotalMilliseconds, 2)
+            $run.error = $_.Exception.Message
+        } finally {
+            $pollSamples = @(Stop-BenchMetricPoller -Poller $inferencePoller)
+            foreach ($sample in $pollSamples) {
+                $mem = if ($null -ne $sample.gpu_mem_mib) { [int]$sample.gpu_mem_mib } else { 0 }
+                if ($mem -gt $run.vram_peak_mib)       { $run.vram_peak_mib = $mem }
+                if ($mem -gt $run.vram_total_peak_mib) { $run.vram_total_peak_mib = $mem }
+
+                $procMem = if ($null -ne $sample.process_vram_mib) { [int]$sample.process_vram_mib } else { -1 }
+                if ($procMem -ge 0 -and ($null -eq $run.vram_process_peak_mib -or $procMem -gt $run.vram_process_peak_mib)) {
+                    $run.vram_process_peak_mib = $procMem
+                }
+                if ($procMem -ge 0) {
+                    $external = [Math]::Max(0, $mem - $procMem)
+                    if ($null -eq $run.vram_external_peak_mib -or $external -gt $run.vram_external_peak_mib) {
+                        $run.vram_external_peak_mib = $external
+                    }
+                }
+
+                $pow = if ($null -ne $sample.gpu_power_w) { [double]$sample.gpu_power_w } else { 0.0 }
+                if ($pow -gt $run.gpu_power_peak_w) { $run.gpu_power_peak_w = [math]::Round($pow, 1) }
+                $tmp = if ($null -ne $sample.gpu_temp_c) { [int]$sample.gpu_temp_c } else { 0 }
+                if ($tmp -gt $run.gpu_temp_peak_c) { $run.gpu_temp_peak_c = $tmp }
+                $util = if ($null -ne $sample.gpu_util_pct) { [int]$sample.gpu_util_pct } else { -1 }
+                if ($util -ge 0) { $utilSum += $util; $utilCount++ }
+
+                $sharedNow = if ($null -ne $sample.shared_mib) { [int]$sample.shared_mib } else { -1 }
+                if ($sharedNow -ge 0) {
+                    $delta = $sharedNow - $sharedBaseline
+                    if ($delta -gt $run.shared_peak_mib) { $run.shared_peak_mib = $delta }
+                }
+                $ramNow = if ($null -ne $sample.ram_avail_mib) { [int]$sample.ram_avail_mib } else { -1 }
+                if ($ramBaseline -ge 0 -and $ramNow -ge 0) {
+                    $usedNow = $ramBaseline - $ramNow
+                    if ($usedNow -gt $run.ram_used_peak_mib) { $run.ram_used_peak_mib = [int]$usedNow }
+                }
+            }
+            if ($utilCount -gt 0) { $run.gpu_util_avg_pct = [int]($utilSum / $utilCount) }
+        }
 
         # Post-bench snapshot: grabs peaks of GPU/RAM at the moment the model
-        # is hottest (the bench POST is synchronous, so we don't poll during
-        # it; this single snapshot captures the steady-state load right
-        # after). Background-thread polling during the POST would be more
-        # accurate but adds significant complexity for marginal gain.
+        # is still resident. The background poller above covers the synchronous
+        # POST window; this one-shot remains as a final steady-state sample.
         $snap = Get-GpuSnapshot
         # On Linux the streamed radeontop dump can lag behind on a fast bench;
         # take one accurate one-shot read at this peak moment (the server is
@@ -490,7 +1274,11 @@ function Invoke-OneBenchRun {
         $vramSnap = $snap.mem_mib
         $vramFresh = Get-LinuxGpuVramFresh
         if ($vramFresh -ge 0) { $vramSnap = $vramFresh }
+        & $trackProcessVram $vramSnap
         if ($vramSnap     -gt $run.vram_peak_mib)        { $run.vram_peak_mib       = $vramSnap }
+        if ($vramSnap     -gt $run.vram_total_peak_mib)  { $run.vram_total_peak_mib = $vramSnap }
+        if ($vramTrack.process_peak -ge 0)               { $run.vram_process_peak_mib = $vramTrack.process_peak }
+        if ($vramTrack.external_peak -ge 0)              { $run.vram_external_peak_mib = $vramTrack.external_peak }
         if ($snap.power_w  -gt $run.gpu_power_peak_w)     { $run.gpu_power_peak_w    = [math]::Round($snap.power_w, 1) }
         if ($snap.temp_c   -gt $run.gpu_temp_peak_c)      { $run.gpu_temp_peak_c     = $snap.temp_c }
         if ($cfg.wddm_detection.enable_shared_mem_counter) {
@@ -507,44 +1295,52 @@ function Invoke-OneBenchRun {
         }
     }
 
-    if (-not $p.HasExited) { try { $p.Kill() } catch { } }
+    if ($lifecycle) {
+        $err = Stop-TsServerLifecycle -Lifecycle $lifecycle
+    } else {
+        if (-not $p.HasExited) { try { $p.Kill() } catch { } }
+        Start-Sleep -Milliseconds 700
+        try { $err = $errTask.GetAwaiter().GetResult() } catch { $err = "" }
+    }
     Stop-LinuxGpuMonitor
-    Start-Sleep -Milliseconds 700
-    try { $err = $errTask.GetAwaiter().GetResult() } catch { $err = "" }
 
     "`n===== STDERR (run $runIndex) =====" | Out-File -Encoding utf8 -Append $logFile
     $err | Out-File -Encoding utf8 -Append $logFile
 
-    $patterns = @{
-        cpu_model_mib    = 'CPU model buffer size\s*=\s*([\d\.]+)'
-        cuda_model_mib   = 'CUDA0 model buffer size\s*=\s*([\d\.]+)'
-        kv_cache_mib     = 'CUDA0 KV buffer size\s*=\s*([\d\.]+)'
-        compute_cuda_mib = 'CUDA0 compute buffer size\s*=\s*([\d\.]+)'
-        compute_host_mib = 'CUDA_Host compute buffer size\s*=\s*([\d\.]+)'
-        layers_offloaded = 'offloaded (\d+)/(\d+) layers'
-    }
-    foreach ($k in $patterns.Keys) {
-        $m = [regex]::Match($err, $patterns[$k])
-        if ($m.Success) {
-            if ($k -eq 'layers_offloaded') { $run[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
-            else { $run[$k] = [double]$m.Groups[1].Value }
+    $tsFinalizedRun = Invoke-TsFinalizeBenchRun -run $run -stderr $err -cfg $cfg
+    if ($null -ne $tsFinalizedRun) {
+        $run = $tsFinalizedRun
+    } else {
+        $patterns = @{
+            cpu_model_mib    = 'CPU model buffer size\s*=\s*([\d\.]+)'
+            cuda_model_mib   = 'CUDA0 model buffer size\s*=\s*([\d\.]+)'
+            kv_cache_mib     = 'CUDA0 KV buffer size\s*=\s*([\d\.]+)'
+            compute_cuda_mib = 'CUDA0 compute buffer size\s*=\s*([\d\.]+)'
+            compute_host_mib = 'CUDA_Host compute buffer size\s*=\s*([\d\.]+)'
+            layers_offloaded = 'offloaded (\d+)/(\d+) layers'
         }
-    }
-    # Trap llama.cpp builds that don't recognize a model's architecture (e.g.
-    # an older build vs. a brand-new lineage). Surface the architecture name
-    # so the caller can short-circuit further tests on the same model.
-    $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
-    if ($mArch.Success) { $run.unsupported_architecture = $mArch.Groups[1].Value }
-    if ($err -match 'successfully fit params') { $run.fit_status = "success" }
-    elseif ($err -match 'failed to fit params') { $run.fit_status = "failed_but_running" }
-    else { $run.fit_status = "unknown" }
+        foreach ($k in $patterns.Keys) {
+            $m = [regex]::Match($err, $patterns[$k])
+            if ($m.Success) {
+                if ($k -eq 'layers_offloaded') { $run[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
+                else { $run[$k] = [double]$m.Groups[1].Value }
+            }
+        }
+        # Trap llama.cpp builds that don't recognize a model's architecture.
+        $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
+        if ($mArch.Success) { $run.unsupported_architecture = $mArch.Groups[1].Value }
+        if ($err -match 'successfully fit params') { $run.fit_status = "success" }
+        elseif ($err -match 'failed to fit params') { $run.fit_status = "failed_but_running" }
+        else { $run.fit_status = "unknown" }
 
-    $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
-    $satRatio = if ($vramTotal -gt 0) { $run.vram_peak_mib / $vramTotal } else { 0 }
-    $run.wddm_vram_saturation = [math]::Round($satRatio, 3)
-    $run.wddm_flag_high_vram  = ($satRatio -gt $cfg.wddm_detection.vram_saturation_threshold)
-    $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
-    $run.wddm_flag_shared_pos = ($run.shared_peak_mib -gt $confirmThresh)
+        $vramTotal = if ($null -ne $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
+        $satRatio = if ($vramTotal -gt 0) { $run.vram_peak_mib / $vramTotal } else { 0 }
+        $run.wddm_vram_saturation = [math]::Round($satRatio, 3)
+        $run.wddm_flag_high_vram  = ($satRatio -gt $cfg.wddm_detection.vram_saturation_threshold)
+        $confirmThresh = if ($cfg.wddm_detection.shared_delta_confirm_mib) { [int]$cfg.wddm_detection.shared_delta_confirm_mib } else { 500 }
+        $run.wddm_flag_shared_pos = ($run.shared_peak_mib -gt $confirmThresh)
+        $run.fit_status = Resolve-FitStatus -Status $run.fit_status -Ok $run.ok -SharedPeakMib $run.shared_peak_mib -SharedConfirmMib $confirmThresh
+    }
 
     Write-Host "[phase] run_complete"
     return $run
@@ -586,6 +1382,8 @@ function Invoke-OneBench {
             model_path = $item.model_path; mmproj_path = $item.mmproj_path
             extra_args = $item.extra_args
             vram_before_mib = $null; vram_peak_mib = $null; shared_peak_mib = $null
+            vram_baseline_mib = $null; vram_baseline_pct = $null
+            vram_total_peak_mib = $null; vram_process_peak_mib = $null; vram_external_peak_mib = $null
             load_sec = $null; ready = $false; ok = $false
             error = "model file(s) not found on disk: " + ($missingFiles -join ', ')
             fit_status = $null; unsupported_architecture = $null
@@ -643,6 +1441,14 @@ function Invoke-OneBench {
     # Fresh log for this bench session
     Set-Content -Encoding utf8 -Path $logFile -Value ""
 
+    $coordinated = Invoke-TsBenchCoordinator -item $item -cfg $cfg -RunCount $N -logFile $logFile
+    if ($null -ne $coordinated -and $null -ne $coordinated.result) {
+        $result = $coordinated.result
+        $result | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $jsonFile
+        Write-BenchStatusLine -item $item -result $result
+        return $result
+    }
+
     $runs = @()
     for ($i = 0; $i -lt $N; $i++) {
         if ($N -gt 1) {
@@ -671,6 +1477,11 @@ function Invoke-OneBench {
                 extra_args      = $item.extra_args
                 vram_before_mib = $r.vram_before_mib
                 vram_peak_mib   = $r.vram_peak_mib
+                vram_baseline_mib = $r.vram_baseline_mib
+                vram_baseline_pct = $r.vram_baseline_pct
+                vram_total_peak_mib = $r.vram_total_peak_mib
+                vram_process_peak_mib = $r.vram_process_peak_mib
+                vram_external_peak_mib = $r.vram_external_peak_mib
                 shared_peak_mib = $r.shared_peak_mib
                 load_sec        = $r.load_sec
                 ready           = $r.ready
@@ -691,6 +1502,26 @@ function Invoke-OneBench {
                 # so the report can render the same columns uniformly
                 # whether ok=true or ok=false.
                 ttft_sec             = $r.ttft_sec
+                prompt_ms            = $r.prompt_ms
+                ttfr_ms              = $r.ttfr_ms
+                e2e_ttft_ms          = $r.e2e_ttft_ms
+                ttfh_ms              = $r.ttfh_ms
+                stream_open_ms       = $r.stream_open_ms
+                client_ttft_ms       = $r.client_ttft_ms
+                e2e_first_reasoning_ms = $r.e2e_first_reasoning_ms
+                e2e_first_content_ms = $r.e2e_first_content_ms
+                reasoning_delay_ms   = $r.reasoning_delay_ms
+                e2e_latency_ms       = $r.e2e_latency_ms
+                server_prefill_ms    = $r.server_prefill_ms
+                server_ttft_ms       = $r.server_ttft_ms
+                tpot_ms              = $r.tpot_ms
+                itl_p95_ms           = $r.itl_p95_ms
+                delivery_gap_median_ms = $r.delivery_gap_median_ms
+                delivery_gap_p95_ms  = $r.delivery_gap_p95_ms
+                delivery_gap_max_ms  = $r.delivery_gap_max_ms
+                total_request_ms     = $r.total_request_ms
+                latency_total_request_ms = $r.latency_total_request_ms
+                latency_error        = $r.latency_error
                 gpu_power_peak_w     = $r.gpu_power_peak_w
                 gpu_temp_peak_c      = $r.gpu_temp_peak_c
                 gpu_util_avg_pct     = $r.gpu_util_avg_pct
@@ -705,7 +1536,7 @@ function Invoke-OneBench {
                 llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
                 llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
             }
-            $failResult.failure_reason = Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal
+            $failResult | Add-Member -NotePropertyName failure_reason -NotePropertyValue (Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal) -Force
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
             Write-BenchStatusLine -item $item -result $failResult
             return $failResult
@@ -718,7 +1549,7 @@ function Invoke-OneBench {
     # All N runs succeeded so failure_reason is unset (null). Recording it as
     # null (rather than omitting) keeps every result's schema identical, which
     # simplifies report.template.html's column rendering.
-    $aggregated.failure_reason = Get-FailureReason -result $aggregated -sharedConfirmMib $confirmMibLocal
+    $aggregated | Add-Member -NotePropertyName failure_reason -NotePropertyValue (Get-FailureReason -result $aggregated -sharedConfirmMib $confirmMibLocal) -Force
     $aggregated | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
     Write-BenchStatusLine -item $item -result $aggregated
     return $aggregated

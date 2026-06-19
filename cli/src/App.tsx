@@ -1,27 +1,22 @@
 import React, { useEffect, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
-import { ENGINE_COMMANDS, readStatus, traceAction, traceSessionEnd, traceSessionStart, type EngineCommand, type Status, type TraceContext } from "./engine.js";
+import { readStatus, traceAction, traceSessionEnd, traceSessionStart, type Status, type TraceContext } from "./engine.js";
 import { StatusView } from "./StatusView.js";
 import { RunView } from "./RunView.js";
 import { ResultsView } from "./ResultsView.js";
-import { BenchOptionsView } from "./BenchOptionsView.js";
 import { AllOptionsView, type GuidedRunSession } from "./AllOptionsView.js";
-import { InitOptionsView } from "./InitOptionsView.js";
-import { ResetOptionsView } from "./ResetOptionsView.js";
 import { LlamaPathView } from "./LlamaPathView.js";
 import { DoctorView } from "./DoctorView.js";
+import { PreferencesView } from "./PreferencesView.js";
 
 type Screen =
   | { kind: "menu" }
-  | { kind: "advancedTools" }
   | { kind: "help" }
   | { kind: "doctor" }
-  | { kind: "initOptions" }
-  | { kind: "benchOptions" }
   | { kind: "allOptions" }
-  | { kind: "resetOptions" }
   | { kind: "llamaPath" }
+  | { kind: "preferences" }
   | { kind: "run"; args: string[]; label: string; trace?: TraceContext }
   | { kind: "results" };
 
@@ -40,11 +35,6 @@ type MenuItem = {
 
 function readinessBadge(ready: boolean): Badge {
   return ready ? { text: "✓", color: "green" } : { text: "*", color: "red" };
-}
-
-function initIsReady(status: Status): boolean {
-  const hw = status.config.hardware ?? {};
-  return Boolean(status.hasLocalConfig && (hw.gpu_name || hw.vram_total_mib || hw.vram_safety_budget_mib));
 }
 
 function llamaPathIsReady(status: Status): boolean {
@@ -78,43 +68,16 @@ export function App() {
   const [status, setStatus] = useState<Status>(() => readStatus());
   const [guidedSession, setGuidedSession] = useState<GuidedRunSession>({});
   const [menuCursor, setMenuCursor] = useState(0);
-  const [advancedCursor, setAdvancedCursor] = useState(0);
   const [helpCursor, setHelpCursor] = useState(0);
 
   useEffect(() => {
     traceSessionStart();
   }, []);
 
-  // Refresh status whenever we return to a menu with readiness indicators.
+  // Refresh status whenever we return to the main menu readiness indicators.
   useEffect(() => {
-    if (screen.kind === "menu" || screen.kind === "advancedTools") setStatus(readStatus());
+    if (screen.kind === "menu") setStatus(readStatus());
   }, [screen.kind]);
-
-  const openEngineCommand = (cmd: EngineCommand) => {
-    if (cmd.id === "init") {
-      setScreen({ kind: "initOptions" });
-      return;
-    }
-    if (cmd.id === "bench") {
-      setScreen({ kind: "benchOptions" });
-      return;
-    }
-    if (cmd.id === "reset") {
-      setScreen({ kind: "resetOptions" });
-      return;
-    }
-    setScreen({
-      kind: "run",
-      args: cmd.args,
-      label: cmd.label,
-      trace: {
-        flow: "advanced tools",
-        action: cmd.id,
-        message: `advanced tools > ${cmd.id}`,
-        details: { label: cmd.label },
-      },
-    });
-  };
 
   const mainItems: MenuItem[] = [
     {
@@ -137,6 +100,12 @@ export function App() {
       run: () => setScreen({ kind: "llamaPath" }),
     },
     {
+      id: "preferences",
+      label: "preferences",
+      description: "user defaults and warnings",
+      run: () => setScreen({ kind: "preferences" }),
+    },
+    {
       id: "help",
       label: "help",
       description: "doctor: check system & dependencies",
@@ -152,16 +121,6 @@ export function App() {
       run: () => setScreen({ kind: "doctor" }),
     },
   ];
-
-  const advancedItems: MenuItem[] = ENGINE_COMMANDS
-    .filter((cmd) => cmd.id !== "all")
-    .map((cmd) => ({
-      id: cmd.id,
-      label: cmd.label,
-      description: cmd.description,
-      badge: cmd.id === "init" ? readinessBadge(initIsReady(status)) : undefined,
-      run: () => openEngineCommand(cmd),
-    }));
 
   useInput((input, key) => {
     if (screen.kind === "menu") {
@@ -187,24 +146,6 @@ export function App() {
       if (key.return || input === " ") {
         mainItems[menuCursor]?.run();
         return;
-      }
-    }
-
-    if (screen.kind === "advancedTools") {
-      if (input === "q" || key.escape) {
-        setScreen({ kind: "menu" });
-        return;
-      }
-      if (key.upArrow) {
-        setAdvancedCursor((c) => Math.max(0, c - 1));
-        return;
-      }
-      if (key.downArrow) {
-        setAdvancedCursor((c) => Math.min(advancedItems.length - 1, c + 1));
-        return;
-      }
-      if (key.return || input === " ") {
-        advancedItems[advancedCursor]?.run();
       }
     }
 
@@ -256,27 +197,6 @@ export function App() {
     );
   }
 
-  if (screen.kind === "benchOptions") {
-    return (
-      <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <BenchOptionsView
-          onRun={(args, label) => setScreen({
-            kind: "run",
-            args,
-            label,
-            trace: {
-              flow: "advanced tools",
-              action: "bench",
-              message: "advanced tools > bench",
-              details: { label },
-            },
-          })}
-          onCancel={() => setScreen({ kind: "menu" })}
-        />
-      </Box>
-    );
-  }
-
   if (screen.kind === "allOptions") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
@@ -290,52 +210,18 @@ export function App() {
     );
   }
 
-  if (screen.kind === "initOptions") {
-    return (
-      <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <InitOptionsView
-          onRun={(args, label) => setScreen({
-            kind: "run",
-            args,
-            label,
-            trace: {
-              flow: "advanced tools",
-              action: "init",
-              message: "advanced tools > init",
-              details: { label },
-            },
-          })}
-          onCancel={() => setScreen({ kind: "menu" })}
-        />
-      </Box>
-    );
-  }
-
-  if (screen.kind === "resetOptions") {
-    return (
-      <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <ResetOptionsView
-          onRun={(args, label) => setScreen({
-            kind: "run",
-            args,
-            label,
-            trace: {
-              flow: "advanced tools",
-              action: "reset",
-              message: "advanced tools > reset",
-              details: { label },
-            },
-          })}
-          onCancel={() => setScreen({ kind: "menu" })}
-        />
-      </Box>
-    );
-  }
-
   if (screen.kind === "llamaPath") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <LlamaPathView onCancel={() => setScreen({ kind: "menu" })} />
+      </Box>
+    );
+  }
+
+  if (screen.kind === "preferences") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <PreferencesView onExit={() => setScreen({ kind: "menu" })} />
       </Box>
     );
   }
@@ -357,26 +243,6 @@ export function App() {
         </Box>
         <Box marginTop={1}>
           <Text dimColor>up/down to move | enter to open | q/esc back</Text>
-        </Box>
-      </Box>
-    );
-  }
-
-  if (screen.kind === "advancedTools") {
-    return (
-      <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <StatusView status={status} />
-        <Box marginTop={1} flexDirection="column">
-          <Text bold>advanced tools</Text>
-          <Box marginTop={1} flexDirection="column">
-            {renderRows(advancedItems, advancedCursor)}
-          </Box>
-          <Box marginTop={1} flexDirection="column">
-            <Text dimColor>up/down to move | enter to run | q/esc back</Text>
-            <Text dimColor>
-              <Text color="green">✓</Text> ready | <Text color="red">*</Text> needs attention
-            </Text>
-          </Box>
         </Box>
       </Box>
     );

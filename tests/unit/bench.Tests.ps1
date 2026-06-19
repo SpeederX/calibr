@@ -33,6 +33,162 @@ Describe "Get-Median" {
     }
 }
 
+Describe "Resolve-TsBenchRunnerScript" {
+    It "finds the local cli/dist runner for standalone repo runs" {
+        $oldRoot = $script:CALIBR_ROOT
+        $oldFlag = $env:CALIBR_TS_BENCH
+        $oldScript = $env:CALIBR_TS_BENCH_SCRIPT
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-runner-test-$([Guid]::NewGuid().ToString('N'))"
+        $runner = Join-Path $tmpRoot "cli\dist\benchRunnerCli.js"
+        New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
+        try {
+            $script:CALIBR_ROOT = $tmpRoot
+            $env:CALIBR_TS_BENCH = $null
+            $env:CALIBR_TS_BENCH_SCRIPT = $null
+            Assert-Equal $runner (Resolve-TsBenchRunnerScript)
+        } finally {
+            $script:CALIBR_ROOT = $oldRoot
+            $env:CALIBR_TS_BENCH = $oldFlag
+            $env:CALIBR_TS_BENCH_SCRIPT = $oldScript
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "honors CALIBR_TS_BENCH=0 as an opt-out" {
+        $oldFlag = $env:CALIBR_TS_BENCH
+        try {
+            $env:CALIBR_TS_BENCH = "0"
+            Assert-Equal "" (Resolve-TsBenchRunnerScript)
+        } finally {
+            $env:CALIBR_TS_BENCH = $oldFlag
+        }
+    }
+
+    It "delegates the complete HTTP sequence in one TypeScript call" {
+        $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+        Assert-True ($benchSource -match 'warmupMaxTokens\s*=\s*8') "TS sequence should own warmup"
+        Assert-False ($benchSource -match 'latencyMaxTokens') "TS sequence should not create a short second request"
+        Assert-True ($benchSource -match 'slotId\s*=\s*0') "TS sequence should reset the measured slot"
+        Assert-True ($benchSource -match '--slot-save-path') "llama-server should enable slot erase"
+        Assert-True ($benchSource -match 'Invoke-TsBenchRequest[\s\S]*-Warmup:\(\[bool\]\$cfg\.bench\.warmup') "PowerShell should invoke one sequence"
+        Assert-Equal 1 ([regex]::Matches($benchSource, '\$resp\s*=\s*Invoke-TsBenchRequest').Count) "PowerShell should invoke the TS sequence once"
+        Assert-True ($benchSource -match '\$resp\.latency_total_request_ms') "PowerShell should map sequence latency"
+    }
+}
+
+Describe "TypeScript repeated-run coordinator" {
+    $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+
+    It "owns the N-run path on CUDA and preserves the PowerShell fallback" {
+        Assert-True ($benchSource -match 'function Resolve-TsBenchCoordinatorScript') "coordinator resolver missing"
+        Assert-True ($benchSource -match 'function Invoke-TsBenchCoordinator') "coordinator launcher missing"
+        Assert-True ($benchSource -match 'benchCoordinatorCli\.js') "coordinator entrypoint missing"
+        Assert-True ($benchSource -match "gpu_backend_hint -ne 'cuda'") "non-CUDA fallback gate missing"
+        Assert-True ($benchSource -match '\$coordinated = Invoke-TsBenchCoordinator') "coordinator should run before PowerShell loop"
+        Assert-True ($benchSource -match 'for \(\$i = 0; \$i -lt \$N; \$i\+\+\)') "PowerShell fallback loop should remain"
+    }
+}
+
+Describe "Resolve-TsResultCoreScript" {
+    It "finds the local cli/dist result-core runner for standalone repo runs" {
+        $oldRoot = $script:CALIBR_ROOT
+        $oldFlag = $env:CALIBR_TS_RESULT_CORE
+        $oldScript = $env:CALIBR_TS_RESULT_CORE_SCRIPT
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-result-core-test-$([Guid]::NewGuid().ToString('N'))"
+        $runner = Join-Path $tmpRoot "cli\dist\resultCoreCli.js"
+        New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
+        try {
+            $script:CALIBR_ROOT = $tmpRoot
+            $env:CALIBR_TS_RESULT_CORE = $null
+            $env:CALIBR_TS_RESULT_CORE_SCRIPT = $null
+            Assert-Equal $runner (Resolve-TsResultCoreScript)
+        } finally {
+            $script:CALIBR_ROOT = $oldRoot
+            $env:CALIBR_TS_RESULT_CORE = $oldFlag
+            $env:CALIBR_TS_RESULT_CORE_SCRIPT = $oldScript
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "honors CALIBR_TS_RESULT_CORE=0 as an opt-out" {
+        $oldFlag = $env:CALIBR_TS_RESULT_CORE
+        try {
+            $env:CALIBR_TS_RESULT_CORE = "0"
+            Assert-Equal "" (Resolve-TsResultCoreScript)
+        } finally {
+            $env:CALIBR_TS_RESULT_CORE = $oldFlag
+        }
+    }
+
+    It "delegates stderr parsing and per-run finalization to TypeScript" {
+        $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+        Assert-True ($benchSource -match 'function Invoke-TsFinalizeBenchRun') "TS run finalizer launcher missing"
+        Assert-True ($benchSource -match 'action\s*=\s*"finalize-run"') "finalize-run action missing"
+        Assert-True ($benchSource -match '\$tsFinalizedRun = Invoke-TsFinalizeBenchRun') "run should be finalized through TypeScript"
+        Assert-True ($benchSource -match 'if \(\$null -ne \$tsFinalizedRun\)') "PowerShell fallback should remain"
+    }
+
+}
+
+Describe "TypeScript server lifecycle" {
+    $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+
+    It "finds the local lifecycle runner and honors the opt-out" {
+        $oldRoot = $script:CALIBR_ROOT
+        $oldFlag = $env:CALIBR_TS_LIFECYCLE
+        $oldScript = $env:CALIBR_TS_LIFECYCLE_SCRIPT
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-lifecycle-test-$([Guid]::NewGuid().ToString('N'))"
+        $runner = Join-Path $tmpRoot "cli\dist\serverLifecycleCli.js"
+        New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
+        try {
+            $script:CALIBR_ROOT = $tmpRoot
+            $env:CALIBR_TS_LIFECYCLE = $null
+            $env:CALIBR_TS_LIFECYCLE_SCRIPT = $null
+            Assert-Equal $runner (Resolve-TsServerLifecycleScript)
+            $env:CALIBR_TS_LIFECYCLE = "0"
+            Assert-Equal "" (Resolve-TsServerLifecycleScript)
+        } finally {
+            $script:CALIBR_ROOT = $oldRoot
+            $env:CALIBR_TS_LIFECYCLE = $oldFlag
+            $env:CALIBR_TS_LIFECYCLE_SCRIPT = $oldScript
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "owns server start/readiness/stop while preserving the PowerShell fallback" {
+        Assert-True ($benchSource -match 'function Start-TsServerLifecycle') "TS lifecycle launcher missing"
+        Assert-True ($benchSource -match 'function Stop-TsServerLifecycle') "TS lifecycle stop missing"
+        Assert-True ($benchSource -match 'serverLifecycleCli\.js') "lifecycle entrypoint should be wired"
+        Assert-True ($benchSource -match '\$serverPid = \[int\]\$lifecycle\.server_pid') "real llama-server PID should be used"
+        Assert-True ($benchSource -match 'Get-TsServerLifecycleStatus') "PowerShell adapter should consume lifecycle status"
+        Assert-True ($benchSource -match '\$psi = New-Object System\.Diagnostics\.ProcessStartInfo') "direct PowerShell spawn fallback should remain"
+        Assert-True ($benchSource -match 'CALIBR_TS_LIFECYCLE') "lifecycle opt-out should remain available"
+    }
+}
+
+Describe "Background bench polling" {
+    $benchSource = Get-Content (Join-Path $PSScriptRoot "..\..\engine\bench.ps1") -Raw
+
+    It "keeps the poller best-effort and wired around the synchronous bench POST" {
+        Assert-True ($benchSource -match 'function Start-BenchMetricPoller') "Start-BenchMetricPoller missing"
+        Assert-True ($benchSource -match 'function Stop-BenchMetricPoller') "Stop-BenchMetricPoller missing"
+        Assert-True ($benchSource -match 'function Resolve-TsMetricsPollerScript') "TS metrics poller resolver missing"
+        Assert-True ($benchSource -match 'function Start-TsBenchMetricPoller') "TS metrics poller launcher missing"
+        Assert-True ($benchSource -match 'metricsPollerCli\.js') "TS metrics poller entrypoint should be wired"
+        Assert-True ($benchSource -match '\$tsPoller = Start-TsBenchMetricPoller') "Start-BenchMetricPoller should try TS first"
+        Assert-True ($benchSource -match '\$inferencePoller = if \(-not \$MinimalPolling\)') "poller should honor -MinimalPolling"
+        Assert-True ($benchSource -match 'finally \{\s*\$pollSamples = @\(Stop-BenchMetricPoller') "poller should stop in a finally block"
+        Assert-True ($benchSource -match '\$Poller\.process\.Kill\(\)') "Stop-BenchMetricPoller should terminate TS process pollers"
+        Assert-True ($benchSource -match 'process_vram_mib') "process-attributed VRAM sample missing"
+        Assert-True ($benchSource -match '\[int\]\$IntervalMs = 150') "POST poller should sample fast runs at 150 ms"
+        Assert-True ($benchSource -match 'nvidia-smi 2>\$null') "process VRAM should fall back to parsing standard nvidia-smi output"
+        Assert-True ($benchSource -match 'llama-server') "nvidia-smi fallback should only accept llama-server rows"
+    }
+}
+
 Describe "New-AggregatedBenchResult" {
     # Minimal fixtures: planning item + config + N per-run hashtables.
     # The aggregator is pure, so we hand-roll exactly what Invoke-OneBenchRun
@@ -62,6 +218,11 @@ Describe "New-AggregatedBenchResult" {
             timestamp       = "2026-05-16T10:00:0$i"
             vram_before_mib = 1200
             vram_peak_mib   = $vramPeak
+            vram_baseline_mib = 1200
+            vram_baseline_pct = 0.1465
+            vram_total_peak_mib = $vramPeak
+            vram_process_peak_mib = $vramPeak - 1200
+            vram_external_peak_mib = 1200
             shared_peak_mib = $sharedPeak
             load_sec        = 6.5
             ready           = $true
@@ -81,6 +242,11 @@ Describe "New-AggregatedBenchResult" {
             # Extended metrics (defaults make the aggregator happy even
             # when a test doesn't care about these dimensions)
             ttft_sec             = 0.2
+            prompt_ms            = 200.0
+            ttfr_ms              = 120.0
+            e2e_ttft_ms          = 180.0
+            total_request_ms     = 3200.0
+            latency_total_request_ms = 420.0
             gpu_power_peak_w     = 140.0
             gpu_temp_peak_c      = 65
             gpu_util_avg_pct     = 80
@@ -135,6 +301,17 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 800 $r.shared_peak_mib
         Assert-True $r.wddm_flag_shared_pos
     }
+    It "infers fit_status from WDDM spill when llama.cpp does not report fit lines" {
+        $safe = _run 0 7000 40 410.0 40.0
+        $safe.fit_status = "unknown"
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs @($safe)
+        Assert-Equal "success" $r.fit_status
+
+        $spill = _run 0 7000 800 410.0 40.0
+        $spill.fit_status = "unknown"
+        $r2 = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs @($spill)
+        Assert-Equal "failed_but_running" $r2.fit_status
+    }
     It "carries the full per-run array in `runs` for audit" {
         $runs = @((_run 0 7000 30 410.0 40.0), (_run 1 7200 50 430.0 42.0), (_run 2 7100 40 420.0 41.0))
         $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
@@ -142,6 +319,21 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 7000 $r.runs[0].vram_peak_mib
         Assert-Equal 7200 $r.runs[1].vram_peak_mib
         Assert-Equal 7100 $r.runs[2].vram_peak_mib
+    }
+    It "derives first/repeat eval stats without dropping the first run" {
+        $runs = @(
+            (_run 0 7000 30 410.0 46.0),
+            (_run 1 7200 50 430.0 64.0),
+            (_run 2 7100 40 420.0 55.0)
+        )
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal 3    $r.run_count
+        Assert-Equal 55.0 $r.eval_tps          # median still includes every run
+        Assert-Equal 46.0 $r.first_eval_tps
+        Assert-Equal 55.0 $r.repeat_eval_tps   # lower median of 55,64
+        Assert-Equal 46.0 $r.eval_min_tps
+        Assert-Equal 64.0 $r.eval_max_tps
+        Assert-Equal 32.7 $r.eval_spread_pct
     }
     It "handles N=1 (median is the single value; runs array has length one)" {
         $runs = @((_run 0 5500 100 380.0 35.0))
@@ -151,12 +343,21 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal 380.0 $r.prompt_tps
         Assert-Equal 35.0  $r.eval_tps
         Assert-Equal 1 $r.runs.Count
+        Assert-Equal 1 $r.run_count
+        Assert-Equal 35.0 $r.first_eval_tps
+        Assert-Equal $null $r.repeat_eval_tps
+        Assert-Equal 0.0 $r.eval_spread_pct
     }
     It "aggregates extended metrics (median for ttft/util, max for power/temp/ram/disk)" {
         # Hand-build runs with distinct values per dimension so the
         # aggregation rule (median vs max) is observable.
         $r1 = _run 0 7000 30 410.0 40.0
         $r1.ttft_sec            = 0.20
+        $r1.prompt_ms           = 200.0
+        $r1.ttfr_ms             = 100.0
+        $r1.e2e_ttft_ms         = 180.0
+        $r1.total_request_ms    = 3000.0
+        $r1.latency_total_request_ms = 360.0
         $r1.gpu_util_avg_pct    = 60
         $r1.gpu_power_peak_w    = 130.0
         $r1.gpu_temp_peak_c     = 60
@@ -164,6 +365,11 @@ Describe "New-AggregatedBenchResult" {
         $r1.disk_read_peak_mb_s = 200.0
         $r2 = _run 1 7200 50 430.0 42.0
         $r2.ttft_sec            = 0.30   # median
+        $r2.prompt_ms           = 300.0  # median
+        $r2.ttfr_ms             = 120.0  # median
+        $r2.e2e_ttft_ms         = 240.0  # median
+        $r2.total_request_ms    = 3200.0 # median
+        $r2.latency_total_request_ms = 420.0 # median
         $r2.gpu_util_avg_pct    = 75      # median
         $r2.gpu_power_peak_w    = 180.0  # max
         $r2.gpu_temp_peak_c     = 72     # max
@@ -171,6 +377,11 @@ Describe "New-AggregatedBenchResult" {
         $r2.disk_read_peak_mb_s = 500.0  # max
         $r3 = _run 2 7100 40 420.0 41.0
         $r3.ttft_sec            = 0.40
+        $r3.prompt_ms           = 400.0
+        $r3.ttfr_ms             = 140.0
+        $r3.e2e_ttft_ms         = 280.0
+        $r3.total_request_ms    = 3400.0
+        $r3.latency_total_request_ms = 460.0
         $r3.gpu_util_avg_pct    = 90
         $r3.gpu_power_peak_w    = 150.0
         $r3.gpu_temp_peak_c     = 65
@@ -178,11 +389,29 @@ Describe "New-AggregatedBenchResult" {
         $r3.disk_read_peak_mb_s = 300.0
         $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs @($r1, $r2, $r3)
         Assert-Equal 0.3   $r.ttft_sec               "ttft median"
+        Assert-Equal 300.0 $r.prompt_ms              "prompt ms median"
+        Assert-Equal 120.0 $r.ttfr_ms                "ttfr median"
+        Assert-Equal 240.0 $r.e2e_ttft_ms            "e2e ttft median"
+        Assert-Equal 3200.0 $r.total_request_ms      "request ms median"
+        Assert-Equal 420.0 $r.latency_total_request_ms "latency request ms median"
         Assert-Equal 75    $r.gpu_util_avg_pct        "util median"
         Assert-Equal 180.0 $r.gpu_power_peak_w        "power max"
         Assert-Equal 72    $r.gpu_temp_peak_c         "temp max"
         Assert-Equal 900   $r.ram_used_peak_mib       "ram max"
         Assert-Equal 500.0 $r.disk_read_peak_mb_s     "disk max"
+    }
+    It "aggregates VRAM baseline and process-attribution fields" {
+        $runs = @(
+            (_run 0 7000 30 410.0 40.0),
+            (_run 1 7200 50 430.0 42.0),
+            (_run 2 7100 40 420.0 41.0)
+        )
+        $r = New-AggregatedBenchResult -item (_item) -cfg (_cfg) -runs $runs
+        Assert-Equal 1200   $r.vram_baseline_mib      "baseline MiB"
+        Assert-Equal 0.1465 $r.vram_baseline_pct      "baseline pct"
+        Assert-Equal 7100   $r.vram_total_peak_mib    "total peak median"
+        Assert-Equal 5900   $r.vram_process_peak_mib  "process peak median"
+        Assert-Equal 1200   $r.vram_external_peak_mib "external peak median"
     }
 }
 

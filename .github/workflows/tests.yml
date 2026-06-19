@@ -12,12 +12,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The PowerShell engine shells out to the compiled TypeScript sidecars
+      # (cli/dist/*.js) for the bench/report math. The `report` command no
+      # longer carries a PowerShell fallback (report policy moved to
+      # resultCore.ts), so the integration tests need a built cli/dist or
+      # report.html is never generated. Build it first so CI exercises the
+      # real TypeScript path rather than a fallback.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+
+      - name: Build TypeScript engine sidecars
+        working-directory: cli
+        run: |
+          npm ci
+          npm run build
+
       - name: Run unit + integration tests
         shell: pwsh
         run: |
           ./tests/run-tests.ps1
         # The custom harness exits non-zero on any failed assertion, which
-        # bubbles up here. No external dependencies (no Pester install).
+        # bubbles up here.
 
   syntax-check:
     runs-on: windows-latest

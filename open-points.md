@@ -8,7 +8,7 @@ Current baseline:
 - npm package line: `0.1.7`.
 - `dev` contains the Phase-1 CLI, engine split, mirrored tests, expanded
   presets, report redesign, guided llama.cpp auto-fetch, Linux support,
-  `doctor`, the guided-run / advanced-tools menu split, and readiness badges.
+  `doctor`, the guided-run main menu, and readiness badges.
 - Public-facing docs stay in `README.md` and `cli/README.md`.
 - Process rules live in `AGENTS.md`.
 
@@ -21,15 +21,58 @@ current guided-run cleanup line.
 
 Proposed order:
 
-1. Prune unused legacy paths and duplicated UI/engine behavior.
-2. Move the HTTP benchmark client toward TypeScript where stream parsing and
-   telemetry are easier to maintain.
-3. Add benchmark metric glossary / latency work and prompt-length prefill
-   sweep.
-4. Add opt-in telemetry / leaderboard submission when the server-side
+1. Make benchmark metrics explicit and honest in schema, live UI, and report.
+2. Treat cold load/disk as per-model data and promote CPU/RAM capacity signals.
+3. Expose advanced sweep profiles, then make sweep generation hardware-aware.
+4. Add prompt-length prefill and KV-fill benchmark modes.
+5. Add opt-in telemetry / leaderboard submission when the server-side
    Cloudflare + PHP token layer exists.
-5. Add MTP/speculative decoding support if it stays small enough for 0.1.8;
+6. Add MTP/speculative decoding support if it stays small enough for 0.1.8;
    otherwise shift it to 0.1.9.
+
+### TS bench client — current status and decisions
+
+The CUDA/NVIDIA benchmark path is now coordinated end-to-end in TypeScript and
+validated against the PowerShell path:
+
+- `cli/src/benchClient.ts`: request builder, llama.cpp timing mapper, SSE
+  parser, non-streaming runner, and a streaming runner that timestamps SSE
+  chunks for `ttfr_ms` / `e2e_ttft_ms`. Unit-tested with injected fetch/clock
+  (no live llama-server needed).
+- `cli/src/benchCoordinator.ts`: lifecycle, readiness, metric polling, warmup,
+  non-streaming throughput, streaming latency, stderr parsing, repeated runs,
+  cleanup, per-run finalization, and aggregation.
+- Default-on from the CLI, opt-out with `CALIBR_TS_COORDINATOR=0`.
+- `engine/bench.ps1` remains the adapter/persistence layer and the fallback
+  coordinator for non-CUDA providers. Do not remove that fallback until AMD,
+  Linux non-NVIDIA, and Metal providers have equivalent coverage.
+
+Decision — decouple throughput from latency:
+
+- The recommendation winner is picked on `eval_tps`, so the throughput request
+  is measured NON-streaming (uninterrupted decode = clean, stable timing).
+  Per-token SSE flushing can add jitter, undesirable for the metric the winner
+  depends on.
+- True time-to-first-token (`ttfr_ms` / `e2e_ttft_ms`) is a SEPARATE streamed
+  latency measurement (see the metric glossary / latency pass) and must not
+  perturb the throughput number.
+
+Remaining:
+
+- Add native metric providers for AMD/Linux and Metal before enabling the
+  TypeScript coordinator there. CUDA/NVIDIA now uses the complete coordinator.
+- Do NOT delete the PowerShell request path.
+
+Lifecycle migration status:
+
+- `benchCoordinatorCli` owns `llama-server` spawn, readiness, repeated-run
+  cleanup, and signal cleanup on the normal CUDA path. `serverLifecycleCli`
+  remains the lifecycle bridge used by the PowerShell fallback.
+- TypeScript owns the complete CUDA/NVIDIA run path: lifecycle, metric polling,
+  HTTP sequence, stderr parsing, repeated runs, per-run finalization, and
+  aggregation. PowerShell is the adapter/persistence layer and remains the
+  fallback coordinator for non-CUDA metric providers.
+- `CALIBR_TS_LIFECYCLE=0` keeps the direct PowerShell lifecycle as a fallback.
 
 ### Engine pruning before deeper migration
 
@@ -38,7 +81,6 @@ that no longer map to the current guided-run product.
 
 Targets:
 
-- dead CLI paths hidden behind advanced tools
 - stale command flags kept only for old prototype workflows
 - duplicated model/catalog/filter behavior across CLI screens
 - old report/backlog documentation that increases context without guiding
@@ -82,9 +124,9 @@ Candidate metric names:
 - `eval_tps`: decode / token-generation throughput.
 - `total_request_ms`: full request duration, excluding model load.
 
-Implementation note: robust stream timing is awkward in PowerShell. Consider
-moving the HTTP benchmark client into TypeScript before adding `ttfr_ms` /
-`e2e_ttft_ms`, while keeping the rest of the engine boundary intact.
+The latency measurements are implemented. Remaining work is presentation:
+document the definitions and surface them consistently in result schema,
+live UI, and report.
 
 ### Prompt-length prefill sweep
 
@@ -101,6 +143,69 @@ Suggested buckets:
 
 Track `prompt_ms`, `prompt_tps`, memory deltas, and whether the model remains
 usable under the longer prefill load.
+
+### Sweep visibility and advanced profiles
+
+The current sweep ranges are configurable in `config.json`, but guided run does
+not expose them. Add a compact advanced/profile view before widening the sweep
+surface:
+
+- context/KV candidates from `context_candidates`
+- MoE CPU split values from `planning.moecpu_sweep`: controls how many MoE
+  expert/FFN layers stay on CPU instead of GPU, trading speed for lower VRAM
+  pressure.
+- GPU offload values from `planning.offload_sweep`: controls `--gpu-layers`,
+  i.e. how many model layers llama.cpp attempts to place on GPU. Values above
+  the model's real layer count are effectively capped by llama.cpp.
+- MTP/speculative decoding flags once the benchmark client supports them
+
+UX rules:
+
+- mark these as advanced controls; users can experiment, but should not change
+  them unless they understand the memory/speed tradeoff
+- keep edits session-only in guided run; after restarting calibr, return to
+  defaults instead of writing local config
+- show the effective default values and a short explanation beside each field
+
+The main-menu `preferences` entry exists and currently persists
+`vram usage warning` as a user-level default. Guided Run mirrors that value as
+a session-only override before starting a run.
+
+Next preferences to add:
+
+- GPU layers sweep defaults / session override
+- CPU MoE sweep defaults / session override
+- polling interval default / session override
+- latency pass on/off if the extra streamed request becomes too expensive on
+  large runs
+
+Open design point: make sweep generation dynamic. The current defaults
+(`moecpu_sweep = [28,30,32,34,36]`, `offload_sweep = [20,24,28,32,36]`) are
+too tied to the original test hardware. Better candidates should depend on:
+
+- detected VRAM / UMA budget
+- model file size and estimated fixed overhead
+- GGUF architecture metadata, especially layer count and max context
+- whether the model is dense, MoE, multimodal, or has MTP support
+- previous failure/saturation signals within the same run
+
+### In-run model detail panel
+
+During benchmark runs, expose a compact model-detail panel that is closed by
+default and opened on demand from the CLI. It should help UAT/debugging without
+turning the main progress screen into a wall of text.
+
+Suggested fields:
+
+- model name, variant, tier/scope, GGUF architecture
+- max context from GGUF/catalog
+- layer count when available from GGUF metadata
+- attention/head metadata when available
+- sweep mode chosen by the planner: context, offload, or MoE CPU split
+- current config label and effective llama.cpp flags
+
+Keep this as information only at first. Do not add editing controls inside the
+live benchmark screen until the advanced sweep/profile view exists.
 
 ### MTP / speculative decoding support
 
@@ -192,7 +297,9 @@ Recently shipped and removed from the TODO queue:
 - Engine modularization plus mirrored PowerShell tests.
 - Report UI redesign.
 - llama.cpp auto-fetch and guided setup prompt.
-- Main-menu guided run / advanced tools split with setup badges.
+- Main-menu guided run with setup badges.
+- Dead CLI paths hidden behind the old advanced-tools screen.
+- Legacy `bench -Fetch` path; guided catalog runs now use `all -FetchCatalog`.
 - Linux port, dependency checks, GPU-readiness doctor path, and diagnostic
   export.
 - npm trusted-publishing release path.
@@ -225,6 +332,57 @@ Validate on a Linux machine because the Windows workspace cannot reproduce the
 
 ## Engine and benchmark correctness
 
+### Disk read as a per-model cold-load datum
+
+`disk_read_peak_mb_s` is captured only during the load phase. After the first
+cold load the GGUF sits in the OS page cache, so every later config/run of the
+same model reads ~0 MB/s. The per-row disk number is therefore misleading: only
+the first cold run carries signal (model load-from-disk throughput).
+
+Proposed: treat disk read (and load time) as a PER-MODEL datum, not a
+per-config-row column. The report's disk view should show, per model, the
+cold-load characteristics (load time + cold-load disk throughput) — a more
+honest and more interesting framing. Pairs naturally with `load_sec`, already
+measured per run.
+
+### VRAM baseline and process attribution
+
+Dedicated VRAM is currently reported as system-level baseline/peak. Keep that
+framing explicit in docs and report tooltips:
+
+- baseline VRAM used before each config run
+- baseline / total VRAM percentage, with a configurable warning threshold
+- external/system VRAM pressure during the run, so users can spot polluted
+  benchmarks caused by browsers, IDEs, games, or other GPU workloads
+
+Platform note: on Windows/NVIDIA WDDM, NVML / `nvidia-smi` does not expose
+reliable per-PID dedicated-memory values. The process table may show
+`llama-server`, but memory is often `N/A`; do not present system-level VRAM as
+exact `llama-server` VRAM. If Linux/NVIDIA exposes reliable per-process memory
+through `nvidia-smi --query-compute-apps`, treat it as a future platform-specific
+enhancement, not the cross-platform baseline.
+
+### Baseline warning during guided runs
+
+The configurable baseline threshold is currently surfaced in preferences and
+the generated report. Add an immediate warning before benchmark execution and
+keep it visible during the run when:
+
+`VRAM used before run / total VRAM * 100 >= configured threshold`
+
+The warning should be explicit rather than decorative: show the measured
+baseline, total VRAM, computed percentage, and configured threshold. A visible
+warning marker in the live run header is useful, but it must not flicker or
+hide the numeric explanation.
+
+### All-results row layout review
+
+The All results table exposes useful details through header/value tooltips, but
+the rows are now too dense and important memory context is hidden on hover.
+Review the row layout so baseline VRAM, estimated run VRAM, system peak, and
+related throughput values are readable without requiring hover. Consider a
+two-line row or grouped metric cells rather than adding more narrow columns.
+
 ### CPU + RAM as first-class metrics
 
 GPU metrics are strong; CPU and system RAM still need to become first-class
@@ -238,27 +396,24 @@ Needed:
 - report changes that explain CPU/RAM offload instead of framing everything as
   VRAM-only
 
-### Background polling during bench POST
-
-Live polling currently covers load wait more than inference. Add a background
-poller during the synchronous HTTP POST so peak GPU power/temp/util and RAM
-are captured while inference is actually running.
-
 ### reasoning_mode wiring
 
 Catalog entries can mark `reasoning_mode`, and the bench path now sends
 `enable_thinking=false` in the chat request when `reasoning_mode = off`.
-Remaining work: verify the current llama.cpp behavior against Qwen reasoning
-models and decide whether any server-startup flag is also needed.
+Remaining work is an isolated real-model UAT against a Qwen reasoning model to
+confirm the current llama.cpp build and embedded template honor the request
+flag. Add a startup flag only if that UAT demonstrates one is required.
 
 This is especially important for Qwen reasoning models, where default thinking
 can distort speed measurements.
 
 ### Gemma chat-template verification
 
-Catalog/template notes are now propagated into plan/results/report. Remaining
-work: verify which chat template llama.cpp chooses for Gemma 2 / 3 / 4 entries.
-If defaults are wrong, add explicit catalog-driven template wiring.
+Catalog/template notes are propagated into plan/results/report and the bench
+uses `/v1/chat/completions`, which asks llama.cpp to apply the GGUF's embedded
+template. Remaining work is a small Gemma 2/3/4 UAT matrix to catch malformed
+or missing template metadata. Add explicit catalog-driven template wiring only
+for models that fail that verification.
 
 ### KV-fill benchmark mode
 

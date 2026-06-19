@@ -4,7 +4,17 @@
 
 Describe "Test-IsBetterWinner" {
     # Shorthand for building a candidate.
-    function _r { param($eval, $shared) [PSCustomObject]@{ eval_tps = $eval; shared_peak_mib = $shared } }
+    function _r {
+        param($eval, $shared, $ctx = 0, $vram = 1000, $kv = $null)
+        $args = if ($ctx -gt 0) { "--ctx-size $ctx" } else { "" }
+        if ($kv) { $args = "$args --cache-type-k $kv --cache-type-v $kv".Trim() }
+        [PSCustomObject]@{
+            eval_tps = $eval
+            shared_peak_mib = $shared
+            vram_peak_mib = $vram
+            extra_args = $args
+        }
+    }
 
     It "accepts any candidate when current is null" {
         Assert-True (Test-IsBetterWinner -candidate (_r 30 0) -current $null)
@@ -24,6 +34,30 @@ Describe "Test-IsBetterWinner" {
             $current   = _r 30 0
             $candidate = _r 40 0
             Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "uses the tie-band to prefer larger context for near-equal safe configs" {
+            $current   = _r 100 0 16384
+            $candidate = _r 97 0 65536
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "uses the tie-band to prefer better KV cache before larger context" {
+            $current   = _r 65.8 252 163840 6595 "q4_0"
+            $candidate = _r 66.0 188 98304 6471 "q8_0"
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "does not let the tie-band override a clearly faster safe config" {
+            $current   = _r 100 0 16384
+            $candidate = _r 90 0 65536
+            Assert-False (Test-IsBetterWinner -candidate $candidate -current $current)
+        }
+        It "breaks near-equal same-context ties by lower shared memory, then lower VRAM" {
+            $current   = _r 100 20 32768 2400
+            $candidate = _r 98 10 32768 2600
+            Assert-True (Test-IsBetterWinner -candidate $candidate -current $current)
+
+            $current2   = _r 100 10 32768 2400
+            $candidate2 = _r 98 10 32768 2200
+            Assert-True (Test-IsBetterWinner -candidate $candidate2 -current $current2)
         }
         It "picks the higher eval_tps when both are paging" {
             $current   = _r 30 1000
@@ -64,64 +98,25 @@ Describe "Test-IsBetterWinner" {
             Assert-True (Test-IsBetterWinner -candidate $candidate -current $current -sharedConfirmMib 50)
         }
     }
-}
 
-Describe "Get-ResultDerivedFields" {
-    It "computes time_total_sec from prompt + eval timings" {
-        # 80 prompt tokens at 100 t/s = 0.8s; 128 eval tokens at 50 t/s = 2.56s; total = 3.36s
-        $r = [PSCustomObject]@{
-            prompt_n=80; eval_n=128; prompt_tps=100.0; eval_tps=50.0
-            vram_peak_mib=2000; extra_args="--ctx-size 16384 --gpu-layers 99"
+    Describe "shared winner-policy fixture parity" {
+        $casesPath = Join-Path $PSScriptRoot "..\fixtures\winner-policy-cases.json"
+        $cases = Get-Content -LiteralPath $casesPath -Raw | ConvertFrom-Json
+        foreach ($case in $cases) {
+            It $case.name {
+                $winner = $null
+                foreach ($candidate in $case.candidates) {
+                    $args = @{
+                        candidate        = $candidate
+                        current          = $winner
+                        sharedConfirmMib = 500
+                    }
+                    if ($case.profile -eq "speed") { $args.preferSpeed = $true }
+                    if (Test-IsBetterWinner @args) { $winner = $candidate }
+                }
+                Assert-Equal $case.expected $winner.id
+            }
         }
-        $d = Get-ResultDerivedFields -result $r -vramTotal 8192
-        Assert-Equal 3.36 $d.time_total_sec
-    }
-    It "returns null time_total_sec when timings are missing" {
-        $r = [PSCustomObject]@{
-            prompt_n=0; eval_n=0; prompt_tps=0; eval_tps=0
-            vram_peak_mib=2000; extra_args=""
-        }
-        $d = Get-ResultDerivedFields -result $r -vramTotal 8192
-        Assert-Equal $null $d.time_total_sec
-    }
-    It "computes headroom_mib as vram_total - vram_peak" {
-        $r = [PSCustomObject]@{
-            prompt_n=10; eval_n=10; prompt_tps=10.0; eval_tps=10.0
-            vram_peak_mib=2000; extra_args=""
-        }
-        $d = Get-ResultDerivedFields -result $r -vramTotal 8192
-        Assert-Equal 6192 $d.headroom_mib
-    }
-    It "clamps headroom_mib at 0 when vram_peak exceeds vram_total" {
-        $r = [PSCustomObject]@{
-            prompt_n=10; eval_n=10; prompt_tps=10.0; eval_tps=10.0
-            vram_peak_mib=9000; extra_args=""
-        }
-        $d = Get-ResultDerivedFields -result $r -vramTotal 8192
-        Assert-Equal 0 $d.headroom_mib
-    }
-    It "parses ctx_size from extra_args" {
-        $r = [PSCustomObject]@{
-            prompt_n=10; eval_n=10; prompt_tps=10.0; eval_tps=10.0
-            vram_peak_mib=2000; extra_args="--ctx-size 32768 --gpu-layers 99"
-        }
-        $d = Get-ResultDerivedFields -result $r -vramTotal 8192
-        Assert-Equal 32768 $d.ctx_size
-    }
-    It "returns null ctx_size when --ctx-size is absent" {
-        $r = [PSCustomObject]@{
-            prompt_n=10; eval_n=10; prompt_tps=10.0; eval_tps=10.0
-            vram_peak_mib=2000; extra_args="--gpu-layers 99"
-        }
-        $d = Get-ResultDerivedFields -result $r -vramTotal 8192
-        Assert-Equal $null $d.ctx_size
-    }
-    It "tolerates a result that is missing optional fields" {
-        $r = [PSCustomObject]@{ vram_peak_mib=1000 }
-        $d = Get-ResultDerivedFields -result $r -vramTotal 8192
-        Assert-Equal $null $d.time_total_sec
-        Assert-Equal 7192 $d.headroom_mib
-        Assert-Equal $null $d.ctx_size
     }
 }
 

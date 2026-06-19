@@ -49,6 +49,11 @@
     "_comment_runs": "Number of times each configuration is benched. The top-level result records the median for varying metrics (prompt_tps, eval_tps, vram_peak_mib, shared_peak_mib, wddm_vram_saturation); raw per-run values live in a `runs` array. Set to 1 to disable variance reduction (the pre-v1.1.0 behavior). The CLI flag -Runs N overrides this for a single invocation."
   },
 
+  "preferences": {
+    "vram_usage_warning_pct": 10,
+    "_comment_vram_usage_warning_pct": "Warn in the report when baseline VRAM already used by OS/apps before a config run is at or above this percentage of total VRAM."
+  },
+
   "base_args": "--flash-attn auto --parallel 1 --batch-size 2048 --ubatch-size 512 --no-mmap --prio 2",
   "_comment_base": "Flags applied to every benchmark. --flash-attn auto is safer than 'on' (falls back on builds that don't support it). Thread counts are injected dynamically from hardware.cpu_cores_*.",
 
@@ -63,9 +68,8 @@
     { "ctx": 16384,  "kv": "q8_0" },
     { "ctx": 32768,  "kv": "q8_0" },
     { "ctx": 65536,  "kv": "q8_0" },
-    { "ctx": 98304,  "kv": "q8_0" },
     { "ctx": 131072, "kv": "q4_0" },
-    { "ctx": 163840, "kv": "q4_0" }
+    { "ctx": 262144, "kv": "q4_0" }
   ],
   "_comment_candidates": "Context / KV-cache-quantization combos to try for models that fully fit the GPU (the context sweep). q8_0 -> near-lossless, q4_0 -> unlocks ~2x more ctx at minor quality hit.",
 

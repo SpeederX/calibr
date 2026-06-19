@@ -16,7 +16,7 @@ test("renders models, the context-size set and the submit row", async () => {
   assert.match(f, /custom — pick models/);
   assert.match(f, /context sizes/);
   assert.match(f, /16k/);
-  assert.match(f, /160k/);
+  assert.match(f, /256k/);
   assert.match(f, /bench selected/);
   unmount();
 });

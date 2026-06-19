@@ -15,7 +15,7 @@ interface Props {
 
 // The default context sweep (mirrors config.context_candidates). The user
 // cross-products the checked ctx sizes with the checked models.
-const CTX_OPTIONS = [16384, 32768, 65536, 98304, 131072, 163840];
+const CTX_OPTIONS = [16384, 32768, 65536, 131072, 262144];
 const ctxLabel = (n: number) => `${Math.round(n / 1024)}k`;
 
 type Mode = "nav" | "search" | "savePrompt";

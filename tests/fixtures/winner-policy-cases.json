@@ -1,0 +1,65 @@
+[
+  {
+    "name": "speed picks raw eval throughput",
+    "profile": "speed",
+    "expected": "fast-small",
+    "candidates": [
+      { "id": "fast-small", "eval_tps": 100, "shared_peak_mib": 900, "vram_peak_mib": 2600, "extra_args": "--ctx-size 16384" },
+      { "id": "slow-large", "eval_tps": 98, "shared_peak_mib": 0, "vram_peak_mib": 3000, "extra_args": "--ctx-size 65536" }
+    ]
+  },
+  {
+    "name": "balanced prefers safe over spill",
+    "profile": "safety",
+    "expected": "safe-slower",
+    "candidates": [
+      { "id": "spill-fast", "eval_tps": 100, "shared_peak_mib": 900, "vram_peak_mib": 2600, "extra_args": "--ctx-size 16384" },
+      { "id": "safe-slower", "eval_tps": 80, "shared_peak_mib": 0, "vram_peak_mib": 3000, "extra_args": "--ctx-size 16384" }
+    ]
+  },
+  {
+    "name": "balanced near-tie prefers larger context",
+    "profile": "safety",
+    "expected": "large-near",
+    "candidates": [
+      { "id": "small-fast", "eval_tps": 100, "shared_peak_mib": 0, "vram_peak_mib": 2400, "extra_args": "--ctx-size 16384" },
+      { "id": "large-near", "eval_tps": 97, "shared_peak_mib": 0, "vram_peak_mib": 2600, "extra_args": "--ctx-size 65536" }
+    ]
+  },
+  {
+    "name": "balanced near-tie prefers better KV cache before larger context",
+    "profile": "safety",
+    "expected": "q8-medium-context",
+    "candidates": [
+      { "id": "q4-largest-context", "eval_tps": 65.8, "shared_peak_mib": 252, "vram_peak_mib": 6595, "extra_args": "--ctx-size 163840 --cache-type-k q4_0 --cache-type-v q4_0" },
+      { "id": "q8-medium-context", "eval_tps": 66.0, "shared_peak_mib": 188, "vram_peak_mib": 6471, "extra_args": "--ctx-size 98304 --cache-type-k q8_0 --cache-type-v q8_0" }
+    ]
+  },
+  {
+    "name": "balanced outside tie-band keeps faster config",
+    "profile": "safety",
+    "expected": "small-fast",
+    "candidates": [
+      { "id": "small-fast", "eval_tps": 100, "shared_peak_mib": 0, "vram_peak_mib": 2400, "extra_args": "--ctx-size 16384" },
+      { "id": "large-slow", "eval_tps": 90, "shared_peak_mib": 0, "vram_peak_mib": 2600, "extra_args": "--ctx-size 65536" }
+    ]
+  },
+  {
+    "name": "balanced same-context tie prefers lower shared memory",
+    "profile": "safety",
+    "expected": "less-shared",
+    "candidates": [
+      { "id": "more-shared", "eval_tps": 100, "shared_peak_mib": 20, "vram_peak_mib": 2400, "extra_args": "--ctx-size 32768" },
+      { "id": "less-shared", "eval_tps": 98, "shared_peak_mib": 10, "vram_peak_mib": 2600, "extra_args": "--ctx-size 32768" }
+    ]
+  },
+  {
+    "name": "balanced final tie prefers lower VRAM",
+    "profile": "safety",
+    "expected": "less-vram",
+    "candidates": [
+      { "id": "more-vram", "eval_tps": 100, "shared_peak_mib": 10, "vram_peak_mib": 2400, "extra_args": "--ctx-size 32768" },
+      { "id": "less-vram", "eval_tps": 98, "shared_peak_mib": 10, "vram_peak_mib": 2200, "extra_args": "--ctx-size 32768" }
+    ]
+  }
+]

@@ -7,7 +7,7 @@
     "hf_file matches an existing path inside the hf_repo. If a repo is taken down or renamed, edit this file and submit a PR.",
     "Some Gemma-series models require accepting a license on HuggingFace; download may fail with 401 until you do.",
     "size_bytes is informational (used for skip-if-complete); it is not verified against the server.",
-    "max_context is the model's officially-supported context length, scraped from HuggingFace config.json. Invoke-Plan uses it to skip Tier A candidates above this ceiling (no point benching ctx=160k on a model that maxes at 128k).",
+    "max_context is the model's exact max_position_embeddings value (including nested text_config) from Hugging Face config.json. Invoke-Plan uses it both as a ceiling and as the final context-sweep point.",
     "reasoning_mode (Qwen3+ only): 'off' disables the model's thinking / chain-of-thought so prompt_tps and eval_tps reflect direct generation speed instead of internal-deliberation time. 'auto' (default for new Qwen3 entries) leaves it to the model. We use 'off' on Qwen3 entries in this catalog so benchmark numbers are comparable across families.",
     "template_note: free-text reminders about chat-template quirks (notably Gemma's special BOS/EOS handling) that may distort numbers if the wrong template is applied. Surfaced in the report but not yet wired into an automatic flag — TODO for a future version."
   ],
@@ -131,7 +131,7 @@
       "hf_file": "Qwen3-30B-A3B-Q4_K_M.gguf",
       "target_dir": "Qwen3-30B-A3B",
       "size_bytes": 18556685824,
-      "max_context": 32768,
+      "max_context": 40960,
       "reasoning_mode": "off",
       "notes": "Official Alibaba/Qwen GGUF. 30.5B total / 3.3B active MoE; native 32k context, YaRN can extend beyond that but is not part of the default bench."
     },
@@ -171,7 +171,7 @@
       "hf_file": "Qwen3-32B-Q4_K_M.gguf",
       "target_dir": "Qwen3-32B",
       "size_bytes": 19762149024,
-      "max_context": 32768,
+      "max_context": 40960,
       "reasoning_mode": "off",
       "notes": "Official Alibaba/Qwen dense 32B GGUF. Native 32k context; useful dense counterpart to the 30B-A3B MoE entries."
     },
@@ -185,7 +185,7 @@
       "hf_file": "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf",
       "target_dir": "DeepSeek-R1-Distill-Qwen-32B",
       "size_bytes": 19851335584,
-      "max_context": 32768,
+      "max_context": 131072,
       "notes": "Official DeepSeek R1 distill on Qwen 32B, packaged by Unsloth. Included as a trustworthy distill baseline; avoid treating throughput as quality ranking."
     },
 
@@ -200,7 +200,7 @@
       "target_dir": "Gemma-4-E2B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 2500000000,
-      "max_context": 128000,
+      "max_context": 131072,
       "notes": "Smaller Gemma 4 Effective 2B. Multimodal (vision + audio). Lives in its own folder because its mmproj (n_embd=1536) is incompatible with the E4B sibling's mmproj (n_embd=2560) despite sharing the filename mmproj-F16.gguf."
     },
     {
@@ -214,7 +214,7 @@
       "target_dir": "Gemma-4-E4B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 4977169088,
-      "max_context": 128000,
+      "max_context": 131072,
       "notes": "Effective 4B. Vision + audio encoders; 43 layers fully on GPU in 8GB. Lives in its own folder because its mmproj (n_embd=2560) is incompatible with the E2B sibling's mmproj despite sharing the filename mmproj-F16.gguf."
     },
     {
@@ -242,7 +242,7 @@
       "target_dir": "Gemma-3-12B-it-QAT",
       "mmproj_file": "mmproj-model-f16-12B.gguf",
       "size_bytes": 8074473920,
-      "max_context": 128000,
+      "max_context": 131072,
       "template_note": "Gemma uses BOS/EOS conventions that may distort timing if the wrong template is applied. Investigate before adding more Gemma variants.",
       "notes": "Official Google QAT Q4_0 GGUF. Gated Gemma license on HuggingFace must be accepted before download."
     },
@@ -270,7 +270,7 @@
       "hf_file": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
       "target_dir": "Gemma 4-26B-A4B",
       "size_bytes": 16000000000,
-      "max_context": 256000,
+      "max_context": 262144,
       "notes": "MoE ~4B active. Comparable to Qwen3.6-35B-A3B routing strategy."
     },
     {
@@ -284,7 +284,7 @@
       "target_dir": "Gemma-3-27B-it-QAT",
       "mmproj_file": "mmproj-model-f16-27B.gguf",
       "size_bytes": 17229630496,
-      "max_context": 128000,
+      "max_context": 131072,
       "template_note": "Gemma uses BOS/EOS conventions that may distort timing if the wrong template is applied. Investigate before adding more Gemma variants.",
       "notes": "Official Google QAT Q4_0 GGUF. Gated Gemma license on HuggingFace must be accepted before download."
     },
@@ -299,7 +299,7 @@
       "target_dir": "Gemma 4-31B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 18500000000,
-      "max_context": 256000,
+      "max_context": 262144,
       "notes": "Dense 31B. Requires partial offload on < 20GB VRAM."
     },
     {
@@ -524,7 +524,7 @@
       "hf_file": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
       "target_dir": "Ministral-3-3B",
       "size_bytes": 2000000000,
-      "max_context": 256000,
+      "max_context": 262144,
       "notes": "Mistral's small chat model. Big context (256k) for a 3B class."
     },
     {
@@ -589,7 +589,7 @@
       "hf_file": "gemma-3-4b-it-Q4_K_M.gguf",
       "target_dir": "Gemma-3-4B",
       "size_bytes": 2600000000,
-      "max_context": 128000,
+      "max_context": 131072,
       "template_note": "Gemma uses BOS/EOS conventions that may distort timing if the wrong template is applied. Investigate before adding more Gemma variants.",
       "notes": "Gemma 3 family at 4B. Gemma-3 has 128k native ctx (vs Gemma-2's 8k)."
     }

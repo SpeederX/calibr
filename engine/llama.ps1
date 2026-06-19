@@ -493,13 +493,13 @@ function Get-LlamaServerVersion {
         # first number is the build, parenthesized is a commit hash we don't
         # want. Older builds occasionally printed "(b9460)" directly; match
         # both shapes, preferring the explicit bNNNN form.
-        $m = [regex]::Match($out, '\((b\d+)\)')
+        $m = [regex]::Match($out, '\((b\d{4,})\)')
         if ($m.Success) { return $m.Groups[1].Value }
-        $m2 = [regex]::Match($out, 'version:\s*(\d+)\b')
+        $m2 = [regex]::Match($out, 'version:\s*(\d{4,})\b')
         if ($m2.Success) { return 'b' + $m2.Groups[1].Value }
     } catch { }
     # Path-based fallback: the official zip names embed the build tag.
-    $pm = [regex]::Match($Exe, '(b\d+)')
+    $pm = [regex]::Match($Exe, '(b\d{4,})')
     if ($pm.Success) { return $pm.Groups[1].Value }
     return 'unknown'
 }

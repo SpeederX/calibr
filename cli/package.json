@@ -43,11 +43,13 @@
   "scripts": {
     "build": "tsc",
     "bundle-engine": "node scripts/bundle-engine.js",
-    "prepack": "node scripts/bundle-engine.js && tsc",
+    "check-report-winner-policy": "node scripts/sync-report-winner-policy.mjs --check",
+    "prepack": "tsc && node scripts/sync-report-winner-policy.mjs --check && node scripts/bundle-engine.js",
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
+    "uat:stream-overhead": "npm run build && node dist/streamingOverheadUatCli.js",
     "test:components": "tsc && node scripts/run-component-tests.mjs",
-    "test": "npm run build && node scripts/all-options-keypress-smoke.mjs && node scripts/smoke-install.js && node scripts/run-component-tests.mjs"
+    "test": "npm run build && npm run check-report-winner-policy && node scripts/all-options-keypress-smoke.mjs && node scripts/smoke-install.js && node scripts/run-component-tests.mjs"
   },
   "engines": {
     "node": ">=18"

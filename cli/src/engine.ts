@@ -2,6 +2,7 @@ import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { groupWinners, isSafe as winnerIsSafe, type WinnerWithMeta } from "./winnerPolicy.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -555,9 +556,31 @@ export interface Result {
   // Extended metrics (v0.1.3+). Null when not collected (failure before
   // bench POST, or pre-extended-metrics legacy result JSONs).
   ttft_sec?: number | null;
+  load_ms?: number | null;
+  prompt_ms?: number | null;
+  ttfr_ms?: number | null;
+  e2e_ttft_ms?: number | null;
+  ttfh_ms?: number | null;
+  stream_open_ms?: number | null;
+  client_ttft_ms?: number | null;
+  e2e_first_reasoning_ms?: number | null;
+  e2e_first_content_ms?: number | null;
+  reasoning_delay_ms?: number | null;
+  e2e_latency_ms?: number | null;
+  server_prefill_ms?: number | null;
+  server_ttft_ms?: number | null;
+  tpot_ms?: number | null;
+  itl_p95_ms?: number | null;
+  delivery_gap_median_ms?: number | null;
+  delivery_gap_p95_ms?: number | null;
+  delivery_gap_max_ms?: number | null;
+  total_request_ms?: number | null;
+  latency_total_request_ms?: number | null;
+  latency_error?: string | null;
   gpu_power_peak_w?: number;
   gpu_temp_peak_c?: number;
   gpu_util_avg_pct?: number;
+  cpu_util_avg_pct?: number;
   ram_baseline_mib?: number;
   ram_used_peak_mib?: number;
   disk_read_peak_mb_s?: number;
@@ -597,7 +620,7 @@ function sharedConfirmMib(cfg: Config): number {
 }
 
 export function isSafe(r: Result, threshold: number): boolean {
-  return (r.shared_peak_mib ?? 0) <= threshold;
+  return winnerIsSafe(r, threshold);
 }
 
 export type ResultStatus = "safe" | "wddm" | "high" | "fail" | "noload" | "na";
@@ -611,12 +634,6 @@ export function classifyResult(r: Result, threshold: number): ResultStatus {
   if (r.unsupported_architecture) return "na";
   if (r.ready === false) return "noload";
   return "fail";
-}
-
-function beats(a: Result, b: Result, threshold: number): boolean {
-  const sa = isSafe(a, threshold), sb = isSafe(b, threshold);
-  if (sa !== sb) return sa;
-  return (a.eval_tps ?? -1) > (b.eval_tps ?? -1);
 }
 
 export interface ModelGroup {
@@ -640,8 +657,8 @@ export function groupByModel(results: Result[], cfg?: Config): ModelGroup[] {
   for (const [model, configs] of groups) {
     const oks = configs.filter(c => c.ok);
     if (oks.length === 0) continue;
-    let winner = oks[0];
-    for (const c of oks.slice(1)) if (beats(c, winner, threshold)) winner = c;
+    const winnerMap = groupWinners(oks, "safety", { confirmMib: threshold });
+    const winner = winnerMap[model] as WinnerWithMeta<Result>;
     out.push({
       model,
       series: winner.series,
@@ -674,6 +691,23 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
     NO_COLOR: "1",
     CALIBR_DATA_DIR: CALIBR_DATA_DIR,
     CALIBR_TRACE_SESSION_ID,
+    // Default-on from the CLI: wire the compiled TS bench runner so
+    // engine/bench.ps1 can delegate chat/completions to it. Opt out with
+    // CALIBR_TS_BENCH=0. Standalone calibr.ps1 keeps using PowerShell unless
+    // these adapter-owned vars are provided.
+    ...(process.env.CALIBR_TS_BENCH !== "0"
+      ? {
+          CALIBR_TS_BENCH: "1",
+          CALIBR_TS_BENCH_SCRIPT: join(__dirname, "benchRunnerCli.js"),
+          CALIBR_TS_COORDINATOR: "1",
+          CALIBR_TS_COORDINATOR_SCRIPT: join(__dirname, "benchCoordinatorCli.js"),
+          CALIBR_TS_RESULT_CORE: "1",
+          CALIBR_TS_RESULT_CORE_SCRIPT: join(__dirname, "resultCoreCli.js"),
+          CALIBR_TS_LIFECYCLE: "1",
+          CALIBR_TS_LIFECYCLE_SCRIPT: join(__dirname, "serverLifecycleCli.js"),
+          CALIBR_NODE: process.execPath,
+        }
+      : {}),
     ...(trace ? { CALIBR_TRACE_PARENT: JSON.stringify(trace) } : {}),
   };
 }
@@ -690,7 +724,7 @@ function injectConfigArg(args: string[]): string[] {
 // (stdin isn't wired through Ink), so a prompt would hang forever. Any
 // confirmation the engine would have asked for is collected by the CLI
 // up front (see AllOptionsView's pre-flight gate). Idempotent so callers
-// that pre-set the flag (e.g. ENGINE_COMMANDS init) don't double it.
+// that pre-set the flag don't double it.
 function injectNonInteractive(args: string[]): string[] {
   if (args.includes("-NonInteractive")) return args;
   return [...args, "-NonInteractive"];
@@ -714,9 +748,9 @@ function redactEngineArgsForTrace(args: string[]): string[] {
 function inferTraceContext(args: string[]): TraceContext {
   const verb = args[0] ?? "unknown";
   return {
-    flow: "advanced tools",
+    flow: "engine command",
     action: verb,
-    message: `advanced tools > ${verb}`,
+    message: `engine command > ${verb}`,
     details: { args },
   };
 }
@@ -950,24 +984,6 @@ export function openReport(): boolean {
   });
   return ok;
 }
-
-export interface EngineCommand {
-  id: string;
-  label: string;
-  description: string;
-  args: string[];
-}
-
-export const ENGINE_COMMANDS: EngineCommand[] = [
-  { id: "status",   label: "status",   description: "show current state",                   args: ["status"] },
-  { id: "init",     label: "init",     description: "detect hardware, write config.json",   args: ["init", "-NonInteractive"] },
-  { id: "discover", label: "discover", description: "scan scan_paths for .gguf files",      args: ["discover"] },
-  { id: "plan",     label: "plan",     description: "expand catalog into a test plan",      args: ["plan"] },
-  { id: "bench",    label: "bench",    description: "run pending bench configs",            args: ["bench"] },
-  { id: "report",   label: "report",   description: "build HTML report + .bat launchers",   args: ["report"] },
-  { id: "all",      label: "all",      description: "discover -> plan -> bench -> report",  args: ["all"] },
-  { id: "reset",    label: "reset",    description: "wipe runtime state (results, downloads, ...) with confirm", args: ["reset"] },
-];
 
 // ---------------------------------------------------------------------------
 // Model catalog (curated GGUF download list shipped with the engine).

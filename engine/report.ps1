@@ -7,8 +7,9 @@
 function Test-IsBetterWinner {
     # Decide whether $candidate should replace $current as the winner of its
     # group. Default rule: a non-paging config always beats a paging one;
-    # among equally-safe configs, higher eval_tps wins. With -PreferSpeed:
-    # safety is ignored, raw eval_tps is the only criterion.
+    # among equally-safe configs, higher eval_tps wins; near ties prefer better
+    # KV cache quality, then larger context. With -PreferSpeed: safety is
+    # ignored, raw eval_tps is the only criterion.
     #
     # "Paging" means shared_peak_mib > $sharedConfirmMib. The default 500 MiB
     # matches wddm_detection.shared_delta_confirm_mib so the picker and the
@@ -23,39 +24,82 @@ function Test-IsBetterWinner {
     $curSafe = ([int]$current.shared_peak_mib   -le $sharedConfirmMib)
     if ($cSafe -and -not $curSafe) { return $true }
     if (-not $cSafe -and $curSafe) { return $false }
-    return ([double]$candidate.eval_tps -gt [double]$current.eval_tps)
+
+    $cEval = if ($null -ne $candidate.eval_tps) { [double]$candidate.eval_tps } else { -1 }
+    $curEval = if ($null -ne $current.eval_tps) { [double]$current.eval_tps } else { -1 }
+    $bestEval = [Math]::Max($cEval, $curEval)
+    if ($bestEval -gt 0 -and ([Math]::Abs($cEval - $curEval) / $bestEval) -gt 0.05) {
+        return ($cEval -gt $curEval)
+    }
+
+    $cKv = Get-ResultKvQuality $candidate
+    $curKv = Get-ResultKvQuality $current
+    if ($cKv -ne $curKv) { return ($cKv -gt $curKv) }
+
+    $cCtx = Get-ResultCtxSize $candidate
+    $curCtx = Get-ResultCtxSize $current
+    if ($cCtx -ne $curCtx) { return ($cCtx -gt $curCtx) }
+
+    $cShared = if ($null -ne $candidate.shared_peak_mib) { [int]$candidate.shared_peak_mib } else { [int]::MaxValue }
+    $curShared = if ($null -ne $current.shared_peak_mib) { [int]$current.shared_peak_mib } else { [int]::MaxValue }
+    if ($cShared -ne $curShared) { return ($cShared -lt $curShared) }
+
+    $cVram = if ($null -ne $candidate.vram_peak_mib) { [int]$candidate.vram_peak_mib } else { [int]::MaxValue }
+    $curVram = if ($null -ne $current.vram_peak_mib) { [int]$current.vram_peak_mib } else { [int]::MaxValue }
+    if ($cVram -ne $curVram) { return ($cVram -lt $curVram) }
+
+    return ($cEval -gt $curEval)
 }
 
-function Get-ResultDerivedFields {
-    # Compute the derived metrics the report's charts need from a raw result.
-    # Pure: no I/O, no globals. Tested in tests/unit/report.Tests.ps1.
-    #   time_total_sec = prompt_n / prompt_tps + eval_n / eval_tps
-    #   headroom_mib   = max(0, vram_total_mib - vram_peak_mib)
-    #   ctx_size       = parsed from `--ctx-size N` in extra_args (else $null)
-    param($result, [int]$vramTotal)
-
-    $promptN  = if ($null -ne $result.prompt_n) { [int]$result.prompt_n } else { 0 }
-    $evalN    = if ($null -ne $result.eval_n)   { [int]$result.eval_n }   else { 0 }
-    $promptTs = if ($null -ne $result.prompt_tps) { [double]$result.prompt_tps } else { 0 }
-    $evalTs   = if ($null -ne $result.eval_tps)   { [double]$result.eval_tps }   else { 0 }
-
-    $timeTotal = $null
-    if ($promptN -gt 0 -and $evalN -gt 0 -and $promptTs -gt 0 -and $evalTs -gt 0) {
-        $timeTotal = [math]::Round(($promptN / $promptTs) + ($evalN / $evalTs), 2)
-    }
-
-    $vramPeak = if ($null -ne $result.vram_peak_mib) { [int]$result.vram_peak_mib } else { 0 }
-    $headroom = [Math]::Max(0, $vramTotal - $vramPeak)
-
-    $ctxSize = $null
+function Get-ResultCtxSize {
+    param($result)
     if ($result.extra_args -and ($result.extra_args -match '--ctx-size\s+(\d+)')) {
-        $ctxSize = [int]$Matches[1]
+        return [int]$Matches[1]
     }
+    return 0
+}
 
-    return @{
-        time_total_sec = $timeTotal
-        headroom_mib   = $headroom
-        ctx_size       = $ctxSize
+function Get-ResultKvQuality {
+    param($result)
+    $args = if ($result.extra_args) { [string]$result.extra_args } else { "" }
+    $kv = ""
+    if ($args -match '--cache-type-k\s+(\S+)') { $kv = $Matches[1].ToLowerInvariant() }
+    elseif ($args -match '--cache-type-v\s+(\S+)') { $kv = $Matches[1].ToLowerInvariant() }
+
+    if ($kv -match '^q(\d+)(?:_(\d+))?') {
+        $base = [int]$Matches[1] * 10
+        $suffix = if ($Matches.Count -gt 2 -and $Matches[2]) { [int]$Matches[2] } else { 0 }
+        return ($base + $suffix)
+    }
+    if ($kv -eq "f16" -or $kv -eq "bf16") { return 160 }
+    if ($kv -eq "f32") { return 320 }
+    return 0
+}
+
+function Invoke-TsReportPayload {
+    param($results, $cfg, [int]$vramTotal)
+    $script = Resolve-TsResultCoreScript
+    if (-not $script) { return $null }
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $payload = [ordered]@{
+        action       = "report-payload"
+        results      = @($results)
+        cfg          = $cfg
+        vramTotalMib = $vramTotal
+    } | ConvertTo-Json -Compress -Depth 20
+    $payloadPath = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-ts-report-payload-{0}.json" -f ([Guid]::NewGuid().ToString("N")))
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, $payload, (New-Object System.Text.UTF8Encoding($false)))
+        $out = & $node $script --json-file $payloadPath
+        $text = (@($out) -join "`n").Trim()
+        if (-not $text) { return $null }
+        $resp = $text | ConvertFrom-Json
+        if ($resp.ok -and $null -ne $resp.result) { return $resp.result }
+        return $null
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -207,71 +251,11 @@ function Invoke-Report {
     }
 
     # Build HTML (compact, self-contained)
-    $cfgJson = $cfg | ConvertTo-Json -Depth 5 -Compress
     $vramTotal = if ($cfg.hardware -and $cfg.hardware.vram_total_mib) { [int]$cfg.hardware.vram_total_mib } else { 0 }
-    $resJson = ($results | ForEach-Object {
-        $r = $_
-        $derived = Get-ResultDerivedFields -result $r -vramTotal $vramTotal
-        $kvCache = if ($null -ne $r.kv_cache_mib) { [double]$r.kv_cache_mib } else { 0 }
-        # Extended metrics may not exist on legacy result JSONs; fall back to
-        # $null so the JS side renders '-' for missing values without crashing
-        # the scorers (efficiency divides by gpu_power_peak_w; null is safe).
-        $ttft   = if ($null -ne $r.ttft_sec)           { [double]$r.ttft_sec } else { $null }
-        $gpuPw  = if ($null -ne $r.gpu_power_peak_w)   { [double]$r.gpu_power_peak_w } else { $null }
-        $gpuTc  = if ($null -ne $r.gpu_temp_peak_c)    { [int]$r.gpu_temp_peak_c } else { $null }
-        $gpuUt  = if ($null -ne $r.gpu_util_avg_pct)   { [int]$r.gpu_util_avg_pct } else { $null }
-        $ramPk  = if ($null -ne $r.ram_used_peak_mib)  { [int]$r.ram_used_peak_mib } else { $null }
-        $ramBl  = if ($null -ne $r.ram_baseline_mib)   { [int]$r.ram_baseline_mib } else { $null }
-        $diskRd = if ($null -ne $r.disk_read_peak_mb_s) { [double]$r.disk_read_peak_mb_s } else { $null }
-        # Failure-classification fields. The report needs them to give a
-        # meaningful summary for failed configs (otherwise the row shows
-        # zeros + 'unknown' fit and the user thinks the config wasn't run).
-        $failReason   = if ($null -ne $r.failure_reason)           { [string]$r.failure_reason } else { $null }
-        $unsupportedArch = if ($null -ne $r.unsupported_architecture) { [string]$r.unsupported_architecture } else { $null }
-        $readyFlag    = if ($null -ne $r.ready) { [bool]$r.ready } else { $null }
-        [ordered]@{
-            id=$r.id; label=$r.label; model=$r.model; series=$r.series; variant=$r.variant; level=$r.level; sweep=$r.sweep
-            reasoning_mode=$r.reasoning_mode; template_note=$r.template_note
-            gguf_context_length=$r.gguf_context_length; gguf_architecture=$r.gguf_architecture
-            prompt_tps=([double]$r.prompt_tps); eval_tps=([double]$r.eval_tps)
-            vram_peak_mib=([int]$r.vram_peak_mib); shared_peak_mib=([int]$r.shared_peak_mib)
-            load_sec=([double]$r.load_sec); layers_offloaded=$r.layers_offloaded
-            fit_status=$r.fit_status; wddm_vram_saturation=([double]$r.wddm_vram_saturation)
-            wddm_flag_high_vram=$r.wddm_flag_high_vram; wddm_flag_shared_pos=$r.wddm_flag_shared_pos
-            extra_args=$r.extra_args; ok=$r.ok
-            # Paths exposed for client-side .bat generation in the report.
-            # Filesystem-local, fine to surface in the HTML (the report itself
-            # is meant to be opened on the same machine that ran the bench).
-            model_path=$r.model_path
-            mmproj_path=$r.mmproj_path
-            # Failure-classification fields (matched against Get-FailureReason
-            # in the engine). Null on successful runs.
-            failure_reason=$failReason
-            unsupported_architecture=$unsupportedArch
-            ready=$readyFlag
-            # Session + llama-server identity. Drives the report's
-            # latest-session / by-llama-version filter widget. Missing on
-            # pre-v0.1.6 result JSONs; the JS side falls back to "unknown".
-            bench_session_id         = if ($null -ne $r.bench_session_id)         { [string]$r.bench_session_id }         else { 'unknown' }
-            bench_session_started_at = if ($null -ne $r.bench_session_started_at) { [string]$r.bench_session_started_at } else { '' }
-            llama_server_version     = if ($null -ne $r.llama_server_version)     { [string]$r.llama_server_version }     else { 'unknown' }
-            llama_server_exe         = if ($null -ne $r.llama_server_exe)         { [string]$r.llama_server_exe }         else { '' }
-            # Derived for the new charts and the headroom annotation:
-            time_total_sec=$derived.time_total_sec
-            headroom_mib=$derived.headroom_mib
-            ctx_size=$derived.ctx_size
-            kv_cache_mib=$kvCache
-            # Extended metrics (added v1.2): used by the all-results table and
-            # by the 'efficiency' scoring profile in the new report UI.
-            ttft_sec=$ttft
-            gpu_power_peak_w=$gpuPw
-            gpu_temp_peak_c=$gpuTc
-            gpu_util_avg_pct=$gpuUt
-            ram_used_peak_mib=$ramPk
-            ram_baseline_mib=$ramBl
-            disk_read_peak_mb_s=$diskRd
-        }
-    }) | ConvertTo-Json -Depth 5 -Compress
+    $reportPayload = Invoke-TsReportPayload -results $results -cfg $cfg -vramTotal $vramTotal
+    if (-not $reportPayload) { throw "TypeScript report payload builder unavailable. Run 'npm run build' or reinstall calibr." }
+    $resJson = @($reportPayload.rows) | ConvertTo-Json -Depth 10 -Compress
+    $cfgJson = $reportPayload.cfg | ConvertTo-Json -Depth 10 -Compress
     $winJson = ($winners.GetEnumerator() | ForEach-Object {
         [ordered]@{ model=$_.Key; winner_id=$_.Value.id; bat=(($_.Key -replace '[^\w\.\-]','_') + $(if ($script:IsWin) { '.bat' } else { '.sh' })) }
     }) | ConvertTo-Json -Depth 5 -Compress
