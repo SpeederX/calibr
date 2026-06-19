@@ -4,6 +4,10 @@ export interface ChatCompletionRequestOptions {
   stream?: boolean;
   cachePrompt?: boolean;
   reasoningMode?: "off" | "default";
+  temperature?: number;
+  seed?: number;
+  ignoreEos?: boolean;
+  idSlot?: number;
 }
 
 export interface ChatCompletionRequest {
@@ -13,6 +17,11 @@ export interface ChatCompletionRequest {
   stream: boolean;
   cache_prompt: boolean;
   enable_thinking?: boolean;
+  timings_per_token?: boolean;
+  return_progress?: boolean;
+  seed?: number;
+  ignore_eos?: boolean;
+  id_slot?: number;
 }
 
 export interface LlamaTimings {
@@ -22,6 +31,7 @@ export interface LlamaTimings {
   predicted_n?: number | null;
   predicted_per_second?: number | null;
   predicted_ms?: number | null;
+  cache_n?: number | null;
 }
 
 export interface BenchTimingMetrics {
@@ -38,8 +48,22 @@ export interface TimedStreamChunk {
 }
 
 export interface StreamLatencyMetrics {
+  ttfh_ms: number | null;
+  stream_open_ms: number | null;
   ttfr_ms: number | null;
+  client_ttft_ms: number | null;
   e2e_ttft_ms: number | null;
+  e2e_first_reasoning_ms: number | null;
+  e2e_first_content_ms: number | null;
+  reasoning_delay_ms: number | null;
+  e2e_latency_ms: number | null;
+  server_prefill_ms: number | null;
+  server_ttft_ms: number | null;
+  tpot_ms: number | null;
+  itl_p95_ms: number | null;
+  delivery_gap_median_ms: number | null;
+  delivery_gap_p95_ms: number | null;
+  delivery_gap_max_ms: number | null;
   response_chunk_count: number;
   content_chunk_count: number;
   timings: LlamaTimings | null;
@@ -77,6 +101,18 @@ export interface RunNonStreamingChatCompletionOptions {
   timeoutMs?: number;
 }
 
+export async function eraseLlamaSlot(baseUrl: string, slotId = 0): Promise<string | null> {
+  try {
+    const response = await fetch(
+      `${baseUrl.replace(/\/+$/, "")}/slots/${Math.max(0, Math.trunc(slotId))}?action=erase`,
+      { method: "POST" },
+    );
+    return response.ok ? null : `HTTP ${response.status}: ${await response.text()}`;
+  } catch (error) {
+    return errorMessage(error);
+  }
+}
+
 type ParsedSseData =
   | { kind: "done" }
   | { kind: "json"; value: unknown }
@@ -86,11 +122,14 @@ export function buildChatCompletionRequest(opts: ChatCompletionRequestOptions): 
   const request: ChatCompletionRequest = {
     messages: [{ role: "user", content: opts.prompt }],
     max_tokens: opts.maxTokens,
-    temperature: 0.0,
+    temperature: opts.temperature ?? 0.0,
     stream: opts.stream ?? false,
     cache_prompt: opts.cachePrompt ?? false,
   };
   if (opts.reasoningMode === "off") request.enable_thinking = false;
+  if (opts.seed !== undefined) request.seed = opts.seed;
+  if (opts.ignoreEos !== undefined) request.ignore_eos = opts.ignoreEos;
+  if (opts.idSlot !== undefined) request.id_slot = opts.idSlot;
   return request;
 }
 
@@ -187,6 +226,89 @@ function extractTimings(value: unknown): LlamaTimings | null {
   return isRecord(value.timings) ? value.timings as LlamaTimings : null;
 }
 
+function extractPromptProgress(value: unknown): PromptProgress | null {
+  if (!isRecord(value)) return null;
+  return isRecord(value.prompt_progress) ? value.prompt_progress as PromptProgress : null;
+}
+
+function extractTextDeltas(value: unknown): { reasoning: string; content: string } {
+  if (!isRecord(value) || !Array.isArray(value.choices)) return { reasoning: "", content: "" };
+  let reasoning = "";
+  let content = "";
+  for (const choice of value.choices) {
+    if (!isRecord(choice) || !isRecord(choice.delta)) continue;
+    if (typeof choice.delta.reasoning_content === "string") reasoning += choice.delta.reasoning_content;
+    if (typeof choice.delta.content === "string") content += choice.delta.content;
+  }
+  return { reasoning, content };
+}
+
+function percentile(values: number[], fraction: number): number | null {
+  if (values.length === 0) return null;
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(fraction * sorted.length) - 1))];
+}
+
+function deriveStreamMetrics(
+  events: StreamTelemetryEvent[],
+  ttfhMs: number | null,
+  totalMs: number,
+  timings: LlamaTimings | null,
+): StreamLatencyMetrics {
+  const open = events.find((event) => event.kind === "stream_open");
+  const reasoning = events.find((event) => event.kind === "reasoning");
+  const content = events.find((event) => event.kind === "answer");
+  const firstOutput = [reasoning?.at_ms, content?.at_ms]
+    .filter((value): value is number => value != null).sort((a, b) => a - b)[0] ?? null;
+  const timed = events.filter((event) =>
+    event.timings?.predicted_n != null && event.timings?.predicted_ms != null
+  );
+  const firstToken = timed.find((event) => Number(event.timings?.predicted_n) === 1);
+  const lastToken = timed.at(-1);
+  const firstN = Number(firstToken?.timings?.predicted_n ?? 0);
+  const firstMs = Number(firstToken?.timings?.predicted_ms ?? 0);
+  const lastN = Number(lastToken?.timings?.predicted_n ?? 0);
+  const lastMs = Number(lastToken?.timings?.predicted_ms ?? 0);
+  const intervals: number[] = [];
+  for (let index = 1; index < timed.length; index++) {
+    const previous = timed[index - 1].timings!;
+    const current = timed[index].timings!;
+    const deltaN = Number(current.predicted_n ?? 0) - Number(previous.predicted_n ?? 0);
+    const deltaMs = Number(current.predicted_ms ?? 0) - Number(previous.predicted_ms ?? 0);
+    if (deltaN > 0 && deltaMs >= 0) intervals.push(deltaMs / deltaN);
+  }
+  const gaps = events
+    .filter((event) => event.kind === "reasoning" || event.kind === "answer")
+    .map((event) => event.delivery_gap_ms)
+    .filter((value): value is number => value != null && Number.isFinite(value));
+  const prefillRaw = firstToken?.timings?.prompt_ms ?? timings?.prompt_ms;
+  const prefillMs = typeof prefillRaw === "number" && Number.isFinite(prefillRaw) ? prefillRaw : null;
+  const p95 = percentile(intervals, 0.95);
+  const gapMedian = percentile(gaps, 0.5);
+  const gapP95 = percentile(gaps, 0.95);
+  return {
+    ttfh_ms: ttfhMs,
+    stream_open_ms: open?.at_ms ?? null,
+    ttfr_ms: open?.at_ms ?? null,
+    client_ttft_ms: firstOutput,
+    e2e_ttft_ms: firstOutput,
+    e2e_first_reasoning_ms: reasoning?.at_ms ?? null,
+    e2e_first_content_ms: content?.at_ms ?? null,
+    reasoning_delay_ms: reasoning && content ? round(content.at_ms - reasoning.at_ms, 2) : null,
+    e2e_latency_ms: totalMs,
+    server_prefill_ms: prefillMs === null ? null : round(prefillMs, 2),
+    server_ttft_ms: firstToken && prefillMs !== null ? round(prefillMs + firstMs, 2) : null,
+    tpot_ms: lastN > firstN ? round((lastMs - firstMs) / (lastN - firstN), 3) : null,
+    itl_p95_ms: p95 === null ? null : round(p95, 3),
+    delivery_gap_median_ms: gapMedian === null ? null : round(gapMedian, 2),
+    delivery_gap_p95_ms: gapP95 === null ? null : round(gapP95, 2),
+    delivery_gap_max_ms: gaps.length ? round(Math.max(...gaps), 2) : null,
+    response_chunk_count: events.length,
+    content_chunk_count: events.filter((event) => event.kind === "reasoning" || event.kind === "answer").length,
+    timings,
+  };
+}
+
 function completionUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/v1/chat/completions`;
 }
@@ -281,8 +403,22 @@ export function analyzeChatCompletionStream(chunks: TimedStreamChunk[], startMs 
   }
 
   return {
+    ttfh_ms: null,
+    stream_open_ms: firstResponseAt === null ? null : round(firstResponseAt - startMs, 2),
     ttfr_ms: firstResponseAt === null ? null : round(firstResponseAt - startMs, 2),
+    client_ttft_ms: firstContentAt === null ? null : round(firstContentAt - startMs, 2),
     e2e_ttft_ms: firstContentAt === null ? null : round(firstContentAt - startMs, 2),
+    e2e_first_reasoning_ms: null,
+    e2e_first_content_ms: null,
+    reasoning_delay_ms: null,
+    e2e_latency_ms: null,
+    server_prefill_ms: null,
+    server_ttft_ms: null,
+    tpot_ms: null,
+    itl_p95_ms: null,
+    delivery_gap_median_ms: null,
+    delivery_gap_p95_ms: null,
+    delivery_gap_max_ms: null,
     response_chunk_count: responseChunkCount,
     content_chunk_count: contentChunkCount,
     timings,
@@ -315,7 +451,25 @@ export interface RunStreamingChatCompletionOptions {
   fetchImpl?: StreamFetchLike;
   nowMs?: () => number;
   timeoutMs?: number;
-  onContentEvent?: (event: { at_ms: number; index: number }) => void;
+  onStreamEvent?: (event: StreamTelemetryEvent) => void;
+  deferEventProcessing?: boolean;
+}
+
+export interface PromptProgress {
+  total?: number | null;
+  cache?: number | null;
+  processed?: number | null;
+  time_ms?: number | null;
+}
+
+export interface StreamTelemetryEvent {
+  at_ms: number;
+  index: number;
+  kind: "stream_open" | "prefill" | "reasoning" | "answer";
+  text?: string;
+  timings?: LlamaTimings | null;
+  prompt_progress?: PromptProgress | null;
+  delivery_gap_ms?: number | null;
 }
 
 export interface StreamingChatCompletionResult {
@@ -329,7 +483,13 @@ export interface StreamingChatCompletionResult {
 }
 
 function emptyLatency(): StreamLatencyMetrics {
-  return { ttfr_ms: null, e2e_ttft_ms: null, response_chunk_count: 0, content_chunk_count: 0, timings: null };
+  return {
+    ttfh_ms: null, stream_open_ms: null, ttfr_ms: null, client_ttft_ms: null, e2e_ttft_ms: null,
+    e2e_first_reasoning_ms: null, e2e_first_content_ms: null, reasoning_delay_ms: null,
+    e2e_latency_ms: null, server_prefill_ms: null, server_ttft_ms: null, tpot_ms: null,
+    itl_p95_ms: null, delivery_gap_median_ms: null, delivery_gap_p95_ms: null,
+    delivery_gap_max_ms: null, response_chunk_count: 0, content_chunk_count: 0, timings: null,
+  };
 }
 
 // Normalize both body shapes to a single async iterator so the runner does not
@@ -375,6 +535,7 @@ export async function runStreamingChatCompletion(
       body: JSON.stringify({ ...opts.request, stream: true }),
       ...(abort.signal ? { signal: abort.signal } : {}),
     });
+    const ttfhMs = round(now() - started, 2);
 
     if (!resp.ok) return fail(resp.status, await responseText(resp) || `HTTP ${resp.status}`);
     if (!resp.body) return fail(resp.status, "response had no readable stream body");
@@ -384,8 +545,47 @@ export async function runStreamingChatCompletion(
     // way analyzeChatCompletionStream never sees a half-written `data:` line.
     const decoder = typeof TextDecoder !== "undefined" ? new TextDecoder() : null;
     const chunks: TimedStreamChunk[] = [];
+    const telemetryEvents: StreamTelemetryEvent[] = [];
     let buffer = "";
-    let contentEventIndex = 0;
+    let eventIndex = 0;
+    let streamOpened = false;
+    let lastTextAt: number | null = null;
+
+    const processEvents = (text: string, atMs: number) => {
+      for (const event of parseSseDataLines(text)) {
+        if (event.kind !== "json") continue;
+        if (!streamOpened) {
+          streamOpened = true;
+          const opened: StreamTelemetryEvent = { at_ms: atMs, index: eventIndex++, kind: "stream_open" };
+          telemetryEvents.push(opened);
+          opts.onStreamEvent?.(opened);
+        }
+        const timings = extractTimings(event.value);
+        const promptProgress = extractPromptProgress(event.value);
+        if (promptProgress) {
+          const prefill: StreamTelemetryEvent = {
+            at_ms: atMs, index: eventIndex++, kind: "prefill", timings, prompt_progress: promptProgress,
+          };
+          telemetryEvents.push(prefill);
+          opts.onStreamEvent?.(prefill);
+        }
+        const deltas = extractTextDeltas(event.value);
+        for (const [kind, value] of [["reasoning", deltas.reasoning], ["answer", deltas.content]] as const) {
+          if (!value) continue;
+          const streamed: StreamTelemetryEvent = {
+            at_ms: atMs,
+            index: eventIndex++,
+            kind,
+            text: value,
+            timings,
+            delivery_gap_ms: lastTextAt === null ? null : round(atMs - lastTextAt, 2),
+          };
+          lastTextAt = atMs;
+          telemetryEvents.push(streamed);
+          opts.onStreamEvent?.(streamed);
+        }
+      }
+    };
 
     for await (const part of readStreamParts(resp.body)) {
       buffer += typeof part === "string" ? part : decoder ? decoder.decode(part, { stream: true }) : "";
@@ -394,19 +594,18 @@ export async function runStreamingChatCompletion(
       const atMs = round(now() - started, 2);
       const text = buffer.slice(0, newlineAt + 1);
       chunks.push({ atMs, text });
-      for (const event of parseSseDataLines(text)) {
-        if (event.kind === "json" && extractContentDelta(event.value).length > 0) {
-          contentEventIndex++;
-          opts.onContentEvent?.({ at_ms: atMs, index: contentEventIndex });
-        }
-      }
+      if (!opts.deferEventProcessing) processEvents(text, atMs);
       buffer = buffer.slice(newlineAt + 1);
     }
     if (decoder) buffer += decoder.decode();
     if (buffer.length > 0) chunks.push({ atMs: round(now() - started, 2), text: buffer });
+    if (opts.deferEventProcessing) {
+      for (const chunk of chunks) processEvents(chunk.text, chunk.atMs);
+    }
 
     const totalMs = round(now() - started, 2);
-    const latency = analyzeChatCompletionStream(chunks, 0);
+    const analyzed = analyzeChatCompletionStream(chunks, 0);
+    const latency = deriveStreamMetrics(telemetryEvents, ttfhMs, totalMs, analyzed.timings);
 
     let content = "";
     for (const chunk of chunks) {

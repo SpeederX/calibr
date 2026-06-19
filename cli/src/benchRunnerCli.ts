@@ -1,10 +1,12 @@
 // Node entrypoint for the complete HTTP benchmark sequence: optional warmup,
-// non-streaming throughput, then a short streaming latency pass. PowerShell
-// wraps this process in the hardware poller and maps its single JSON result.
+// KV reset, then one measured streaming request. Its final server timings are
+// the official throughput source; the same request also provides latency and
+// per-token telemetry. PowerShell only wraps and maps the single JSON result.
 import { readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import {
   buildChatCompletionRequest,
+  eraseLlamaSlot,
   runNonStreamingChatCompletion,
   runStreamingChatCompletion,
   type LlamaTimings,
@@ -18,7 +20,8 @@ export interface BenchRunnerPayload {
   maxTokens: number;
   warmup?: boolean;
   warmupMaxTokens?: number;
-  latencyMaxTokens?: number;
+  slotId?: number;
+  seed?: number;
   reasoningOff?: boolean;
   timeoutMs?: number;
 }
@@ -30,30 +33,51 @@ export interface BenchRunnerOutput {
   timings: LlamaTimings | null;
   ttfr_ms: number | null;
   e2e_ttft_ms: number | null;
+  ttfh_ms: number | null;
+  stream_open_ms: number | null;
+  client_ttft_ms: number | null;
+  e2e_first_reasoning_ms: number | null;
+  e2e_first_content_ms: number | null;
+  reasoning_delay_ms: number | null;
+  e2e_latency_ms: number | null;
+  server_prefill_ms: number | null;
+  server_ttft_ms: number | null;
+  tpot_ms: number | null;
+  itl_p95_ms: number | null;
+  delivery_gap_median_ms: number | null;
+  delivery_gap_p95_ms: number | null;
+  delivery_gap_max_ms: number | null;
   latency_total_request_ms: number | null;
   warmup_error?: string;
-  latency_error?: string;
   error?: string;
 }
 
 export interface BenchRunnerDeps {
   fetchImpl?: RunNonStreamingChatCompletionOptions["fetchImpl"];
   streamFetchImpl?: RunStreamingChatCompletionOptions["fetchImpl"];
+  eraseSlot?: (baseUrl: string, slotId: number) => Promise<string | null>;
   nowMs?: () => number;
-  onPhase?: (phase: "warmup" | "throughput" | "latency_prompt") => void;
-  onContentEvent?: RunStreamingChatCompletionOptions["onContentEvent"];
+  onPhase?: (phase: "warmup" | "latency_prompt") => void;
+  onStreamEvent?: RunStreamingChatCompletionOptions["onStreamEvent"];
 }
 
 export async function runFromPayload(
   payload: BenchRunnerPayload,
   deps: BenchRunnerDeps = {},
 ): Promise<BenchRunnerOutput> {
-  const requestFor = (maxTokens: number, stream: boolean, cachePrompt: boolean) => buildChatCompletionRequest({
-    prompt: payload.prompt,
-    maxTokens,
-    stream,
-    cachePrompt,
-    reasoningMode: payload.reasoningOff ? "off" : "default",
+  const slotId = Math.max(0, Math.trunc(payload.slotId ?? 0));
+  const requestFor = (maxTokens: number, stream: boolean, cachePrompt: boolean) => ({
+    ...buildChatCompletionRequest({
+      prompt: payload.prompt,
+      maxTokens,
+      stream,
+      cachePrompt,
+      reasoningMode: payload.reasoningOff ? "off" : "default",
+      idSlot: slotId,
+      seed: payload.seed ?? 42,
+      ignoreEos: true,
+    }),
+    ...(stream ? { timings_per_token: true, return_progress: true } : {}),
   });
 
   let warmupError: string | undefined;
@@ -67,49 +91,50 @@ export async function runFromPayload(
       timeoutMs: payload.timeoutMs,
     });
     if (!warmup.ok) warmupError = warmup.error ?? `HTTP ${warmup.status}`;
-  }
-
-  deps.onPhase?.("throughput");
-  const throughput = await runNonStreamingChatCompletion({
-    baseUrl: payload.baseUrl,
-    request: requestFor(payload.maxTokens, false, false),
-    fetchImpl: deps.fetchImpl,
-    nowMs: deps.nowMs,
-    timeoutMs: payload.timeoutMs,
-  });
-  if (!throughput.ok) {
-    return {
-      ok: false,
-      status: throughput.status,
-      total_request_ms: throughput.total_request_ms,
-      timings: null,
-      ttfr_ms: null,
-      e2e_ttft_ms: null,
-      latency_total_request_ms: null,
-      ...(warmupError ? { warmup_error: warmupError } : {}),
-      ...(throughput.error ? { error: throughput.error } : {}),
-    };
+    else {
+      const resetError = await (deps.eraseSlot ?? eraseLlamaSlot)(payload.baseUrl, slotId);
+      if (resetError) return {
+        ...failure(`cache reset failed: ${resetError}`),
+        status: 0,
+      };
+    }
   }
 
   deps.onPhase?.("latency_prompt");
-  const latency = await runStreamingChatCompletion({
+  const measured = await runStreamingChatCompletion({
     baseUrl: payload.baseUrl,
-    request: requestFor(Math.min(payload.maxTokens, payload.latencyMaxTokens ?? 32), true, false),
+    request: requestFor(payload.maxTokens, true, false),
     fetchImpl: deps.streamFetchImpl,
     nowMs: deps.nowMs,
     timeoutMs: payload.timeoutMs,
-    onContentEvent: deps.onContentEvent,
+    onStreamEvent: deps.onStreamEvent,
   });
   return {
-    ok: true,
-    status: throughput.status,
-    total_request_ms: throughput.total_request_ms,
-    timings: throughput.timings,
-    ttfr_ms: latency.ok ? latency.latency.ttfr_ms : null,
-    e2e_ttft_ms: latency.ok ? latency.latency.e2e_ttft_ms : null,
-    latency_total_request_ms: latency.total_request_ms,
+    ok: measured.ok,
+    status: measured.status,
+    total_request_ms: measured.total_request_ms,
+    timings: measured.ok ? measured.latency.timings : null,
+    ttfr_ms: measured.ok ? measured.latency.ttfr_ms : null,
+    e2e_ttft_ms: measured.ok ? measured.latency.e2e_ttft_ms : null,
+    ttfh_ms: measured.ok ? measured.latency.ttfh_ms : null,
+    stream_open_ms: measured.ok ? measured.latency.stream_open_ms : null,
+    client_ttft_ms: measured.ok ? measured.latency.client_ttft_ms : null,
+    e2e_first_reasoning_ms: measured.ok ? measured.latency.e2e_first_reasoning_ms : null,
+    e2e_first_content_ms: measured.ok ? measured.latency.e2e_first_content_ms : null,
+    reasoning_delay_ms: measured.ok ? measured.latency.reasoning_delay_ms : null,
+    e2e_latency_ms: measured.ok ? measured.latency.e2e_latency_ms : null,
+    server_prefill_ms: measured.ok ? measured.latency.server_prefill_ms : null,
+    server_ttft_ms: measured.ok ? measured.latency.server_ttft_ms : null,
+    tpot_ms: measured.ok ? measured.latency.tpot_ms : null,
+    itl_p95_ms: measured.ok ? measured.latency.itl_p95_ms : null,
+    delivery_gap_median_ms: measured.ok ? measured.latency.delivery_gap_median_ms : null,
+    delivery_gap_p95_ms: measured.ok ? measured.latency.delivery_gap_p95_ms : null,
+    delivery_gap_max_ms: measured.ok ? measured.latency.delivery_gap_max_ms : null,
+    // Legacy alias retained while existing result/report readers still carry
+    // the old two-request field name. It now equals total_request_ms.
+    latency_total_request_ms: measured.total_request_ms,
     ...(warmupError ? { warmup_error: warmupError } : {}),
-    ...(!latency.ok ? { latency_error: latency.error ?? `HTTP ${latency.status}` } : {}),
+    ...(!measured.ok ? { error: measured.error ?? `HTTP ${measured.status}` } : {}),
   };
 }
 
@@ -131,6 +156,11 @@ function failure(error: string): BenchRunnerOutput {
     timings: null,
     ttfr_ms: null,
     e2e_ttft_ms: null,
+    ttfh_ms: null, stream_open_ms: null, client_ttft_ms: null,
+    e2e_first_reasoning_ms: null, e2e_first_content_ms: null, reasoning_delay_ms: null,
+    e2e_latency_ms: null, server_prefill_ms: null, server_ttft_ms: null, tpot_ms: null,
+    itl_p95_ms: null, delivery_gap_median_ms: null, delivery_gap_p95_ms: null,
+    delivery_gap_max_ms: null,
     latency_total_request_ms: null,
     error,
   };

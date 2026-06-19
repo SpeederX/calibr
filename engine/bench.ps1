@@ -191,6 +191,20 @@ function New-AggregatedBenchResult {
     $promptMsRaw   = Get-Median -values @($runs | ForEach-Object { $_.prompt_ms })
     $ttfrMsRaw     = Get-Median -values @($runs | ForEach-Object { $_.ttfr_ms })
     $e2eTtftMsRaw  = Get-Median -values @($runs | ForEach-Object { $_.e2e_ttft_ms })
+    $ttfhMsRaw     = Get-Median -values @($runs | ForEach-Object { $_.ttfh_ms })
+    $streamOpenRaw = Get-Median -values @($runs | ForEach-Object { $_.stream_open_ms })
+    $clientTtftRaw = Get-Median -values @($runs | ForEach-Object { $_.client_ttft_ms })
+    $firstReasonRaw = Get-Median -values @($runs | ForEach-Object { $_.e2e_first_reasoning_ms })
+    $firstContentRaw = Get-Median -values @($runs | ForEach-Object { $_.e2e_first_content_ms })
+    $reasoningDelayRaw = Get-Median -values @($runs | ForEach-Object { $_.reasoning_delay_ms })
+    $e2eLatencyRaw = Get-Median -values @($runs | ForEach-Object { $_.e2e_latency_ms })
+    $serverPrefillRaw = Get-Median -values @($runs | ForEach-Object { $_.server_prefill_ms })
+    $serverTtftRaw = Get-Median -values @($runs | ForEach-Object { $_.server_ttft_ms })
+    $tpotRaw = Get-Median -values @($runs | ForEach-Object { $_.tpot_ms })
+    $itlP95Raw = Get-Median -values @($runs | ForEach-Object { $_.itl_p95_ms })
+    $deliveryMedianRaw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_median_ms })
+    $deliveryP95Raw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_p95_ms })
+    $deliveryMaxRaw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_max_ms })
     $totalReqRaw   = Get-Median -values @($runs | ForEach-Object { $_.total_request_ms })
     $latReqRaw     = Get-Median -values @($runs | ForEach-Object { $_.latency_total_request_ms })
     $utilAvgMed    = [int](Get-Median   -values @($runs | ForEach-Object { $_.gpu_util_avg_pct }))
@@ -204,6 +218,7 @@ function New-AggregatedBenchResult {
     $flagSharedPos = ($sharedPeakMed -gt $confirmThresh)
 
     $result = [ordered]@{
+        metric_schema_version = 4
         id              = $item.id
         label           = $item.label
         model           = $item.model
@@ -257,6 +272,20 @@ function New-AggregatedBenchResult {
         prompt_ms            = if ($null -ne $promptMsRaw)  { [math]::Round($promptMsRaw, 2) } else { $null }
         ttfr_ms              = if ($null -ne $ttfrMsRaw)    { [math]::Round($ttfrMsRaw, 2) } else { $null }
         e2e_ttft_ms          = if ($null -ne $e2eTtftMsRaw) { [math]::Round($e2eTtftMsRaw, 2) } else { $null }
+        ttfh_ms              = if ($null -ne $ttfhMsRaw) { [math]::Round($ttfhMsRaw, 2) } else { $null }
+        stream_open_ms       = if ($null -ne $streamOpenRaw) { [math]::Round($streamOpenRaw, 2) } elseif ($null -ne $ttfrMsRaw) { [math]::Round($ttfrMsRaw, 2) } else { $null }
+        client_ttft_ms       = if ($null -ne $clientTtftRaw) { [math]::Round($clientTtftRaw, 2) } elseif ($null -ne $e2eTtftMsRaw) { [math]::Round($e2eTtftMsRaw, 2) } else { $null }
+        e2e_first_reasoning_ms = if ($null -ne $firstReasonRaw) { [math]::Round($firstReasonRaw, 2) } else { $null }
+        e2e_first_content_ms = if ($null -ne $firstContentRaw) { [math]::Round($firstContentRaw, 2) } else { $null }
+        reasoning_delay_ms   = if ($null -ne $reasoningDelayRaw) { [math]::Round($reasoningDelayRaw, 2) } else { $null }
+        e2e_latency_ms       = if ($null -ne $e2eLatencyRaw) { [math]::Round($e2eLatencyRaw, 2) } elseif ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
+        server_prefill_ms    = if ($null -ne $serverPrefillRaw) { [math]::Round($serverPrefillRaw, 2) } elseif ($null -ne $promptMsRaw) { [math]::Round($promptMsRaw, 2) } else { $null }
+        server_ttft_ms       = if ($null -ne $serverTtftRaw) { [math]::Round($serverTtftRaw, 2) } else { $null }
+        tpot_ms              = if ($null -ne $tpotRaw) { [math]::Round($tpotRaw, 3) } else { $null }
+        itl_p95_ms           = if ($null -ne $itlP95Raw) { [math]::Round($itlP95Raw, 3) } else { $null }
+        delivery_gap_median_ms = if ($null -ne $deliveryMedianRaw) { [math]::Round($deliveryMedianRaw, 2) } else { $null }
+        delivery_gap_p95_ms  = if ($null -ne $deliveryP95Raw) { [math]::Round($deliveryP95Raw, 2) } else { $null }
+        delivery_gap_max_ms  = if ($null -ne $deliveryMaxRaw) { [math]::Round($deliveryMaxRaw, 2) } else { $null }
         total_request_ms     = if ($null -ne $totalReqRaw)  { [math]::Round($totalReqRaw, 2) } else { $null }
         latency_total_request_ms = if ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
         gpu_util_avg_pct     = $utilAvgMed
@@ -574,8 +603,8 @@ function Get-DiskReadBytesPerSec {
 
 function Invoke-TsBenchRequest {
     # Hand the complete HTTP sequence to TypeScript in one subprocess:
-    # optional warmup, non-streaming throughput, streamed latency. The runner
-    # returns the throughput `timings` plus latency fields for PowerShell to map.
+    # optional warmup, KV reset, then one measured streaming request. The
+    # request's final server timings and per-token events feed every metric.
     param(
         [int]$Port,
         [string]$Prompt,
@@ -591,7 +620,8 @@ function Invoke-TsBenchRequest {
         maxTokens    = $MaxTokens
         warmup       = [bool]$Warmup
         warmupMaxTokens = 8
-        latencyMaxTokens = [Math]::Min($MaxTokens, 32)
+        slotId       = 0
+        seed         = 42
         reasoningOff = [bool]$ReasoningOff
         timeoutMs    = 900000
     } | ConvertTo-Json -Compress -Depth 5
@@ -901,11 +931,16 @@ function Invoke-OneBenchRun {
 
     $argStr = "-m `"$($item.model_path)`""
     if ($item.mmproj_path) { $argStr += " --mmproj `"$($item.mmproj_path)`"" }
-    $argStr += " $($item.extra_args) --port $port --host 127.0.0.1 --no-warmup --cache-ram 128"
+    $slotSavePath = Join-Path (Split-Path $logFile -Parent) "slots"
+    New-Item -ItemType Directory -Path $slotSavePath -Force | Out-Null
+    $argStr += " $($item.extra_args) --port $port --host 127.0.0.1 --no-warmup --cache-ram 128 --slot-save-path `"$slotSavePath`""
     $serverArgs = @("-m", [string]$item.model_path)
     if ($item.mmproj_path) { $serverArgs += @("--mmproj", [string]$item.mmproj_path) }
     $serverArgs += @([string]$item.extra_args -split '\s+' | Where-Object { $_ })
-    $serverArgs += @("--port", [string]$port, "--host", "127.0.0.1", "--no-warmup", "--cache-ram", "128")
+    $serverArgs += @(
+        "--port", [string]$port, "--host", "127.0.0.1", "--no-warmup",
+        "--cache-ram", "128", "--slot-save-path", $slotSavePath
+    )
 
     $gpuBaseline = Get-GpuSnapshot
     $vramBefore = $gpuBaseline.mem_mib
@@ -1061,6 +1096,20 @@ function Invoke-OneBenchRun {
         prompt_ms            = $null
         ttfr_ms              = $null
         e2e_ttft_ms          = $null
+        ttfh_ms              = $null
+        stream_open_ms       = $null
+        client_ttft_ms       = $null
+        e2e_first_reasoning_ms = $null
+        e2e_first_content_ms = $null
+        reasoning_delay_ms   = $null
+        e2e_latency_ms       = $null
+        server_prefill_ms    = $null
+        server_ttft_ms       = $null
+        tpot_ms              = $null
+        itl_p95_ms           = $null
+        delivery_gap_median_ms = $null
+        delivery_gap_p95_ms  = $null
+        delivery_gap_max_ms  = $null
         total_request_ms     = $null
         latency_total_request_ms = $null
         latency_error        = $null
@@ -1099,19 +1148,27 @@ function Invoke-OneBenchRun {
         try {
             $tsBenchScript = Resolve-TsBenchRunnerScript
             if ($tsBenchScript) {
-                # One Node call owns warmup + throughput + latency while this
-                # PowerShell poller samples the complete HTTP sequence.
+                # One Node call owns warmup + reset + the measured streaming
+                # request while this poller samples the complete sequence.
                 $env:CALIBR_TS_BENCH_SCRIPT = $tsBenchScript
                 $resp = Invoke-TsBenchRequest `
                     -Port $port `
                     -Prompt $prompt `
                     -MaxTokens $nPred `
                     -ReasoningOff:($item.reasoning_mode -eq "off") `
-                    -Warmup:([bool]$cfg.bench.warmup)
+                    -Warmup:([bool]$cfg.bench.warmup -and -not [bool]$item.mmproj_path)
                 if (-not $resp.ok) { throw "ts bench runner: $($resp.error)" }
                 if ($null -ne $resp.total_request_ms) { $run.total_request_ms = [math]::Round([double]$resp.total_request_ms, 2) }
                 if ($null -ne $resp.ttfr_ms) { $run.ttfr_ms = [math]::Round([double]$resp.ttfr_ms, 2) }
                 if ($null -ne $resp.e2e_ttft_ms) { $run.e2e_ttft_ms = [math]::Round([double]$resp.e2e_ttft_ms, 2) }
+                foreach ($metric in @(
+                    'ttfh_ms', 'stream_open_ms', 'client_ttft_ms',
+                    'e2e_first_reasoning_ms', 'e2e_first_content_ms', 'reasoning_delay_ms',
+                    'e2e_latency_ms', 'server_prefill_ms', 'server_ttft_ms', 'tpot_ms',
+                    'itl_p95_ms', 'delivery_gap_median_ms', 'delivery_gap_p95_ms', 'delivery_gap_max_ms'
+                )) {
+                    if ($null -ne $resp.$metric) { $run.$metric = [math]::Round([double]$resp.$metric, 3) }
+                }
                 if ($null -ne $resp.latency_total_request_ms) {
                     $run.latency_total_request_ms = [math]::Round([double]$resp.latency_total_request_ms, 2)
                 }
@@ -1158,8 +1215,9 @@ function Invoke-OneBenchRun {
                 # Legacy report field: prefer the real streamed time-to-first
                 # content when available, otherwise keep the old prompt-ms
                 # approximation so older report views remain meaningful.
-                if ($null -ne $run.e2e_ttft_ms) {
-                    $run.ttft_sec = [math]::Round([double]$run.e2e_ttft_ms / 1000, 3)
+                $headlineTtft = if ($null -ne $run.server_ttft_ms) { $run.server_ttft_ms } elseif ($null -ne $run.client_ttft_ms) { $run.client_ttft_ms } else { $run.e2e_ttft_ms }
+                if ($null -ne $headlineTtft) {
+                    $run.ttft_sec = [math]::Round([double]$headlineTtft / 1000, 3)
                 } elseif ($null -ne $run.prompt_ms) {
                     $run.ttft_sec = [math]::Round([double]$run.prompt_ms / 1000, 3)
                 }
@@ -1447,6 +1505,20 @@ function Invoke-OneBench {
                 prompt_ms            = $r.prompt_ms
                 ttfr_ms              = $r.ttfr_ms
                 e2e_ttft_ms          = $r.e2e_ttft_ms
+                ttfh_ms              = $r.ttfh_ms
+                stream_open_ms       = $r.stream_open_ms
+                client_ttft_ms       = $r.client_ttft_ms
+                e2e_first_reasoning_ms = $r.e2e_first_reasoning_ms
+                e2e_first_content_ms = $r.e2e_first_content_ms
+                reasoning_delay_ms   = $r.reasoning_delay_ms
+                e2e_latency_ms       = $r.e2e_latency_ms
+                server_prefill_ms    = $r.server_prefill_ms
+                server_ttft_ms       = $r.server_ttft_ms
+                tpot_ms              = $r.tpot_ms
+                itl_p95_ms           = $r.itl_p95_ms
+                delivery_gap_median_ms = $r.delivery_gap_median_ms
+                delivery_gap_p95_ms  = $r.delivery_gap_p95_ms
+                delivery_gap_max_ms  = $r.delivery_gap_max_ms
                 total_request_ms     = $r.total_request_ms
                 latency_total_request_ms = $r.latency_total_request_ms
                 latency_error        = $r.latency_error

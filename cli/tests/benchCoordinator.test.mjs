@@ -59,8 +59,8 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
       runHttp: async (_payload, hooks) => {
         httpCalls++;
         hooks.onPhase?.("latency_prompt");
-        hooks.onContentEvent?.({ at_ms: 10, index: 1 });
-        hooks.onContentEvent?.({ at_ms: 30, index: 2 });
+        hooks.onStreamEvent?.({ at_ms: 10, index: 1, kind: "reasoning", timings: { predicted_n: 1, predicted_ms: 10 } });
+        hooks.onStreamEvent?.({ at_ms: 30, index: 2, kind: "answer", timings: { predicted_n: 2, predicted_ms: 30 }, delivery_gap_ms: 20 });
         return {
           ok: true,
           status: 200,
@@ -86,11 +86,13 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
     assert.equal(out.result.run_count, 2);
     assert.equal(out.result.eval_tps, 40);
     assert.equal(httpCalls, 2);
-    const tokenPoints = out.runs[0].telemetry.filter(point => point.token_index != null);
+    const tokenPoints = out.runs[0].telemetry.filter(point => point.event_index != null);
     assert.equal(tokenPoints.length, 2);
-    assert.equal(tokenPoints[0].phase, "latency_eval");
-    assert.equal(tokenPoints[1].token_index, 2);
-    assert.ok(tokenPoints[1].rolling_tps > 0);
+    assert.equal(tokenPoints[0].phase, "latency_reasoning");
+    assert.equal(tokenPoints[1].phase, "latency_answer");
+    assert.equal(tokenPoints[1].event_index, 2);
+    assert.equal(tokenPoints[1].server_tps, 50);
+    assert.equal(tokenPoints[1].delivery_gap_ms, 20);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

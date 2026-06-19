@@ -250,16 +250,17 @@
     <aside class="timeline-panel" id="timeline-panel">
       <h3>Run timeline</h3>
       <div class="meta" id="timeline-title"></div>
-      <p class="meta">Streaming diagnostic pass, focused on prefill and eval. Official throughput remains the separate non-streaming measurement.</p>
+      <p class="meta">Single measured streaming pass. Official prefill and generation throughput use llama-server's internal clock; delivery gaps use the client clock.</p>
       <div class="timeline-controls">
         <label>Run <select id="timeline-run"></select></label>
       </div>
       <div class="timeline-legend">
         <span class="legend-item" style="color:#22c55e"><span class="legend-line"></span>VRAM</span>
         <span class="legend-item" style="color:#f59e0b"><span class="legend-line"></span>RAM Δ</span>
-        <span class="legend-item" style="color:#8b5cf6"><span class="legend-line"></span>rolling output</span>
+        <span class="legend-item" style="color:#8b5cf6"><span class="legend-line"></span>server generation</span>
         <span class="legend-item"><span class="legend-box" style="background:#f59e0b"></span>prefill</span>
-        <span class="legend-item"><span class="legend-box" style="background:#8b5cf6"></span>eval</span>
+        <span class="legend-item"><span class="legend-box" style="background:#7c3aed"></span>reasoning</span>
+        <span class="legend-item"><span class="legend-box" style="background:#2563eb"></span>answer</span>
       </div>
       <div class="timeline-legend" id="timeline-run-legend"></div>
       <svg id="timeline" width="100%" height="340" preserveAspectRatio="xMinYMin meet" viewBox="0 0 1000 340"></svg>
@@ -272,15 +273,20 @@
       <thead><tr><th>Metric</th><th>Measures</th><th>Readable formula</th><th>Why it is useful</th></tr></thead>
       <tbody>
         <tr><td><code>load_ms</code></td><td>Cold server/model startup until <code>/v1/models</code> is ready.</td><td><code>ready time - process start</code></td><td>Separates one-time model loading cost from request latency.</td></tr>
-        <tr><td><code>prompt_ms</code> / <code>prompt_tps</code></td><td>Prompt processing (prefill) duration and throughput.</td><td><code>prompt tokens / prompt seconds</code></td><td>Shows how context length affects the wait before generation.</td></tr>
-        <tr><td><code>ttfr_ms</code></td><td>Time to the first non-terminal streamed server event.</td><td><code>first SSE event - request start</code></td><td>Diagnoses transport, buffering, or metadata sent before content.</td></tr>
-        <tr><td><code>e2e_ttft_ms</code></td><td>Time to the first generated content or reasoning text.</td><td><code>first text delta - request start</code></td><td>Best approximation of the user's perceived response start.</td></tr>
+        <tr><td><code>server_prefill_ms</code> / <code>prompt_tps</code></td><td>Prompt processing on llama-server's internal clock.</td><td><code>prompt_ms</code>; <code>prompt tokens / prompt seconds</code></td><td>Measures real model prefill without HTTP or client buffering.</td></tr>
+        <tr><td><code>server_ttft_ms</code></td><td>Server-side time through prefill and first-token decode.</td><td><code>prompt_ms + predicted_ms @ token 1</code></td><td>Canonical model TTFT; available only when the server emits first-token timing.</td></tr>
+        <tr><td><code>tpot_ms</code> / <code>itl_p95_ms</code></td><td>Average and p95 steady-state server inter-token latency.</td><td><code>Î” predicted_ms / Î” predicted_n</code>, excluding token 1</td><td>Exposes decode stalls hidden by average throughput.</td></tr>
         <tr><td><code>eval_tps</code></td><td>Decode throughput for generated tokens.</td><td><code>generated tokens / decode seconds</code></td><td>Main sustained generation-speed metric.</td></tr>
+        <tr><td><code>ttfh_ms</code></td><td>Client time until HTTP response headers are available.</td><td><code>headers received - request start</code></td><td>Separates connection/HTTP setup from streamed model output.</td></tr>
+        <tr><td><code>stream_open_ms</code></td><td>Client time until the first SSE frame, which may contain no text.</td><td><code>first SSE frame - request start</code></td><td>Diagnoses stream setup and replaces the ambiguous legacy name <code>ttfr_ms</code>.</td></tr>
+        <tr><td><code>client_ttft_ms</code></td><td>Client time until the first non-empty reasoning or answer delta.</td><td><code>min(first reasoning, first answer) - request start</code></td><td>Measures when the user first receives generated text.</td></tr>
+        <tr><td><code>first reasoning/content</code></td><td>Client time until reasoning starts and until final-answer text starts.</td><td><code>t_reasoning/content - request start</code></td><td>Separates hidden deliberation from useful-answer latency.</td></tr>
+        <tr><td><code>e2e_latency_ms</code></td><td>Full client-observed streaming request duration.</td><td><code>last stream frame - request start</code></td><td>Canonical end-to-end latency including delivery.</td></tr>
+        <tr><td><code>delivery gap</code></td><td>Interval between consecutive non-empty text deltas received by the client.</td><td><code>current delta arrival - previous delta arrival</code></td><td>Describes delivery smoothness without claiming to be token latency.</td></tr>
         <tr><td><code>VRAM run</code></td><td>Dedicated VRAM attributed to the benchmark after baseline adjustment.</td><td><code>system peak - pre-run baseline</code></td><td>Avoids charging desktop/background VRAM to the model.</td></tr>
         <tr><td><code>shared peak</code></td><td>Shared/spill GPU memory growth above baseline.</td><td><code>shared peak - shared baseline</code></td><td>Flags WDDM paging and likely PCIe/RAM latency penalties.</td></tr>
         <tr><td><code>RAM Δ</code></td><td>Peak reduction in available system RAM.</td><td><code>available baseline - minimum available</code></td><td>Exposes host-memory pressure and CPU/offload cost.</td></tr>
         <tr><td><code>CPU / GPU %</code></td><td>Average utilization across samples.</td><td><code>sum(sample %) / sample count</code></td><td>Shows whether a run is CPU-bound, GPU-bound, or underutilized.</td></tr>
-        <tr><td><code>rolling output/s</code></td><td>Recent streamed content events during the diagnostic pass.</td><td><code>(events - 1) / elapsed seconds</code> over the last eight events</td><td>Locates generation slowdowns alongside VRAM, RAM, and shared spill changes.</td></tr>
       </tbody>
     </table>
   </details>
@@ -300,7 +306,7 @@
         <p><b>Example:</b> 1500 MiB used / 8192 MiB total = 18.3% already used by the system. A warning appears when the configured threshold (for example 5%, 10%, or 15%) is lower than or equal to that percentage.</p>
         <p><b>Run VRAM:</b> The memory charts subtract that baseline from the system-level peak: estimated run VRAM = total peak - baseline. Apps, 3D processes, browsers, overlays, or background work can still change the peak and affect the benchmark.</p>
         <p><b>MoE note:</b> MoE can show the same pressure when experts do not fit cleanly. CPU expert offload may be intentional, but it is still a latency tradeoff.</p>
-        <p><b>Latency fields:</b> TTFR is first streamed server response; e2e TTFT is first generated content/reasoning token; prompt ms is llama.cpp prefill time; request ms is the measured request wall time.</p>
+        <p><b>Latency fields:</b> server TTFT and TPOT use llama-server's internal clock; stream open and client TTFT use the client clock; full E2E ends when the stream completes.</p>
       </span>
     </span>
   </div>
@@ -327,8 +333,8 @@
         <th>Level <span class="th-help" title="Curated hardware level: low, middle, high, or ultra.">?</span></th>
         <th>Model <span class="th-help" title="Model name grouped in the report winner list.">?</span></th>
         <th>Config <span class="th-help" title="llama-server flags used for this benchmark: context, GPU layers, KV cache, threads, and related settings.">?</span></th>
-        <th class="num">TTFT s <span class="th-help" title="Legacy felt-latency field in seconds. Uses streamed e2e TTFT when available; otherwise falls back to prompt prefill time.">?</span></th>
-        <th class="num">TTFR ms <span class="th-help" title="Time to first streamed response chunk. Empty when the latency stream pass was not collected.">?</span></th>
+        <th class="num">TTFT s <span class="th-help" title="Server TTFT when per-token timings are available; otherwise client TTFT or the legacy fallback.">?</span></th>
+        <th class="num">Stream ms <span class="th-help" title="Client time to the first SSE frame, which may contain no generated text. Legacy name: TTFR.">?</span></th>
         <th class="num">Prompt ms <span class="th-help" title="llama.cpp prompt processing / prefill time for the input prompt.">?</span></th>
         <th class="num">Prompt t/s <span class="th-help" title="Prompt processing throughput: prompt tokens divided by prompt processing time. Higher is better.">?</span></th>
         <th class="num">Prompt rel % <span class="th-help" title="Prompt throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
@@ -931,20 +937,22 @@ function evalRunNote(d) {
 }
 
 function latencyMs(d) {
+  if (d.server_ttft_ms != null) return +d.server_ttft_ms;
+  if (d.client_ttft_ms != null) return +d.client_ttft_ms;
   if (d.e2e_ttft_ms != null) return +d.e2e_ttft_ms;
-  if (d.ttfr_ms != null) return +d.ttfr_ms;
   if (d.prompt_ms != null) return +d.prompt_ms;
   if (d.ttft_sec != null) return (+d.ttft_sec) * 1000;
   return 0;
 }
 
 function latencyNote(d) {
-  const ttft = d.e2e_ttft_ms != null ? +d.e2e_ttft_ms : (d.ttfr_ms != null ? +d.ttfr_ms : null);
-  const lead = d.ttfr_ms != null && d.e2e_ttft_ms != null ? Math.max(0, +d.e2e_ttft_ms - +d.ttfr_ms) : null;
-  return metricChip('TTFT', ttft != null ? fmt1(ttft) + ' ms' : '-') +
-         (lead != null && lead >= 0.1 ? metricChip('response lead', fmt1(lead) + ' ms') : '') +
-         metricChip('prefill', d.prompt_ms != null ? fmt1(d.prompt_ms) + ' ms' : '-') +
-         metricChip('request', d.latency_total_request_ms != null ? fmt1(d.latency_total_request_ms) + ' ms' : (d.total_request_ms != null ? fmt1(d.total_request_ms) + ' ms' : '-'));
+  const serverTtft = d.server_ttft_ms != null ? +d.server_ttft_ms : null;
+  const clientTtft = d.client_ttft_ms != null ? +d.client_ttft_ms : (d.e2e_ttft_ms != null ? +d.e2e_ttft_ms : null);
+  return metricChip('server TTFT', serverTtft != null ? fmt1(serverTtft) + ' ms' : '-') +
+         metricChip('client TTFT', clientTtft != null ? fmt1(clientTtft) + ' ms' : '-') +
+         metricChip('TPOT', d.tpot_ms != null ? fmt1(d.tpot_ms) + ' ms' : '-') +
+         metricChip('ITL p95', d.itl_p95_ms != null ? fmt1(d.itl_p95_ms) + ' ms' : '-') +
+         metricChip('E2E', d.e2e_latency_ms != null ? fmt1(d.e2e_latency_ms) + ' ms' : '-');
 }
 
 function totalThroughput(d) {
@@ -1042,7 +1050,7 @@ function renderBars() {
     fillStyleOf = () => '';
     sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
   } else if (STATE.bars === 'latency') {
-    field = 'e2e_ttft_ms'; unit = 'ms'; annotate = latencyNote; fillClass = 'memory';
+    field = 'server_ttft_ms'; unit = 'ms'; annotate = latencyNote; fillClass = 'memory';
     valueOf = latencyMs;
     maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
     pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
@@ -1216,8 +1224,8 @@ document.getElementById('scatter').addEventListener('click', event => {
 });
 
 // ===========================================================================
-// Per-run diagnostic timeline. Memory comes from the coordinator poller;
-// rolling speed comes from streamed content events in the latency pass.
+// Per-run diagnostic timeline. Memory comes from the coordinator poller,
+// generation rate from llama-server timings, and delivery gaps from SSE.
 // ===========================================================================
 const timelineRun = document.getElementById('timeline-run');
 const timelineGrid = document.getElementById('memory-latency-grid');
@@ -1258,11 +1266,12 @@ function renderTimeline() {
     ? runs.map((run, index) => ({ run, index }))
     : [{ run: runs[+STATE.timelineRunIndex], index: +STATE.timelineRunIndex }];
   const series = chosenRuns.map(({ run, index }) => {
-    const latency = run.telemetry.filter(p => p.phase === 'latency_prompt' || p.phase === 'latency_eval')
+    const latency = run.telemetry.filter(p => p.phase === 'latency_prompt' || p.phase === 'latency_eval' ||
+      p.phase === 'latency_reasoning' || p.phase === 'latency_answer')
       .slice().sort((a, b) => (+a.elapsed_ms || 0) - (+b.elapsed_ms || 0));
     const start = latency.length > 0 ? (+latency[0].elapsed_ms || 0) : 0;
     const relative = latency.map(p => ({ ...p, plot_ms: Math.max(0, (+p.elapsed_ms || 0) - start) }));
-    const firstEval = relative.find(p => p.phase === 'latency_eval')?.plot_ms ?? 0;
+    const firstEval = relative.find(p => p.phase === 'latency_eval' || p.phase === 'latency_reasoning' || p.phase === 'latency_answer')?.plot_ms ?? 0;
     const end = Math.max(firstEval + 1, ...relative.map(p => +p.plot_ms || 0));
     return {
       index,
@@ -1290,8 +1299,9 @@ function renderTimeline() {
   const memoryPad = Math.max(128, (memoryMaxRaw - memoryMinRaw) * 0.12);
   const memoryMin = Math.max(0, memoryMinRaw - memoryPad);
   const memoryMax = Math.max(memoryMin + 256, memoryMaxRaw + memoryPad);
-  const speedPoints = allPoints.filter(p => p.rolling_tps != null && +p.rolling_tps >= 0);
-  const speedValues = speedPoints.map(p => +p.rolling_tps || 0);
+  const speedOf = p => p.server_tps != null ? +p.server_tps : (p.rolling_tps != null ? +p.rolling_tps : null);
+  const speedPoints = allPoints.filter(p => speedOf(p) != null && speedOf(p) >= 0);
+  const speedValues = speedPoints.map(p => speedOf(p) || 0);
   const speedMinRaw = speedValues.length ? Math.min(...speedValues) : 0;
   const speedMaxRaw = speedValues.length ? Math.max(...speedValues) : 1;
   const speedPad = Math.max(1, (speedMaxRaw - speedMinRaw) * 0.12);
@@ -1306,7 +1316,7 @@ function renderTimeline() {
 
   const out = [];
   out.push('<rect class="timeline-phase" x="' + M.l + '" y="' + M.t + '" width="' + (innerW * 0.12) + '" height="' + innerH + '" fill="#f59e0b"><title>prefill</title></rect>');
-  out.push('<rect class="timeline-phase" x="' + xs(0.12) + '" y="' + M.t + '" width="' + (innerW * 0.88) + '" height="' + innerH + '" fill="#8b5cf6"><title>eval</title></rect>');
+  out.push('<rect class="timeline-phase" x="' + xs(0.12) + '" y="' + M.t + '" width="' + (innerW * 0.88) + '" height="' + innerH + '" fill="#2563eb"><title>generated output</title></rect>');
   out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + (M.t + innerH) + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
   out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + M.t + '" x2="' + M.l + '" y2="' + (M.t + innerH) + '"/>');
   out.push('<line class="scatter-axis" x1="' + (M.l + innerW) + '" y1="' + M.t + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
@@ -1323,20 +1333,23 @@ function renderTimeline() {
     out.push('<text class="scatter-tick" x="' + (M.l + innerW + 7) + '" y="' + (ys(speedTick) + 4) + '">' + speedTick.toFixed(0) + '</text>');
   }
   out.push('<text class="scatter-tick" transform="translate(14,' + (M.t + innerH/2) + ') rotate(-90)" text-anchor="middle">Memory (MiB)</text>');
-  out.push('<text class="scatter-tick" transform="translate(990,' + (M.t + innerH/2) + ') rotate(90)" text-anchor="middle">Rolling output events/s</text>');
+  out.push('<text class="scatter-tick" transform="translate(990,' + (M.t + innerH/2) + ') rotate(90)" text-anchor="middle">Server generation (tok/s)</text>');
   const dashPatterns = ['', '8 4', '3 3', '10 3 2 3'];
   series.forEach(item => {
     const dash = dashPatterns[item.index % dashPatterns.length];
     const style = 'stroke-dasharray:' + dash + ';stroke-opacity:' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + ';';
     out.push('<path class="timeline-vram" style="' + style + '" d="' + line(item.points, p => +p.vram_total_mib || 0, ym) + '"><title>Run ' + (item.index + 1) + ' VRAM</title></path>');
     out.push('<path class="timeline-ram" style="' + style + '" d="' + line(item.points, p => +p.ram_used_mib || 0, ym) + '"><title>Run ' + (item.index + 1) + ' RAM delta</title></path>');
-    const runSpeed = item.points.filter(p => p.rolling_tps != null && +p.rolling_tps >= 0);
-    if (runSpeed.length > 0) out.push('<path class="timeline-speed" style="' + style + '" d="' + line(runSpeed, p => +p.rolling_tps || 0, ys) + '"><title>Run ' + (item.index + 1) + ' rolling output</title></path>');
+    const runSpeed = item.points.filter(p => speedOf(p) != null && speedOf(p) >= 0);
+    if (runSpeed.length > 0) out.push('<path class="timeline-speed" style="' + style + '" d="' + line(runSpeed, p => speedOf(p) || 0, ys) + '"><title>Run ' + (item.index + 1) + ' server generation rate</title></path>');
     runSpeed.forEach(p => {
-      const tip = 'run ' + (item.index + 1) + ' · t=' + ((+p.plot_ms || 0) / 1000).toFixed(2) + 's · output event ' + (p.token_index ?? '-') +
-        ' · rolling ' + fmt1(p.rolling_tps) + '/s · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib + ' MiB';
-      out.push('<circle class="timeline-point" cx="' + xs(+p.plot_x || 0) + '" cy="' + ys(+p.rolling_tps || 0) +
-        '" r="3" fill="var(--c-accent)" stroke="#fff" opacity="' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + '"><title>' + tip + '</title></circle>');
+      const phase = p.event_kind || p.phase || 'generation';
+      const gap = p.delivery_gap_ms != null ? ' · delivery gap ' + fmt1(p.delivery_gap_ms) + ' ms' : '';
+      const tip = 'run ' + (item.index + 1) + ' · t=' + ((+p.plot_ms || 0) / 1000).toFixed(2) + 's · ' + phase +
+        ' · server ' + fmt1(speedOf(p)) + ' tok/s' + gap + ' · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib + ' MiB';
+      const fill = phase === 'reasoning' ? '#7c3aed' : phase === 'answer' ? '#2563eb' : 'var(--c-accent)';
+      out.push('<circle class="timeline-point" cx="' + xs(+p.plot_x || 0) + '" cy="' + ys(speedOf(p) || 0) +
+        '" r="3" fill="' + fill + '" stroke="#fff" opacity="' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + '"><title>' + tip + '</title></circle>');
     });
   });
   timelineRunLegend.innerHTML = series.map(item => {
@@ -1497,8 +1510,8 @@ function renderAllTable() {
         '<td class="level-' + lvl(d) + '">' + lvl(d) + '</td>' +
         '<td>' + escapeHtml(d.model) + '</td>' +
         '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + escapeHtml(d.extra_args) + '</td>' +
-        '<td class="num">' + (d.ttft_sec != null ? (+d.ttft_sec).toFixed(2) : '-') + '</td>' +
-        '<td class="num">' + (d.ttfr_ms != null ? (+d.ttfr_ms).toFixed(1) : '-') + '</td>' +
+        '<td class="num">' + (latencyMs(d) > 0 ? (latencyMs(d) / 1000).toFixed(2) : '-') + '</td>' +
+        '<td class="num">' + ((d.stream_open_ms ?? d.ttfr_ms) != null ? (+(d.stream_open_ms ?? d.ttfr_ms)).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_tps ? (+d.prompt_tps).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + fmtPct(promptRel) + '</td>' +

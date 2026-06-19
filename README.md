@@ -139,10 +139,15 @@ instead of silently spilling.
 
 The report also records RAM, VRAM/shared memory, GPU power, temperature,
 utilization, headroom, and load/throughput fields. New full-metrics runs retain
-a per-run timeline covering warmup, throughput, streaming prefill/eval,
-memory pressure, and rolling streamed-output speed. Those are shown for
+a per-run timeline covering warm-up, streaming prefill, reasoning/answer
+phases, server-side generation rate, client delivery gaps, and memory pressure.
+Official throughput and timeline diagnostics now come from the same measured
+streaming request. Those are shown for
 inspection and secondary scoring, but calibr does not yet optimize for
 "largest parameter count that fits" or "lowest memory use".
+
+See [`METRICS.md`](METRICS.md) for metric formulas, clock ownership,
+aggregation rules, compatibility aliases, and interpretation limits.
 
 On Windows/NVIDIA, dedicated VRAM is reported as a system-level baseline and
 peak. NVML / `nvidia-smi` do not expose reliable per-PID dedicated-memory

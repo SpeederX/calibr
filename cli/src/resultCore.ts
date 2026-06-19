@@ -62,6 +62,20 @@ export interface BenchRun {
   prompt_ms?: number | null;
   ttfr_ms?: number | null;
   e2e_ttft_ms?: number | null;
+  ttfh_ms?: number | null;
+  stream_open_ms?: number | null;
+  client_ttft_ms?: number | null;
+  e2e_first_reasoning_ms?: number | null;
+  e2e_first_content_ms?: number | null;
+  reasoning_delay_ms?: number | null;
+  e2e_latency_ms?: number | null;
+  server_prefill_ms?: number | null;
+  server_ttft_ms?: number | null;
+  tpot_ms?: number | null;
+  itl_p95_ms?: number | null;
+  delivery_gap_median_ms?: number | null;
+  delivery_gap_p95_ms?: number | null;
+  delivery_gap_max_ms?: number | null;
   total_request_ms?: number | null;
   latency_total_request_ms?: number | null;
   latency_error?: string | null;
@@ -77,9 +91,19 @@ export interface BenchRun {
 
 export interface BenchTelemetryPoint {
   elapsed_ms: number;
-  phase: "warmup" | "throughput" | "latency_prompt" | "latency_eval";
+  phase: "warmup" | "throughput" | "latency_prompt" | "latency_eval" | "latency_reasoning" | "latency_answer";
   token_index?: number | null;
   rolling_tps?: number | null;
+  event_index?: number | null;
+  event_kind?: string | null;
+  server_predicted_n?: number | null;
+  server_predicted_ms?: number | null;
+  server_tps?: number | null;
+  delivery_gap_ms?: number | null;
+  prompt_processed?: number | null;
+  prompt_total?: number | null;
+  prompt_cache?: number | null;
+  prompt_time_ms?: number | null;
   vram_total_mib: number;
   vram_run_mib: number;
   ram_used_mib: number;
@@ -94,24 +118,33 @@ export interface ResultCoreSession {
   llama_server_version?: string;
 }
 
-export const METRIC_SCHEMA_VERSION = 2;
+export const METRIC_SCHEMA_VERSION = 4;
 
 export const METRIC_GLOSSARY = {
   load_ms: "Process start to /v1/models readiness; model load plus backend initialization.",
   prompt_ms: "llama.cpp prompt-processing (prefill) duration for the measured request.",
   prompt_tps: "Prompt-processing throughput reported by llama.cpp.",
-  ttfr_ms: "End-to-end time to the first streamed response event.",
-  e2e_ttft_ms: "End-to-end time to the first streamed generated content.",
+  ttfh_ms: "Client time from request start until HTTP response headers are available.",
+  stream_open_ms: "Client time from request start until the first SSE frame; legacy alias: ttfr_ms.",
+  client_ttft_ms: "Client time from request start until the first non-empty reasoning or answer delta.",
+  server_prefill_ms: "Prompt-processing duration from llama-server's internal clock.",
+  server_ttft_ms: "Server prefill plus first-token decode time when per-token timings are available.",
+  tpot_ms: "Average steady-state time per generated token after the first token.",
+  itl_p95_ms: "95th-percentile server-side inter-token latency.",
+  e2e_first_reasoning_ms: "Client time until the first non-empty reasoning delta.",
+  e2e_first_content_ms: "Client time until the first non-empty final-answer delta.",
+  e2e_latency_ms: "Client time from request start until the streaming response completes.",
+  delivery_gap_p95_ms: "95th-percentile interval between non-empty streamed text deltas at the client.",
   eval_tps: "Decode throughput for generated tokens; the primary speed metric.",
-  total_request_ms: "Full non-streaming throughput-request duration, excluding model load.",
-  latency_total_request_ms: "Full short streaming latency-request duration.",
+  total_request_ms: "Full measured streaming-request duration, excluding model load.",
+  latency_total_request_ms: "Legacy alias for the measured streaming-request duration.",
   vram_baseline_mib: "System dedicated VRAM already used before the run.",
   vram_peak_mib: "Peak system dedicated VRAM observed during the run.",
   shared_peak_mib: "Peak shared/spill GPU memory above the pre-run baseline.",
   ram_used_peak_mib: "Peak reduction in available system RAM relative to the pre-run baseline.",
   gpu_util_avg_pct: "Average GPU utilization across collected samples.",
   cpu_util_avg_pct: "Average total CPU utilization across collected samples.",
-  telemetry: "Time-series samples for benchmark phase, memory pressure, utilization, and rolling streamed output speed.",
+  telemetry: "Time-series samples for prefill/reasoning/answer, server generation rate, delivery gaps, memory pressure, and utilization.",
 } as const;
 
 export interface ParsedLlamaServerStderr {
@@ -308,6 +341,20 @@ export function buildReportRows(
       prompt_ms: num(result.prompt_ms),
       ttfr_ms: num(result.ttfr_ms),
       e2e_ttft_ms: num(result.e2e_ttft_ms),
+      ttfh_ms: num(result.ttfh_ms),
+      stream_open_ms: num(result.stream_open_ms) ?? num(result.ttfr_ms),
+      client_ttft_ms: num(result.client_ttft_ms) ?? num(result.e2e_ttft_ms),
+      e2e_first_reasoning_ms: num(result.e2e_first_reasoning_ms),
+      e2e_first_content_ms: num(result.e2e_first_content_ms),
+      reasoning_delay_ms: num(result.reasoning_delay_ms),
+      e2e_latency_ms: num(result.e2e_latency_ms) ?? num(result.latency_total_request_ms),
+      server_prefill_ms: num(result.server_prefill_ms) ?? num(result.prompt_ms),
+      server_ttft_ms: num(result.server_ttft_ms),
+      tpot_ms: num(result.tpot_ms),
+      itl_p95_ms: num(result.itl_p95_ms),
+      delivery_gap_median_ms: num(result.delivery_gap_median_ms),
+      delivery_gap_p95_ms: num(result.delivery_gap_p95_ms),
+      delivery_gap_max_ms: num(result.delivery_gap_max_ms),
       total_request_ms: num(result.total_request_ms),
       latency_total_request_ms: num(result.latency_total_request_ms),
       latency_error: result.latency_error ?? null,
@@ -363,6 +410,7 @@ export function aggregateBenchResult(payload: {
   const e2eTtftMs = median(runs.map((r) => num(r.e2e_ttft_ms)));
   const totalReqMs = median(runs.map((r) => num(r.total_request_ms)));
   const latReqMs = median(runs.map((r) => num(r.latency_total_request_ms)));
+  const metricMedian = (field: keyof BenchRun) => median(runs.map((run) => num(run[field])));
   const satRatio = vramTotal > 0 ? round(vramPeakMed / vramTotal, 3) : 0;
 
   return {
@@ -409,6 +457,20 @@ export function aggregateBenchResult(payload: {
     prompt_ms: roundOrNull(promptMs, 2),
     ttfr_ms: roundOrNull(ttfrMs, 2),
     e2e_ttft_ms: roundOrNull(e2eTtftMs, 2),
+    ttfh_ms: roundOrNull(metricMedian("ttfh_ms"), 2),
+    stream_open_ms: roundOrNull(metricMedian("stream_open_ms") ?? ttfrMs, 2),
+    client_ttft_ms: roundOrNull(metricMedian("client_ttft_ms") ?? e2eTtftMs, 2),
+    e2e_first_reasoning_ms: roundOrNull(metricMedian("e2e_first_reasoning_ms"), 2),
+    e2e_first_content_ms: roundOrNull(metricMedian("e2e_first_content_ms"), 2),
+    reasoning_delay_ms: roundOrNull(metricMedian("reasoning_delay_ms"), 2),
+    e2e_latency_ms: roundOrNull(metricMedian("e2e_latency_ms") ?? latReqMs, 2),
+    server_prefill_ms: roundOrNull(metricMedian("server_prefill_ms") ?? promptMs, 2),
+    server_ttft_ms: roundOrNull(metricMedian("server_ttft_ms"), 2),
+    tpot_ms: roundOrNull(metricMedian("tpot_ms"), 3),
+    itl_p95_ms: roundOrNull(metricMedian("itl_p95_ms"), 3),
+    delivery_gap_median_ms: roundOrNull(metricMedian("delivery_gap_median_ms"), 2),
+    delivery_gap_p95_ms: roundOrNull(metricMedian("delivery_gap_p95_ms"), 2),
+    delivery_gap_max_ms: roundOrNull(metricMedian("delivery_gap_max_ms"), 2),
     total_request_ms: roundOrNull(totalReqMs, 2),
     latency_total_request_ms: roundOrNull(latReqMs, 2),
     gpu_util_avg_pct: int(median(runs.map((r) => num(r.gpu_util_avg_pct)))),

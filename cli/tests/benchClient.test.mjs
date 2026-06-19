@@ -183,13 +183,13 @@ test("runNonStreamingChatCompletion reports transport errors", async () => {
 test("runStreamingChatCompletion times first response/content and assembles streamed text", async () => {
   const calls = [];
   const contentEvents = [];
-  // now() order: start, one per emitted chunk (4: role, content, content+timings, DONE), total.
-  const nowValues = [1000, 1110, 1145, 1210, 1212, 1215];
+  // now() order: start, headers, one per emitted chunk, total.
+  const nowValues = [1000, 1005, 1110, 1145, 1210, 1212, 1215];
   const result = await runStreamingChatCompletion({
     baseUrl: "http://127.0.0.1:18080/",
     request: buildChatCompletionRequest({ prompt: "hello", maxTokens: 16, stream: false }),
     nowMs: () => nowValues.shift() ?? 1215,
-    onContentEvent: event => contentEvents.push(event),
+    onStreamEvent: event => contentEvents.push(event),
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
       return {
@@ -209,6 +209,9 @@ test("runStreamingChatCompletion times first response/content and assembles stre
   assert.equal(result.status, 200);
   assert.equal(result.total_request_ms, 215);
   assert.equal(result.latency.ttfr_ms, 110);
+  assert.equal(result.latency.ttfh_ms, 5);
+  assert.equal(result.latency.stream_open_ms, 110);
+  assert.equal(result.latency.client_ttft_ms, 145);
   assert.equal(result.latency.e2e_ttft_ms, 145);
   assert.equal(result.latency.response_chunk_count, 3);
   assert.equal(result.latency.content_chunk_count, 2);
@@ -217,9 +220,10 @@ test("runStreamingChatCompletion times first response/content and assembles stre
   assert.equal(result.metrics.eval_tps, 24.5);
   assert.equal(calls[0].url, "http://127.0.0.1:18080/v1/chat/completions");
   assert.equal(JSON.parse(calls[0].init.body).stream, true);
-  assert.deepEqual(contentEvents, [
-    { at_ms: 145, index: 1 },
-    { at_ms: 210, index: 2 },
+  assert.deepEqual(contentEvents.map(event => [event.at_ms, event.index, event.kind]), [
+    [110, 0, "stream_open"],
+    [145, 1, "answer"],
+    [210, 2, "answer"],
   ]);
 });
 
@@ -243,6 +247,63 @@ test("runStreamingChatCompletion buffers SSE events split across stream parts", 
   assert.equal(result.ok, true);
   assert.equal(result.content, "partial");
   assert.equal(result.latency.content_chunk_count, 1);
+});
+
+test("runStreamingChatCompletion can drain the socket before processing SSE events", async () => {
+  let drained = false;
+  const callbackStates = [];
+  async function* deferredParts() {
+    yield 'data: {"choices":[{"delta":{"content":"a"}}],"timings":{"predicted_n":1,"predicted_ms":10}}\n\n';
+    yield 'data: {"choices":[{"delta":{"content":"b"}}],"timings":{"predicted_n":2,"predicted_ms":20}}\n\n';
+    drained = true;
+  }
+  const result = await runStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080",
+    request: buildChatCompletionRequest({ prompt: "hi", maxTokens: 2, stream: true }),
+    deferEventProcessing: true,
+    onStreamEvent: () => callbackStates.push(drained),
+    fetchImpl: async () => ({ ok: true, status: 200, body: deferredParts() }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(callbackStates, [true, true, true]);
+  assert.equal(result.content, "ab");
+});
+
+test("runStreamingChatCompletion separates server timing from client delivery", async () => {
+  let clock = 0;
+  const result = await runStreamingChatCompletion({
+    baseUrl: "http://127.0.0.1:18080",
+    request: buildChatCompletionRequest({ prompt: "hi", maxTokens: 8 }),
+    nowMs: () => (clock += 10),
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      body: streamParts([
+        'data: {"choices":[{"delta":{"role":"assistant","content":null}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":null}}],"prompt_progress":{"total":10,"cache":0,"processed":10,"time_ms":100}}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_content":"think"}}],"timings":{"prompt_ms":100,"predicted_n":1,"predicted_ms":20}}\n\n',
+        'data: {"choices":[{"delta":{"reasoning_content":" more"}}],"timings":{"prompt_ms":100,"predicted_n":2,"predicted_ms":40}}\n\n',
+        'data: {"choices":[{"delta":{"content":"answer"}}],"timings":{"prompt_ms":100,"predicted_n":4,"predicted_ms":100}}\n\n',
+        "data: [DONE]\n\n",
+      ]),
+    }),
+  });
+
+  assert.equal(result.latency.ttfh_ms, 10);
+  assert.equal(result.latency.stream_open_ms, 20);
+  assert.equal(result.latency.client_ttft_ms, 40);
+  assert.equal(result.latency.e2e_first_reasoning_ms, 40);
+  assert.equal(result.latency.e2e_first_content_ms, 60);
+  assert.equal(result.latency.reasoning_delay_ms, 20);
+  assert.equal(result.latency.server_prefill_ms, 100);
+  assert.equal(result.latency.server_ttft_ms, 120);
+  assert.equal(result.latency.tpot_ms, 26.667);
+  assert.equal(result.latency.itl_p95_ms, 30);
+  assert.equal(result.latency.delivery_gap_median_ms, 10);
+  assert.equal(result.latency.delivery_gap_p95_ms, 10);
+  assert.equal(result.latency.delivery_gap_max_ms, 10);
+  assert.equal(result.latency.e2e_latency_ms, 80);
 });
 
 test("runStreamingChatCompletion reports HTTP errors", async () => {

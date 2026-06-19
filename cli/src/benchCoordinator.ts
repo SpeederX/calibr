@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { runFromPayload, type BenchRunnerDeps } from "./benchRunnerCli.js";
 import { collectMetricSample, type MetricSample } from "./metricsPoller.js";
 import {
@@ -14,6 +14,7 @@ import {
   type ResultCoreSession,
 } from "./resultCore.js";
 import { waitForServerReady } from "./serverLifecycle.js";
+import type { StreamTelemetryEvent } from "./benchClient.js";
 
 export interface BenchCoordinatorPayload {
   item: BenchItem;
@@ -53,6 +54,54 @@ export interface CoordinatorDeps {
 const sleepDefault = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const activeChildren = new Set<ChildProcess>();
 
+export interface ProductionStreamState {
+  inferencePhase: "warmup" | "throughput" | "latency_prompt" | "latency_reasoning" | "latency_answer";
+  previousServerN: number | null;
+  previousServerMs: number | null;
+}
+
+export interface ProductionStreamConsumerOptions {
+  state: ProductionStreamState;
+  minimalPolling: boolean;
+  appendTelemetry: (extra: Record<string, unknown>) => void;
+  forward?: (event: StreamTelemetryEvent) => void;
+}
+
+export function createProductionStreamConsumer(
+  options: ProductionStreamConsumerOptions,
+): (event: StreamTelemetryEvent) => void {
+  return (event) => {
+    const state = options.state;
+    state.inferencePhase = event.kind === "reasoning" ? "latency_reasoning"
+      : event.kind === "answer" ? "latency_answer" : "latency_prompt";
+    const serverN = Number(event.timings?.predicted_n);
+    const serverMs = Number(event.timings?.predicted_ms);
+    const deltaN = Number.isFinite(serverN) && state.previousServerN !== null
+      ? serverN - state.previousServerN : null;
+    const deltaMs = Number.isFinite(serverMs) && state.previousServerMs !== null
+      ? serverMs - state.previousServerMs : null;
+    const localTps = deltaN !== null && deltaMs !== null && deltaN > 0 && deltaMs >= 0
+      ? round(deltaN / Math.max(0.001, deltaMs / 1000), 2) : null;
+    if (Number.isFinite(serverN)) state.previousServerN = serverN;
+    if (Number.isFinite(serverMs)) state.previousServerMs = serverMs;
+    if (!options.minimalPolling) {
+      options.appendTelemetry({
+        event_index: event.index,
+        event_kind: event.kind,
+        server_predicted_n: Number.isFinite(serverN) ? serverN : null,
+        server_predicted_ms: Number.isFinite(serverMs) ? serverMs : null,
+        server_tps: localTps,
+        delivery_gap_ms: event.delivery_gap_ms ?? null,
+        prompt_processed: event.prompt_progress?.processed ?? null,
+        prompt_total: event.prompt_progress?.total ?? null,
+        prompt_cache: event.prompt_progress?.cache ?? null,
+        prompt_time_ms: event.prompt_progress?.time_ms ?? null,
+      });
+    }
+    options.forward?.(event);
+  };
+}
+
 function round(value: number, digits: number): number {
   const factor = 10 ** digits;
   return Math.round(value * factor) / factor;
@@ -68,10 +117,15 @@ function splitArgs(value: string | undefined): string[] {
 
 function serverArgs(payload: BenchCoordinatorPayload): string[] {
   const port = payload.cfg.bench?.port ?? 18080;
+  const slotSavePath = join(dirname(payload.logFile), "slots");
+  mkdirSync(slotSavePath, { recursive: true });
   const args = ["-m", String(payload.item.model_path ?? "")];
   if (payload.item.mmproj_path) args.push("--mmproj", payload.item.mmproj_path);
   args.push(...splitArgs(payload.item.extra_args));
-  args.push("--port", String(port), "--host", "127.0.0.1", "--no-warmup", "--cache-ram", "128");
+  args.push(
+    "--port", String(port), "--host", "127.0.0.1", "--no-warmup",
+    "--cache-ram", "128", "--slot-save-path", slotSavePath,
+  );
   return args;
 }
 
@@ -207,6 +261,20 @@ async function runOne(
     prompt_ms: null,
     ttfr_ms: null,
     e2e_ttft_ms: null,
+    ttfh_ms: null,
+    stream_open_ms: null,
+    client_ttft_ms: null,
+    e2e_first_reasoning_ms: null,
+    e2e_first_content_ms: null,
+    reasoning_delay_ms: null,
+    e2e_latency_ms: null,
+    server_prefill_ms: null,
+    server_ttft_ms: null,
+    tpot_ms: null,
+    itl_p95_ms: null,
+    delivery_gap_median_ms: null,
+    delivery_gap_p95_ms: null,
+    delivery_gap_max_ms: null,
     total_request_ms: null,
     latency_total_request_ms: null,
     latency_error: null,
@@ -259,17 +327,19 @@ async function runOne(
     emit(payload.eventFile, "[phase] sending_prompt");
     let inferenceStopped = false;
     const inferenceStartedMs = Date.now();
-    let inferencePhase: "warmup" | "throughput" | "latency_prompt" | "latency_eval" = "warmup";
+    const streamState: ProductionStreamState = {
+      inferencePhase: "warmup",
+      previousServerN: null,
+      previousServerMs: null,
+    };
     let lastInferenceSample = baseline;
-    const tokenTimes: number[] = [];
-    const appendTelemetry = (sample: MetricSample, tokenIndex: number | null = null, rollingTps: number | null = null) => {
+    const appendTelemetry = (sample: MetricSample, extra: Record<string, unknown> = {}) => {
       const elapsedMs = Math.max(0, Date.now() - inferenceStartedMs);
       const points = run.telemetry ?? (run.telemetry = []);
       points.push({
         elapsed_ms: elapsedMs,
-        phase: inferencePhase,
-        token_index: tokenIndex,
-        rolling_tps: rollingTps,
+        phase: streamState.inferencePhase,
+        ...extra,
         vram_total_mib: Math.max(0, sample.gpu_mem_mib),
         vram_run_mib: Math.max(0, sample.gpu_mem_mib - baseline.gpu_mem_mib),
         ram_used_mib: Math.max(0, ramBaseline - sample.ram_avail_mib),
@@ -296,38 +366,42 @@ async function runOne(
       }
     };
     const inferencePollPromise = payload.minimalPolling ? Promise.resolve() : inferencePoll();
+    const consumeProductionStreamEvent = createProductionStreamConsumer({
+      state: streamState,
+      minimalPolling: Boolean(payload.minimalPolling),
+      appendTelemetry: (extra) => appendTelemetry(lastInferenceSample, extra),
+      forward: deps.httpDeps?.onStreamEvent,
+    });
     const http = await runHttp({
       baseUrl,
       prompt: payload.cfg.bench?.prompt ?? "",
       maxTokens: payload.cfg.bench?.n_predict ?? 128,
-      warmup: payload.cfg.bench?.warmup ?? true,
+      // b9608 cannot erase slots for multimodal servers. Skip the otherwise
+      // optional warmup there so the measured request still starts cold.
+      warmup: (payload.cfg.bench?.warmup ?? true) && !payload.item.mmproj_path,
       reasoningOff: payload.item.reasoning_mode === "off",
       timeoutMs: 900000,
     }, {
       ...deps.httpDeps,
       onPhase: (phase) => {
-        inferencePhase = phase;
+        streamState.inferencePhase = phase;
         deps.httpDeps?.onPhase?.(phase);
       },
-      onContentEvent: (event) => {
-        inferencePhase = "latency_eval";
-        const elapsed = Date.now() - inferenceStartedMs;
-        tokenTimes.push(elapsed);
-        const window = tokenTimes.slice(-8);
-        const rollingTps = window.length >= 2
-          ? round((window.length - 1) / Math.max(0.001, (window[window.length - 1] - window[0]) / 1000), 1)
-          : null;
-        if (!payload.minimalPolling) appendTelemetry(lastInferenceSample, event.index, rollingTps);
-        deps.httpDeps?.onContentEvent?.(event);
-      },
+      onStreamEvent: consumeProductionStreamEvent,
     });
     inferenceStopped = true;
     await inferencePollPromise;
     run.total_request_ms = http.total_request_ms;
     run.ttfr_ms = http.ttfr_ms;
     run.e2e_ttft_ms = http.e2e_ttft_ms;
+    for (const field of [
+      "ttfh_ms", "stream_open_ms", "client_ttft_ms", "e2e_first_reasoning_ms",
+      "e2e_first_content_ms", "reasoning_delay_ms", "e2e_latency_ms", "server_prefill_ms",
+      "server_ttft_ms", "tpot_ms", "itl_p95_ms", "delivery_gap_median_ms",
+      "delivery_gap_p95_ms", "delivery_gap_max_ms",
+    ] as const) run[field] = http[field];
     run.latency_total_request_ms = http.latency_total_request_ms;
-    run.latency_error = http.latency_error ?? null;
+    run.latency_error = null;
     run.ok = http.ok;
     run.error = http.ok ? null : (http.error ?? "HTTP benchmark failed");
     if (http.timings) {
@@ -343,8 +417,9 @@ async function runOne(
         && http.timings.predicted_per_second !== null
         ? round(http.timings.predicted_per_second, 2)
         : null;
-      run.ttft_sec = run.e2e_ttft_ms !== null && run.e2e_ttft_ms !== undefined
-        ? round(Number(run.e2e_ttft_ms) / 1000, 3)
+      const headlineTtft = run.server_ttft_ms ?? run.client_ttft_ms ?? run.e2e_ttft_ms;
+      run.ttft_sec = headlineTtft !== null && headlineTtft !== undefined
+        ? round(Number(headlineTtft) / 1000, 3)
         : run.prompt_ms !== null && run.prompt_ms !== undefined
           ? round(Number(run.prompt_ms) / 1000, 3)
           : null;
