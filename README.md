@@ -344,12 +344,12 @@ layout.
   accepting a license (notably some Gemma variants) may return 401. Accept the
   license once on the website, or download those particular files with
   `huggingface-cli` separately.
-- **Per-model `max_context` only honored for curated samples.** Entries in
-  `models_catalog.json` carry `max_context` (scraped from the upstream model card),
-  and `plan` skips context-sweep candidates above it. User-owned `.gguf` files
-  outside `models_catalog.json` fall back to the global `max_context_cap` (default
-  262 144) — a future GGUF metadata parser would derive the per-model cap
-  from the file itself.
+- **Context sweeps stop at each model's real limit.** Curated entries carry the
+  exact `max_position_embeddings` value from the upstream Hugging Face
+  `config.json`. The default sweep uses 16K, 32K, 64K, 128K and 256K, skips
+  unsupported points, and adds the model's exact maximum when it falls between
+  them. User-owned `.gguf` files use their embedded context metadata when
+  available, then fall back to the global `max_context_cap` (default 262 144).
 
 ## Roadmap
 

@@ -103,6 +103,14 @@ test("invokePlan matches the PowerShell-equivalent mixed-sweep fixture", () => {
       extra_args: "--ctx-size 65536 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn auto --parallel 1 --batch-size 2048 --ubatch-size 512 --no-mmap --prio 2 --threads 6 --threads-batch 12",
     },
     {
+      id: "Qwen3_5_4B_Q4_K_M__ctx_131072_kv_q8_0",
+      model: "Qwen3.5-4B",
+      level: "middle",
+      sweep: "context",
+      label: "Qwen3.5-4B Q4_K_M @ ctx=131072_kv=q8_0",
+      extra_args: "--ctx-size 131072 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn auto --parallel 1 --batch-size 2048 --ubatch-size 512 --no-mmap --prio 2 --threads 6 --threads-batch 12",
+    },
+    {
       id: "Qwen3_6_35B_A3B_Q4_K_M__ncpumoe_28",
       model: "Qwen3.6-35B-A3B",
       level: "ultra",

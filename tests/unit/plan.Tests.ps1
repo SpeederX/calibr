@@ -12,7 +12,7 @@ Describe "Test-CtxAllowedForModel" {
     It "rejects ctx above the global cap" {
         Assert-False (Test-CtxAllowedForModel -Ctx 524288 -GlobalCap 262144 -PerModelCap 0)
     }
-    It "rejects ctx above the per-model cap (Gemma 4 E2B at 128k)" {
+    It "rejects ctx above a per-model 128k cap" {
         # The bug case from the user's test: Gemma 4 E2B reports max 128000,
         # so the 131072 candidate must be skipped even though the global cap
         # (262144) allows it.

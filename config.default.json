@@ -68,9 +68,8 @@
     { "ctx": 16384,  "kv": "q8_0" },
     { "ctx": 32768,  "kv": "q8_0" },
     { "ctx": 65536,  "kv": "q8_0" },
-    { "ctx": 98304,  "kv": "q8_0" },
     { "ctx": 131072, "kv": "q4_0" },
-    { "ctx": 163840, "kv": "q4_0" }
+    { "ctx": 262144, "kv": "q4_0" }
   ],
   "_comment_candidates": "Context / KV-cache-quantization combos to try for models that fully fit the GPU (the context sweep). q8_0 -> near-lossless, q4_0 -> unlocks ~2x more ctx at minor quality hit.",
 
