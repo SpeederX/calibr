@@ -73,6 +73,40 @@ function Get-OffloadCalibrationId {
     }
 }
 
+function Save-OffloadCalibration {
+    param(
+        [string]$CalibrationId,
+        $Result,
+        $Meta,
+        $Config,
+        [string]$BaseArgs,
+        [int]$ContextSize,
+        [string]$KvType
+    )
+    if (-not $CalibrationId -or -not $Result) { return }
+    $record = [ordered]@{
+        schema_version = 1
+        calibration_id = $CalibrationId
+        created_at = (Get-Date).ToUniversalTime().ToString('o')
+        model_path = $Meta.path
+        model_size_mib = $Meta.size_mib
+        llama_server_exe = $Config.llama_server_exe
+        gpu_name = $Config.hardware.gpu_name
+        vram_total_mib = $Config.hardware.vram_total_mib
+        vram_safety_budget_mib = $Config.hardware.vram_safety_budget_mib
+        context_size = $ContextSize
+        kv_type = $KvType
+        base_args = $BaseArgs
+        result = $Result
+    }
+    $path = Join-Path $script:CALIBR_CALIBRATIONS_DIR "$CalibrationId.json"
+    [System.IO.File]::WriteAllText(
+        $path,
+        ($record | ConvertTo-Json -Depth 15),
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+}
+
 function Invoke-TsOffloadCalibration {
     param($Meta, $Config, [string]$BaseArgs)
 

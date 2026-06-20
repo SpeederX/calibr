@@ -75,6 +75,11 @@ from silently changing the allocation that planning selected. If the adapter
 or required GGUF metadata is unavailable, PowerShell reports and uses the
 explicit conservative fallback.
 
+Successful probe sets are stored separately under
+`data/calibrations/<calibration_id>.json`. Benchmark results carry only the
+calibration id, fitted boundary, probe count, and candidate offset; probe
+records never enter ranking or winner selection.
+
 ## Why internal stages still exist
 
 The stage modules are useful implementation boundaries:

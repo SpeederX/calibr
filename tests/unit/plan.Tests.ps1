@@ -68,6 +68,26 @@ Describe "Adaptive offload adapter" {
         Assert-Equal 20 $layers[0]
         Assert-Equal 36 $layers[4]
     }
+
+    It "persists probe records outside benchmark results" {
+        $old = $script:CALIBR_CALIBRATIONS_DIR
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-probe-" + [guid]::NewGuid().ToString("N"))
+        try {
+            New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+            $script:CALIBR_CALIBRATIONS_DIR = $tmp
+            Save-OffloadCalibration -CalibrationId "abc123" `
+                -Result @{ calibrated = $true; probes = @(@{ requested_layers = 20 }) } `
+                -Meta @{ path = "model.gguf"; size_mib = 5000 } `
+                -Config @{ llama_server_exe = "llama-server"; hardware = @{ gpu_name = "GPU"; vram_total_mib = 8192; vram_safety_budget_mib = 7782 } } `
+                -BaseArgs "--parallel 1" -ContextSize 16384 -KvType "q8_0"
+            $record = Get-Content (Join-Path $tmp "abc123.json") -Raw | ConvertFrom-Json
+            Assert-Equal "abc123" $record.calibration_id
+            Assert-Equal 20 $record.result.probes[0].requested_layers
+        } finally {
+            $script:CALIBR_CALIBRATIONS_DIR = $old
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 Describe "Plan workload identity" {

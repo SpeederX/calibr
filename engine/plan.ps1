@@ -269,6 +269,9 @@ function Invoke-Plan {
                 $probeKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
                 $calibrationId = Get-OffloadCalibrationId `
                     -Meta $m -Config $cfg -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+                Save-OffloadCalibration `
+                    -CalibrationId $calibrationId -Result $calibration -Meta $m -Config $cfg `
+                    -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
                 Write-Host ("  adaptive offload: {0}, fit {1}/{2} layers ({3} probes)" -f `
                     $m.model, $calibration.verified_fit_layers, $calibration.block_count, $calibration.probe_count) `
                     -ForegroundColor DarkCyan
