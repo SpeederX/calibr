@@ -173,6 +173,8 @@ function New-PlanItem {
         $item.first_spill_layers = $Calibration.first_spill_layers
         $item.probe_count = $Calibration.probe_count
         $item.fit_offset = $FitOffset
+        $item.calibration_cache_hit = [bool]$Calibration.cache_hit
+        $item.calibration_cache_age_hours = $Calibration.cache_age_hours
     }
     return $item
 }
@@ -261,19 +263,26 @@ function Invoke-Plan {
         $level = if ($bnameLvl -and $levelMap.ContainsKey($bnameLvl.ToLower())) { $levelMap[$bnameLvl.ToLower()] } else { $null }
         if ($Level -and $level -ne $Level) { continue }
         if (-not $m.is_moe -and -not $DryRun) {
-            $calibration = Invoke-TsOffloadCalibration -Meta $m -Config $cfg -BaseArgs $base
+            $offloadSettings = $cfg.planning.offload_planning
+            $probeCtx = if ($offloadSettings.context_size) { [int]$offloadSettings.context_size } else { 16384 }
+            $probeKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
+            $calibrationId = Get-OffloadCalibrationId `
+                -Meta $m -Config $cfg -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+            $calibration = Get-CachedOffloadCalibration -CalibrationId $calibrationId -Config $cfg
+            if (-not $calibration) {
+                $calibration = Invoke-TsOffloadCalibration -Meta $m -Config $cfg -BaseArgs $base
+                if ($calibration) { $calibration.cache_hit = $false }
+            }
             if ($calibration -and $calibration.calibrated) {
                 $sweep = [string]$calibration.mode
-                $offloadSettings = $cfg.planning.offload_planning
-                $probeCtx = if ($offloadSettings.context_size) { [int]$offloadSettings.context_size } else { 16384 }
-                $probeKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
-                $calibrationId = Get-OffloadCalibrationId `
-                    -Meta $m -Config $cfg -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
-                Save-OffloadCalibration `
-                    -CalibrationId $calibrationId -Result $calibration -Meta $m -Config $cfg `
-                    -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
-                Write-Host ("  adaptive offload: {0}, fit {1}/{2} layers ({3} probes)" -f `
-                    $m.model, $calibration.verified_fit_layers, $calibration.block_count, $calibration.probe_count) `
+                if (-not $calibration.cache_hit) {
+                    Save-OffloadCalibration `
+                        -CalibrationId $calibrationId -Result $calibration -Meta $m -Config $cfg `
+                        -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+                }
+                $source = if ($calibration.cache_hit) { "cached" } else { "$($calibration.probe_count) probes" }
+                Write-Host ("  adaptive offload: {0}, fit {1}/{2} layers ({3})" -f `
+                    $m.model, $calibration.verified_fit_layers, $calibration.block_count, $source) `
                     -ForegroundColor DarkCyan
             } elseif ($calibration) {
                 Write-Host ("  adaptive offload fallback for {0}: {1}" -f $m.model, $calibration.reason) `

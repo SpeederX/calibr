@@ -582,6 +582,15 @@ export interface Result {
   total_request_ms?: number | null;
   latency_total_request_ms?: number | null;
   latency_error?: string | null;
+  planning_mode?: string | null;
+  calibration_id?: string | null;
+  predicted_fit_layers?: number | null;
+  verified_fit_layers?: number | null;
+  first_spill_layers?: number | null;
+  probe_count?: number | null;
+  fit_offset?: number | null;
+  calibration_cache_hit?: boolean | null;
+  calibration_cache_age_hours?: number | null;
   gpu_power_peak_w?: number;
   gpu_temp_peak_c?: number;
   gpu_util_avg_pct?: number;

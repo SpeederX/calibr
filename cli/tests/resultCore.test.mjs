@@ -39,6 +39,8 @@ function item() {
     first_spill_layers: 28,
     probe_count: 3,
     fit_offset: 1,
+    calibration_cache_hit: true,
+    calibration_cache_age_hours: 2.5,
     model_path: "C:\\models\\qwen.gguf",
     mmproj_path: null,
     extra_args: "--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0",
@@ -141,6 +143,8 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   assert.equal(result.calibration_id, "cal-123");
   assert.equal(result.verified_fit_layers, 27);
   assert.equal(result.fit_offset, 1);
+  assert.equal(result.calibration_cache_hit, true);
+  assert.equal(result.calibration_cache_age_hours, 2.5);
   assert.equal(result.gpu_power_peak_w, 180);
   assert.equal(result.gpu_temp_peak_c, 72);
   assert.equal(result.ram_used_peak_mib, 900);

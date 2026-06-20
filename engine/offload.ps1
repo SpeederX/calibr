@@ -51,18 +51,30 @@ function Get-OffloadCalibrationId {
     $model = if ($Meta.path -and (Test-Path -LiteralPath $Meta.path)) {
         Get-Item -LiteralPath $Meta.path
     } else { $null }
+    $llama = if ($Config.llama_server_exe -and (Test-Path -LiteralPath $Config.llama_server_exe)) {
+        Get-Item -LiteralPath $Config.llama_server_exe
+    } else { $null }
+    $mmproj = if ($Meta.mmproj -and (Test-Path -LiteralPath $Meta.mmproj)) {
+        Get-Item -LiteralPath $Meta.mmproj
+    } else { $null }
+    $planning = $Config.planning.offload_planning | ConvertTo-Json -Compress -Depth 5
     $identity = @(
         [string]$Meta.path,
         $(if ($model) { [string]$model.Length } else { '' }),
         $(if ($model) { $model.LastWriteTimeUtc.ToString('o') } else { '' }),
         [string]$Config.llama_server_exe,
+        $(if ($llama) { [string]$llama.Length } else { '' }),
+        $(if ($llama) { $llama.LastWriteTimeUtc.ToString('o') } else { '' }),
         [string]$Config.hardware.gpu_name,
         [string]$Config.hardware.vram_total_mib,
         [string]$Config.hardware.vram_safety_budget_mib,
         [string]$Meta.mmproj,
+        $(if ($mmproj) { [string]$mmproj.Length } else { '' }),
+        $(if ($mmproj) { $mmproj.LastWriteTimeUtc.ToString('o') } else { '' }),
         $BaseArgs,
         [string]$ContextSize,
-        $KvType
+        $KvType,
+        $planning
     ) -join '|'
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
@@ -70,6 +82,52 @@ function Get-OffloadCalibrationId {
         return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').Substring(0, 16).ToLowerInvariant()
     } finally {
         $sha.Dispose()
+    }
+}
+
+function Get-OffloadBaselineVramMib {
+    try {
+        if (Get-Command Get-GpuSnapshot -ErrorAction SilentlyContinue) {
+            $value = [int](Get-GpuSnapshot).mem_mib
+            if ($value -ge 0) { return $value }
+        }
+    } catch { }
+    return $null
+}
+
+function Get-CachedOffloadCalibration {
+    param(
+        [string]$CalibrationId,
+        $Config,
+        $CurrentBaselineMib = $null
+    )
+    if (-not $CalibrationId) { return $null }
+    $path = Join-Path $script:CALIBR_CALIBRATIONS_DIR "$CalibrationId.json"
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    try {
+        $record = ConvertTo-Hashtable -obj (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
+        if (-not $record.result -or -not $record.result.calibrated) { return $null }
+        $settings = $Config.planning.offload_planning
+        $maxAge = if ($settings.cache_max_age_hours) { [double]$settings.cache_max_age_hours } else { 168 }
+        $created = [datetime]::Parse([string]$record.created_at).ToUniversalTime()
+        $ageHours = ((Get-Date).ToUniversalTime() - $created).TotalHours
+        if ($maxAge -gt 0 -and $ageHours -gt $maxAge) { return $null }
+        $currentBaseline = if ($null -ne $CurrentBaselineMib) {
+            [int]$CurrentBaselineMib
+        } else {
+            Get-OffloadBaselineVramMib
+        }
+        $cachedBaseline = $record.result.baseline_vram_mib
+        $tolerance = if ($null -ne $settings.cache_baseline_tolerance_mib) {
+            [int]$settings.cache_baseline_tolerance_mib
+        } else { 128 }
+        if ($null -eq $currentBaseline -or $null -eq $cachedBaseline) { return $null }
+        if ([math]::Abs([int]$currentBaseline - [int]$cachedBaseline) -gt $tolerance) { return $null }
+        $record.result.cache_hit = $true
+        $record.result.cache_age_hours = [math]::Round($ageHours, 2)
+        return $record.result
+    } catch {
+        return $null
     }
 }
 

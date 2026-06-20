@@ -69,6 +69,8 @@
       "stable_tolerance_mib": 16,
       "max_ready_samples": 8,
       "sample_interval_ms": 200,
+      "cache_max_age_hours": 168,
+      "cache_baseline_tolerance_mib": 128,
       "_comment": "Dense models are load-probed with their real run arguments. The verified highest non-spilling GPU-layer count anchors the benchmark offsets. runtime_reserve_mib is used only for the first structural estimate."
     },
     "workload_sweeps": {

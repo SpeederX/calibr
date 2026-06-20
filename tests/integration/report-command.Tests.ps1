@@ -52,6 +52,12 @@ Describe "report.template.html structure (v1.2 redesign)" {
         # Class string may now have additional modifiers (e.g. ' is-failed') appended.
         Assert-True ($tpl -match 'details class="model-row')         "details element for model row missing"
     }
+    It "explains adaptive planning without adding another wide results column" {
+        Assert-True ($tpl -match 'function calibrationSummary')       "calibration summary helper missing"
+        Assert-True ($tpl -match 'verified fit')                      "verified fit text missing"
+        Assert-True ($tpl -match 'calibration_cache_hit')             "cache source detail missing"
+        Assert-True ($tpl -match 'function workloadTitle')            "diagnostic workload tooltip missing"
+    }
     It "surfaces failure_reason for failed configs and 'no winner' models" {
         Assert-True ($tpl -match 'function fitLabel')                "fitLabel helper missing"
         Assert-True ($tpl -match 'function failureLabel')            "failureLabel helper missing"

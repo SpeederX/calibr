@@ -128,6 +128,11 @@ and do not participate in winner selection. Raw/headless planning falls back
 to a conservative static range when the TypeScript calibration adapter is
 unavailable.
 
+Matching calibration records can be reused for up to seven days when the
+llama.cpp build, model files, allocation policy, hardware budget, and current
+VRAM baseline still agree. The expanded model details show the verified fit,
+probe/cache source, and candidate offset.
+
 There is not one universal winner. The report exposes profiles:
 
 - **Speed**: highest measured `eval_tps`. It ignores spill and power.

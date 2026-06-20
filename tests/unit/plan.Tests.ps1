@@ -88,6 +88,33 @@ Describe "Adaptive offload adapter" {
             Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
+
+    It "reuses a fresh calibration only when the VRAM baseline still matches" {
+        $old = $script:CALIBR_CALIBRATIONS_DIR
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-cache-" + [guid]::NewGuid().ToString("N"))
+        try {
+            New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+            $script:CALIBR_CALIBRATIONS_DIR = $tmp
+            $cfg = @{ planning = @{ offload_planning = @{
+                cache_max_age_hours = 24
+                cache_baseline_tolerance_mib = 128
+            } } }
+            Save-OffloadCalibration -CalibrationId "cached" `
+                -Result @{ calibrated = $true; baseline_vram_mib = 500; verified_fit_layers = 28 } `
+                -Meta @{ path = "model.gguf"; size_mib = 5000 } `
+                -Config @{ llama_server_exe = "llama-server"; hardware = @{ gpu_name = "GPU"; vram_total_mib = 8192; vram_safety_budget_mib = 7782 } } `
+                -BaseArgs "--parallel 1" -ContextSize 16384 -KvType "q8_0"
+
+            $hit = Get-CachedOffloadCalibration -CalibrationId "cached" -Config $cfg -CurrentBaselineMib 520
+            $miss = Get-CachedOffloadCalibration -CalibrationId "cached" -Config $cfg -CurrentBaselineMib 900
+            Assert-True $hit.cache_hit
+            Assert-Equal 28 $hit.verified_fit_layers
+            Assert-Equal $null $miss
+        } finally {
+            $script:CALIBR_CALIBRATIONS_DIR = $old
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 Describe "Plan workload identity" {
