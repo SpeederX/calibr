@@ -16,6 +16,7 @@ plan is bigger. See `../architecture/README.md` for the distinction.
 
 ## Index
 
+- [2026-06-20 - hardware-aware offload planning](2026-06-20-hardware-aware-offload-planning.md)
 - [2026-04-25 — bench UX hardening (backend check, progress bar, family-skip)](2026-04-25-bench-ux-hardening.md)
 - [2026-04-25 — chart improvements (sort, scatter, headroom)](2026-04-25-chart-improvements.md)
 - [2026-04-26 — pipeline polish (log-scale, dense_overrides, -PreferSpeed)](2026-04-26-pipeline-polish.md)

@@ -5,20 +5,8 @@
 # SUBCOMMAND: plan
 # ============================================================================
 function Get-SweepKind {
-    # Which dimension the plan sweeps for a model, from its own properties:
-    #   moe-cpu : mixture-of-experts -> sweep --n-cpu-moe (how many expert
-    #             layers stay on CPU)
-    #   context : fits the VRAM budget -> sweep context size + KV-cache quant
-    #   offload : too big for one GPU -> sweep --gpu-layers (how much offloads)
-    # (Formerly the A/B/C "tier"; renamed to say what it MEANS, not a letter.)
     param($meta, $cfg)
-    if ($meta.is_moe) { return "moe-cpu" }
-    $budget = [int]$cfg.hardware.vram_safety_budget_mib
-    $overhead = [int]$cfg.planning.overhead_mib
-    $mmprojMib = if ($meta.mmproj) { [int]((Get-Item $meta.mmproj).Length / 1MB) } else { 0 }
-    $needed = $meta.size_mib + $mmprojMib + $overhead
-    if ($needed -lt $budget) { return "context" }
-    return "offload"
+    return Get-FallbackSweepKind -Meta $meta -Config $cfg
 }
 
 function Get-CatalogLevelMap {
@@ -132,7 +120,10 @@ function New-PlanItem {
         [ValidateSet("baseline", "prefill", "kv-fill")]
         [string]$WorkloadKind = "baseline",
         [int]$PrefillTokens = 0,
-        [int]$KvFillTokens = 0
+        [int]$KvFillTokens = 0,
+        $Calibration = $null,
+        [string]$CalibrationId = "",
+        $FitOffset = $null
     )
     # IDs used to be 'T{idx:D3}_{model_variant}_{label}'. The idx prefix made
     # them NON-deterministic across plan regenerations: re-running discover
@@ -155,7 +146,7 @@ function New-PlanItem {
     if ($sanitizedModel.Length -gt 40) { $sanitizedModel = $sanitizedModel.Substring(0, 40) }
     if ($sanitizedLabel.Length -gt 80) { $sanitizedLabel = $sanitizedLabel.Substring(0, 80) }
     $id = "{0}__{1}" -f $sanitizedModel, $sanitizedLabel
-    return @{
+    $item = @{
         id          = $id
         model_path  = $meta.path
         mmproj_path = $meta.mmproj
@@ -174,6 +165,16 @@ function New-PlanItem {
         label       = "$($meta.model) $($meta.variant) @ $identityLabel"
         extra_args  = $extraArgs
     }
+    if ($Calibration -and $Calibration.calibrated) {
+        $item.planning_mode = "adaptive-offload"
+        $item.calibration_id = $CalibrationId
+        $item.predicted_fit_layers = $Calibration.predicted_fit_layers
+        $item.verified_fit_layers = $Calibration.verified_fit_layers
+        $item.first_spill_layers = $Calibration.first_spill_layers
+        $item.probe_count = $Calibration.probe_count
+        $item.fit_offset = $FitOffset
+    }
+    return $item
 }
 
 function Get-CatalogMaxContextMap {
@@ -254,9 +255,31 @@ function Invoke-Plan {
     foreach ($m in $catalog) {
         if ($Model -and $m.model -notmatch $Model) { continue }
         $sweep = Get-SweepKind -meta $m -cfg $cfg
+        $calibration = $null
+        $calibrationId = ""
         $bnameLvl = [System.IO.Path]::GetFileName($m.path)
         $level = if ($bnameLvl -and $levelMap.ContainsKey($bnameLvl.ToLower())) { $levelMap[$bnameLvl.ToLower()] } else { $null }
         if ($Level -and $level -ne $Level) { continue }
+        if (-not $m.is_moe -and -not $DryRun) {
+            $calibration = Invoke-TsOffloadCalibration -Meta $m -Config $cfg -BaseArgs $base
+            if ($calibration -and $calibration.calibrated) {
+                $sweep = [string]$calibration.mode
+                $offloadSettings = $cfg.planning.offload_planning
+                $probeCtx = if ($offloadSettings.context_size) { [int]$offloadSettings.context_size } else { 16384 }
+                $probeKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
+                $calibrationId = Get-OffloadCalibrationId `
+                    -Meta $m -Config $cfg -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+                Save-OffloadCalibration `
+                    -CalibrationId $calibrationId -Result $calibration -Meta $m -Config $cfg `
+                    -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+                Write-Host ("  adaptive offload: {0}, fit {1}/{2} layers ({3} probes)" -f `
+                    $m.model, $calibration.verified_fit_layers, $calibration.block_count, $calibration.probe_count) `
+                    -ForegroundColor DarkCyan
+            } elseif ($calibration) {
+                Write-Host ("  adaptive offload fallback for {0}: {1}" -f $m.model, $calibration.reason) `
+                    -ForegroundColor DarkYellow
+            }
+        }
 
         # Per-model ctx cap if the .gguf basename matches a curated sample.
         # User-owned files won't match -> $perModelCap stays 0 -> only the
@@ -289,14 +312,20 @@ function Invoke-Plan {
                         continue
                     }
                     $validCandidates += $c
-                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base"
-                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
+                    $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
+                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base$fitArg"
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level -extraArgs $argStr `
+                        -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx `
+                        -Calibration $calibration -CalibrationId $calibrationId)
+                    $idx++
                 }
                 $anchor = @($validCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
                 if ($anchor.Count -gt 0) {
                     $anchorCtx = [int]$anchor[0].ctx
                     $anchorKv = $anchor[0].kv
-                    $argStr = "--ctx-size $anchorCtx --gpu-layers 99 --cache-type-k $anchorKv --cache-type-v $anchorKv $base"
+                    $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
+                    $argStr = "--ctx-size $anchorCtx --gpu-layers 99 --cache-type-k $anchorKv --cache-type-v $anchorKv $base$fitArg"
                     $profiles = @(Get-WorkloadProfilesForContext `
                         -ContextSize $anchorCtx `
                         -Config $cfg `
@@ -308,7 +337,9 @@ function Invoke-Plan {
                             -meta $m -sweep $sweep -level $level -extraArgs $argStr -label $label -idx $idx `
                             -WorkloadKind $profile.kind `
                             -PrefillTokens $profile.prefill_tokens `
-                            -KvFillTokens $profile.kv_fill_tokens)
+                            -KvFillTokens $profile.kv_fill_tokens `
+                            -Calibration $calibration `
+                            -CalibrationId $calibrationId)
                         $idx++
                     }
                 }
@@ -323,9 +354,25 @@ function Invoke-Plan {
                 }
             }
             "offload" {
-                foreach ($n in $cfg.planning.offload_sweep) {
-                    $argStr = "--ctx-size 16384 --gpu-layers $n --cache-type-k q8_0 --cache-type-v q8_0 $base"
-                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ngl_$n" -idx $idx); $idx++
+                $layers = if ($calibration -and $calibration.calibrated) {
+                    @($calibration.benchmark_layers | ForEach-Object { [int]$_ })
+                } else {
+                    @(Get-FallbackOffloadLayers)
+                }
+                $offloadSettings = $cfg.planning.offload_planning
+                $offloadCtx = if ($offloadSettings.context_size) { [int]$offloadSettings.context_size } else { 16384 }
+                $offloadKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
+                foreach ($n in $layers) {
+                    $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
+                    $argStr = "--ctx-size $offloadCtx --gpu-layers $n --cache-type-k $offloadKv --cache-type-v $offloadKv $base$fitArg"
+                    $fitOffset = if ($calibration -and $calibration.calibrated) {
+                        [int]$n - [int]$calibration.verified_fit_layers
+                    } else { $null }
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level -extraArgs $argStr `
+                        -label "ngl_$n" -idx $idx -Calibration $calibration `
+                        -CalibrationId $calibrationId -FitOffset $fitOffset)
+                    $idx++
                 }
             }
         }

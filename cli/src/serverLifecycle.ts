@@ -95,7 +95,7 @@ function writeStatus(path: string, status: ServerLifecycleStatus): void {
   renameSync(temp, path);
 }
 
-function stopProcessTree(child: ChildProcess): void {
+export function stopProcessTree(child: ChildProcess): void {
   if (!child.pid || child.exitCode !== null) return;
   if (process.platform === "win32") {
     spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {

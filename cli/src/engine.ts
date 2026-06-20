@@ -710,6 +710,8 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
           CALIBR_TS_RESULT_CORE_SCRIPT: join(__dirname, "resultCoreCli.js"),
           CALIBR_TS_LIFECYCLE: "1",
           CALIBR_TS_LIFECYCLE_SCRIPT: join(__dirname, "serverLifecycleCli.js"),
+          CALIBR_TS_OFFLOAD_CALIBRATION: "1",
+          CALIBR_TS_OFFLOAD_CALIBRATION_SCRIPT: join(__dirname, "offloadCalibrationCli.js"),
           CALIBR_NODE: process.execPath,
         }
       : {}),

@@ -46,7 +46,11 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
 4. **Expand run configs**
    - context/KV sweep for models expected to fit;
    - CPU-expert sweep for MoE models;
-   - GPU-layer offload sweep for oversized dense models;
+   - for dense models, estimate an initial GPU-layer position from GGUF tensor
+     storage, then run bounded load-only probes against the detected VRAM
+     budget;
+   - verify the highest non-spilling layer count and expand a GPU-layer sweep
+     around that measured cliff;
    - cap contexts at model metadata and selected policy limits;
    - attach an explicit workload profile and token targets to every config.
 5. **Benchmark**
@@ -62,6 +66,24 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - render `data/report.html`;
    - generate launch scripts;
    - retain raw result JSON and per-run telemetry.
+
+Adaptive offload probes reuse the TypeScript llama-server lifecycle and
+hardware sampler. They force `--fit off`, disable warmup and prompt-cache
+retention, wait for stable ready-state memory, then stop without inference.
+The generated benchmark configs also use `--fit off`, preventing llama.cpp
+from silently changing the allocation that planning selected. If the adapter
+or required GGUF metadata is unavailable, PowerShell reports and uses the
+explicit conservative fallback.
+
+Shared-memory growth is retained as probe diagnostics but is not a standalone
+fit veto: on WDDM, intentional CPU-offloaded model buffers may appear as
+shared GPU memory. The load boundary uses readiness, dedicated VRAM against
+the safety cap, and an explicit llama.cpp fit failure.
+
+Successful probe sets are stored separately under
+`data/calibrations/<calibration_id>.json`. Benchmark results carry only the
+calibration id, fitted boundary, probe count, and candidate offset; probe
+records never enter ranking or winner selection.
 
 ## Why internal stages still exist
 

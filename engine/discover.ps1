@@ -68,6 +68,13 @@ function Get-ModelMetadata {
         dir        = $file.Directory.FullName
         gguf_architecture = $gguf.architecture
         gguf_context_length = $gguf.context_length
+        gguf_block_count = $gguf.block_count
+        gguf_tensor_count = $gguf.tensor_count
+        gguf_tensor_data_offset = $gguf.tensor_data_offset
+        gguf_tensor_bytes = $gguf.tensor_bytes
+        gguf_global_tensor_bytes = $gguf.global_tensor_bytes
+        gguf_expert_tensor_bytes = $gguf.expert_tensor_bytes
+        gguf_block_tensor_bytes = $gguf.block_tensor_bytes
         reasoning_mode = $curated.reasoning_mode
         template_note = $curated.template_note
     }
@@ -102,9 +109,69 @@ function Read-GgufValue {
     }
 }
 
+function Skip-GgufValue {
+    param($Reader, [int]$Type)
+    if (-not ('CalibrGgufReader' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+
+public static class CalibrGgufReader {
+    public static void SkipValue(BinaryReader reader, uint type) {
+        switch (type) {
+            case 0: case 1: case 7: reader.BaseStream.Seek(1, SeekOrigin.Current); return;
+            case 2: case 3: reader.BaseStream.Seek(2, SeekOrigin.Current); return;
+            case 4: case 5: case 6: reader.BaseStream.Seek(4, SeekOrigin.Current); return;
+            case 8:
+                SkipBytes(reader, reader.ReadUInt64());
+                return;
+            case 9:
+                uint itemType = reader.ReadUInt32();
+                ulong count = reader.ReadUInt64();
+                int width = FixedWidth(itemType);
+                if (width > 0) {
+                    SkipBytes(reader, checked(count * (ulong) width));
+                } else {
+                    for (ulong i = 0; i < count; i++) SkipValue(reader, itemType);
+                }
+                return;
+            case 10: case 11: case 12: reader.BaseStream.Seek(8, SeekOrigin.Current); return;
+            default: throw new InvalidDataException("Unknown GGUF value type " + type);
+        }
+    }
+
+    private static int FixedWidth(uint type) {
+        switch (type) {
+            case 0: case 1: case 7: return 1;
+            case 2: case 3: return 2;
+            case 4: case 5: case 6: return 4;
+            case 10: case 11: case 12: return 8;
+            default: return 0;
+        }
+    }
+
+    private static void SkipBytes(BinaryReader reader, ulong count) {
+        if (count > long.MaxValue) throw new InvalidDataException("GGUF value is too large");
+        reader.BaseStream.Seek((long) count, SeekOrigin.Current);
+    }
+}
+"@
+    }
+    [CalibrGgufReader]::SkipValue($Reader, [uint32]$Type)
+}
 function Get-GgufHeaderMetadata {
     param([string]$Path)
-    $out = @{ architecture = $null; context_length = $null }
+    $out = @{
+        architecture = $null
+        context_length = $null
+        block_count = $null
+        tensor_count = 0
+        tensor_data_offset = $null
+        tensor_bytes = $null
+        global_tensor_bytes = $null
+        expert_tensor_bytes = $null
+        block_tensor_bytes = @()
+    }
     $fs = $null
     $br = $null
     try {
@@ -113,17 +180,81 @@ function Get-GgufHeaderMetadata {
         $magic = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(4))
         if ($magic -ne "GGUF") { return $out }
         [void]$br.ReadUInt32() # version
-        [void]$br.ReadUInt64() # tensor_count
+        $tensorCountRaw = $br.ReadUInt64()
+        if ($tensorCountRaw -gt [int]::MaxValue) { return $out }
+        $tensorCount = [int]$tensorCountRaw
+        $out.tensor_count = $tensorCount
         $kvCount = [int]$br.ReadUInt64()
+        $alignment = 32
         for ($i = 0; $i -lt $kvCount; $i++) {
             $keyLen = [int]$br.ReadUInt64()
             $key = [System.Text.Encoding]::UTF8.GetString($br.ReadBytes($keyLen))
             $type = [int]$br.ReadUInt32()
+            $wanted = ($key -eq "general.architecture" -or $key -eq "general.alignment" -or
+                $key -match '\.context_length$' -or $key -match '\.block_count$')
+            if (-not $wanted) {
+                Skip-GgufValue -Reader $br -Type $type
+                continue
+            }
             $value = Read-GgufValue -Reader $br -Type $type
             if ($key -eq "general.architecture" -and $value) { $out.architecture = [string]$value }
             if ($key -match '\.context_length$' -and $null -ne $value) { $out.context_length = [int64]$value }
-            if ($out.architecture -and $out.context_length) { break }
+            if ($key -match '\.block_count$' -and $null -ne $value) { $out.block_count = [int]$value }
+            if ($key -eq "general.alignment" -and $null -ne $value -and [int]$value -gt 0) { $alignment = [int]$value }
         }
+
+        # Offset deltas give the stored tensor span, including alignment, and
+        # avoid duplicating ggml's evolving quantization type table.
+        $tensors = @()
+        for ($i = 0; $i -lt $tensorCount; $i++) {
+            $nameLen = [int]$br.ReadUInt64()
+            $name = [System.Text.Encoding]::UTF8.GetString($br.ReadBytes($nameLen))
+            $nDims = [int]$br.ReadUInt32()
+            for ($d = 0; $d -lt $nDims; $d++) { [void]$br.ReadUInt64() }
+            [void]$br.ReadUInt32() # ggml_type
+            $tensors += @{ name = $name; offset = [uint64]$br.ReadUInt64() }
+        }
+
+        $directoryEnd = [int64]$fs.Position
+        $padding = ($alignment - ($directoryEnd % $alignment)) % $alignment
+        $dataStart = $directoryEnd + $padding
+        if ($dataStart -gt $fs.Length) { return $out }
+        $out.tensor_data_offset = $dataStart
+
+        $ordered = @($tensors | Sort-Object { [uint64]$_.offset })
+        $blockBytes = @{}
+        $blockExpertBytes = @{}
+        [int64]$globalBytes = 0
+        [int64]$expertBytes = 0
+        [int64]$tensorBytes = 0
+        for ($i = 0; $i -lt $ordered.Count; $i++) {
+            $current = $ordered[$i]
+            [int64]$start = $dataStart + [int64]$current.offset
+            [int64]$end = if ($i + 1 -lt $ordered.Count) { $dataStart + [int64]$ordered[$i + 1].offset } else { $fs.Length }
+            if ($start -lt $dataStart -or $end -lt $start -or $end -gt $fs.Length) { continue }
+            [int64]$bytes = $end - $start
+            $tensorBytes += $bytes
+
+            $blockIndex = $null
+            if ([string]$current.name -match '(?:^|\.)blk\.(\d+)(?:\.|$)') { $blockIndex = [int]$Matches[1] }
+            $isExpert = ([string]$current.name -match '(?:ffn.*_exps|experts?)')
+            if ($null -ne $blockIndex) {
+                if (-not $blockBytes.ContainsKey($blockIndex)) { $blockBytes[$blockIndex] = [int64]0 }
+                $blockBytes[$blockIndex] = [int64]$blockBytes[$blockIndex] + $bytes
+                if ($isExpert) {
+                    if (-not $blockExpertBytes.ContainsKey($blockIndex)) { $blockExpertBytes[$blockIndex] = [int64]0 }
+                    $blockExpertBytes[$blockIndex] = [int64]$blockExpertBytes[$blockIndex] + $bytes
+                }
+            } else { $globalBytes += $bytes }
+            if ($isExpert) { $expertBytes += $bytes }
+        }
+
+        $out.tensor_bytes = $tensorBytes
+        $out.global_tensor_bytes = $globalBytes
+        $out.expert_tensor_bytes = $expertBytes
+        $out.block_tensor_bytes = @($blockBytes.Keys | Sort-Object | ForEach-Object {
+            @{ block = [int]$_; bytes = [int64]$blockBytes[$_]; expert_bytes = if ($blockExpertBytes.ContainsKey($_)) { [int64]$blockExpertBytes[$_] } else { [int64]0 } }
+        })
     } catch {
         return $out
     } finally {

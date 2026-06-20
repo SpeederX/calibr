@@ -238,6 +238,13 @@ function New-AggregatedBenchResult {
         template_note   = $item.template_note
         gguf_context_length = $item.gguf_context_length
         gguf_architecture = $item.gguf_architecture
+        planning_mode   = $item.planning_mode
+        calibration_id  = $item.calibration_id
+        predicted_fit_layers = $item.predicted_fit_layers
+        verified_fit_layers = $item.verified_fit_layers
+        first_spill_layers = $item.first_spill_layers
+        probe_count     = $item.probe_count
+        fit_offset      = $item.fit_offset
         timestamp       = $first.timestamp
         model_path      = $item.model_path
         mmproj_path     = $item.mmproj_path

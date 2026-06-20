@@ -26,7 +26,8 @@ test("preferences view exposes the VRAM warning preference", async () => {
     assert.match(frame, /VRAM used before the run \/ total VRAM x 100/);
     assert.match(frame, /1500 \/ 8192 = 18\.3%/);
     assert.match(frame, /planned advanced defaults/);
-    assert.match(frame, /gpu layers sweep/);
+    assert.match(frame, /gpu offload planning: adaptive around N_fit/);
+    assert.match(frame, /Short load-only probes find the local VRAM cliff/);
     assert.match(frame, /cpu moe sweep/);
     assert.match(frame, /polling interval/);
     assert.match(frame, /left\/right or -\/\+/);

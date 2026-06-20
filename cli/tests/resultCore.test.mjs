@@ -32,6 +32,13 @@ function item() {
     template_note: null,
     gguf_context_length: 131072,
     gguf_architecture: "qwen3",
+    planning_mode: "adaptive-offload",
+    calibration_id: "cal-123",
+    predicted_fit_layers: 28,
+    verified_fit_layers: 27,
+    first_spill_layers: 28,
+    probe_count: 3,
+    fit_offset: 1,
     model_path: "C:\\models\\qwen.gguf",
     mmproj_path: null,
     extra_args: "--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0",
@@ -130,6 +137,10 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   assert.equal(result.workload_kind, "kv-fill");
   assert.equal(result.prefill_target_tokens, 0);
   assert.equal(result.kv_fill_target_tokens, 49152);
+  assert.equal(result.planning_mode, "adaptive-offload");
+  assert.equal(result.calibration_id, "cal-123");
+  assert.equal(result.verified_fit_layers, 27);
+  assert.equal(result.fit_offset, 1);
   assert.equal(result.gpu_power_peak_w, 180);
   assert.equal(result.gpu_temp_peak_c, 72);
   assert.equal(result.ram_used_peak_mib, 900);
