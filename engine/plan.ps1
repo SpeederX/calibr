@@ -166,11 +166,17 @@ function New-PlanItem {
         extra_args  = $extraArgs
     }
     if ($Calibration -and $Calibration.calibrated) {
-        $item.planning_mode = "adaptive-offload"
+        $item.planning_mode = if ($Calibration.planning_mode) { $Calibration.planning_mode } else { "adaptive-offload" }
         $item.calibration_id = $CalibrationId
-        $item.predicted_fit_layers = $Calibration.predicted_fit_layers
-        $item.verified_fit_layers = $Calibration.verified_fit_layers
-        $item.first_spill_layers = $Calibration.first_spill_layers
+        if ($item.planning_mode -eq "adaptive-moe") {
+            $item.predicted_n_cpu_moe = $Calibration.predicted_n_cpu_moe
+            $item.verified_n_cpu_moe = $Calibration.verified_n_cpu_moe
+            $item.first_spill_n_cpu_moe = $Calibration.first_spill_n_cpu_moe
+        } else {
+            $item.predicted_fit_layers = $Calibration.predicted_fit_layers
+            $item.verified_fit_layers = $Calibration.verified_fit_layers
+            $item.first_spill_layers = $Calibration.first_spill_layers
+        }
         $item.probe_count = $Calibration.probe_count
         $item.fit_offset = $FitOffset
         $item.calibration_cache_hit = [bool]$Calibration.cache_hit
@@ -288,6 +294,31 @@ function Invoke-Plan {
                 Write-Host ("  adaptive offload fallback for {0}: {1}" -f $m.model, $calibration.reason) `
                     -ForegroundColor DarkYellow
             }
+        } elseif ($m.is_moe -and -not $DryRun) {
+            $moeSettings = $cfg.planning.moe_planning
+            $probeCtx = if ($moeSettings.context_size) { [int]$moeSettings.context_size } else { 16384 }
+            $probeKv = if ($moeSettings.kv_type) { [string]$moeSettings.kv_type } else { "q8_0" }
+            $calibrationId = Get-MoeCalibrationId `
+                -Meta $m -Config $cfg -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+            $calibration = Get-CachedOffloadCalibration `
+                -CalibrationId $calibrationId -Config $cfg -Settings $moeSettings
+            if (-not $calibration) {
+                $calibration = Invoke-TsMoeCalibration -Meta $m -Config $cfg -BaseArgs $base
+                if ($calibration) { $calibration.cache_hit = $false }
+            }
+            if ($calibration -and $calibration.calibrated) {
+                if (-not $calibration.cache_hit) {
+                    Save-OffloadCalibration `
+                        -CalibrationId $calibrationId -Result $calibration -Meta $m -Config $cfg `
+                        -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+                }
+                $source = if ($calibration.cache_hit) { "cached" } else { "$($calibration.probe_count) probes" }
+                Write-Host ("  adaptive MoE: {0}, minimum n-cpu-moe {1} ({2})" -f `
+                    $m.model, $calibration.verified_n_cpu_moe, $source) -ForegroundColor DarkCyan
+            } elseif ($calibration) {
+                Write-Host ("  adaptive MoE fallback for {0}: {1}" -f $m.model, $calibration.reason) `
+                    -ForegroundColor DarkYellow
+            }
         }
 
         # Per-model ctx cap if the .gguf basename matches a curated sample.
@@ -357,9 +388,25 @@ function Invoke-Plan {
                 }
             }
             "moe-cpu" {
-                foreach ($n in $cfg.planning.moecpu_sweep) {
-                    $argStr = "--ctx-size 16384 --gpu-layers 99 --n-cpu-moe $n --cache-type-k q8_0 --cache-type-v q8_0 $base"
-                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ncpumoe_$n" -idx $idx); $idx++
+                $values = if ($calibration -and $calibration.calibrated) {
+                    @($calibration.benchmark_n_cpu_moe | ForEach-Object { [int]$_ })
+                } else {
+                    @(Get-FallbackMoeCpuLayers)
+                }
+                $moeSettings = $cfg.planning.moe_planning
+                $moeCtx = if ($moeSettings.context_size) { [int]$moeSettings.context_size } else { 16384 }
+                $moeKv = if ($moeSettings.kv_type) { [string]$moeSettings.kv_type } else { "q8_0" }
+                foreach ($n in $values) {
+                    $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
+                    $argStr = "--ctx-size $moeCtx --gpu-layers 99 --n-cpu-moe $n --cache-type-k $moeKv --cache-type-v $moeKv $base$fitArg"
+                    $fitOffset = if ($calibration -and $calibration.calibrated) {
+                        [int]$n - [int]$calibration.verified_n_cpu_moe
+                    } else { $null }
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level -extraArgs $argStr `
+                        -label "ncpumoe_$n" -idx $idx -Calibration $calibration `
+                        -CalibrationId $calibrationId -FitOffset $fitOffset)
+                    $idx++
                 }
             }
             "offload" {

@@ -58,7 +58,20 @@
   "_comment_base": "Flags applied to every benchmark. --flash-attn auto is safer than 'on' (falls back on builds that don't support it). Thread counts are injected dynamically from hardware.cpu_cores_*.",
 
   "planning": {
-    "moecpu_sweep": [28, 30, 32, 34, 36],
+    "moe_planning": {
+      "context_size": 16384,
+      "kv_type": "q8_0",
+      "runtime_reserve_mib": 512,
+      "benchmark_offsets": [-6, -3, -1, 0, 1, 3],
+      "max_probe_count": 4,
+      "stable_sample_count": 3,
+      "stable_tolerance_mib": 16,
+      "max_ready_samples": 8,
+      "sample_interval_ms": 200,
+      "cache_max_age_hours": 168,
+      "cache_baseline_tolerance_mib": 128,
+      "_comment": "MoE load probes find the minimum number of first-layer expert weights that must stay on CPU. Lower candidate values intentionally measure the spill side."
+    },
     "offload_planning": {
       "context_size": 16384,
       "kv_type": "q8_0",

@@ -133,6 +133,10 @@ llama.cpp build, model files, allocation policy, hardware budget, and current
 VRAM baseline still agree. The expanded model details show the verified fit,
 probe/cache source, and candidate offset.
 
+MoE models use the same measured approach on `--n-cpu-moe`: calibr finds the
+minimum number of first-layer expert weights that must remain on CPU, then
+benchmarks both the faster spill side and safer CPU side around that boundary.
+
 There is not one universal winner. The report exposes profiles:
 
 - **Speed**: highest measured `eval_tps`. It ignores spill and power.

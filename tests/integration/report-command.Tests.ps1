@@ -56,6 +56,7 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function calibrationSummary')       "calibration summary helper missing"
         Assert-True ($tpl -match 'verified fit')                      "verified fit text missing"
         Assert-True ($tpl -match 'calibration_cache_hit')             "cache source detail missing"
+        Assert-True ($tpl -match 'adaptive MoE')                       "adaptive MoE summary missing"
         Assert-True ($tpl -match 'function workloadTitle')            "diagnostic workload tooltip missing"
     }
     It "surfaces failure_reason for failed configs and 'no winner' models" {

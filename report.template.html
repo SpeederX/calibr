@@ -1520,11 +1520,18 @@ function workloadTitle(d) {
 }
 
 function calibrationSummary(configs) {
-  const calibrated = configs.find(c => c.planning_mode === 'adaptive-offload');
+  const calibrated = configs.find(c => c.planning_mode === 'adaptive-offload' || c.planning_mode === 'adaptive-moe');
   if (!calibrated) return '';
   const source = calibrated.calibration_cache_hit
     ? 'cached' + (calibrated.calibration_cache_age_hours != null ? ' ' + calibrated.calibration_cache_age_hours + 'h' : '')
     : (calibrated.probe_count ?? '?') + ' load probes';
+  if (calibrated.planning_mode === 'adaptive-moe') {
+    const spill = calibrated.first_spill_n_cpu_moe != null
+      ? ' · first spilling n-cpu-moe ' + calibrated.first_spill_n_cpu_moe
+      : '';
+    return '<div class="planning-summary">planner: <code>adaptive MoE</code> · minimum safe <code>n-cpu-moe ' +
+      escapeHtml(calibrated.verified_n_cpu_moe ?? '?') + '</code> · ' + escapeHtml(source) + spill + '</div>';
+  }
   const spill = calibrated.first_spill_layers != null
     ? ' · first spill ' + calibrated.first_spill_layers
     : ' · full fit or spill not reached';

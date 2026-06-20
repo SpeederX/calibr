@@ -45,7 +45,8 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - pair sibling multimodal projectors.
 4. **Expand run configs**
    - context/KV sweep for models expected to fit;
-   - CPU-expert sweep for MoE models;
+   - for MoE models, estimate expert tensor placement from GGUF metadata and
+     load-probe the minimum safe `--n-cpu-moe`;
    - for dense models, estimate an initial GPU-layer position from GGUF tensor
      storage, then run bounded load-only probes against the detected VRAM
      budget;
@@ -91,6 +92,12 @@ planning policy still match. The cached VRAM baseline must also remain within
 the configured tolerance and the record must be younger than
 `cache_max_age_hours`; otherwise calibr probes again. Results and reports
 identify whether planning used fresh probes or a cached calibration.
+
+For MoE, llama.cpp keeps expert weights from the first `N` layers on CPU.
+calibr maps that inverse axis to the same monotonic cliff estimator used for
+dense GPU layers, then maps the result back to `--n-cpu-moe`. A negative
+candidate offset keeps more experts on GPU and intentionally measures spill;
+a positive offset keeps more experts on CPU.
 
 ## Why internal stages still exist
 
