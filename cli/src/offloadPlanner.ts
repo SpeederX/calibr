@@ -117,14 +117,25 @@ export function estimateOffloadCliff(options: {
         reason = "single spilling probe; search downward";
       }
     } else {
-      const candidates = [
-        predicted,
-        clampLayer(predicted + 1, blockCount),
-        clampLayer(predicted - 1, blockCount),
-        verifiedFit !== null ? blockCount : 0,
-      ];
+      const predictionAlreadyBeaten = verifiedFit !== null
+        && firstSpill === null
+        && verifiedFit >= predicted;
+      const candidates = predictionAlreadyBeaten
+        ? [
+            blockCount,
+            clampLayer(Math.ceil((verifiedFit + blockCount) / 2), blockCount),
+            clampLayer(verifiedFit + 1, blockCount),
+          ]
+        : [
+            predicted,
+            clampLayer(predicted + 1, blockCount),
+            clampLayer(predicted - 1, blockCount),
+            verifiedFit !== null ? blockCount : 0,
+          ];
       next = firstUntested(candidates, tested);
-      reason = regression ? "validate linear cliff prediction" : "expand probe range";
+      reason = predictionAlreadyBeaten
+        ? "observed fit exceeded prediction; probe upper boundary"
+        : regression ? "validate linear cliff prediction" : "expand probe range";
     }
   }
   const confidence = verifiedFull ? "verified-full"

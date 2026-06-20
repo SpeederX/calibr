@@ -73,7 +73,7 @@ test("runLoadProbe records stable allocation without generating tokens", async (
   assert.equal(result.error, null);
 });
 
-test("runLoadProbe rejects a ready allocation above safe cap or shared threshold", async () => {
+test("runLoadProbe rejects a ready allocation above the dedicated VRAM safe cap", async () => {
   const samples = [metric(900, 100, -1), metric(7900, 700), metric(7902, 710), metric(7901, 705)];
   const result = await runLoadProbe({
     executable: "llama-server", args: [], baseUrl: "http://127.0.0.1:18080",
@@ -88,6 +88,22 @@ test("runLoadProbe rejects a ready allocation above safe cap or shared threshold
   assert.equal(result.vram_safe_cap_mib, 7782);
   assert.equal(result.shared_growth_mib, 610);
   assert.equal(result.fit_under_safe_cap, false);
+});
+
+test("runLoadProbe keeps intentional CPU-offload shared memory diagnostic", async () => {
+  const samples = [metric(900, 100, -1), metric(6500, 3700), metric(6502, 3710), metric(6501, 3705)];
+  const result = await runLoadProbe({
+    executable: "llama-server", args: [], baseUrl: "http://127.0.0.1:18080",
+    timeoutMs: 1000, requestedLayers: 12, vramTotalMib: 8192,
+    safetyFraction: 0.95, sharedConfirmMib: 500,
+  }, {
+    spawnServer: () => fakeChild(stderr),
+    waitReady: async () => ({ ready: true, loadMs: 100, reason: "ready" }),
+    collectSample: async () => samples.shift() ?? metric(6501, 3705),
+    stopServer: () => {}, sleep: async () => {},
+  });
+  assert.equal(result.shared_growth_mib, 3610);
+  assert.equal(result.fit_under_safe_cap, true);
 });
 
 test("runLoadProbe reports readiness failure and still stops the process", async () => {

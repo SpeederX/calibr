@@ -75,6 +75,11 @@ from silently changing the allocation that planning selected. If the adapter
 or required GGUF metadata is unavailable, PowerShell reports and uses the
 explicit conservative fallback.
 
+Shared-memory growth is retained as probe diagnostics but is not a standalone
+fit veto: on WDDM, intentional CPU-offloaded model buffers may appear as
+shared GPU memory. The load boundary uses readiness, dedicated VRAM against
+the safety cap, and an explicit llama.cpp fit failure.
+
 Successful probe sets are stored separately under
 `data/calibrations/<calibration_id>.json`. Benchmark results carry only the
 calibration id, fitted boundary, probe count, and candidate offset; probe

@@ -92,7 +92,6 @@ export async function runLoadProbe(payload: LoadProbePayload, deps: LoadProbeDep
   const stopServer = deps.stopServer ?? stopProcessTree;
   const sleep = deps.sleep ?? delay;
   const safeCap = Math.max(0, Math.floor(payload.vramTotalMib * payload.safetyFraction));
-  const sharedConfirm = Math.max(0, payload.sharedConfirmMib ?? 500);
   const baseline = await collect(0).catch(() => fallbackSample());
   let child: ChildProcess | null = null;
   let stderr = "";
@@ -143,8 +142,12 @@ export async function runLoadProbe(payload: LoadProbePayload, deps: LoadProbeDep
   const sharedGrowth = sharedReady !== null && sharedBaseline !== null ? Math.max(0, sharedReady - sharedBaseline) : null;
   const vramRun = vramReady !== null && vramBaseline !== null ? Math.max(0, vramReady - vramBaseline) : null;
   const stable = memorySamplesStable(readySamples, payload.stableSampleCount ?? 3, payload.stableToleranceMib ?? 16);
+  // Shared memory is diagnostic here, not a fit veto. With intentional CPU
+  // offload, WDDM can expose CPU-backed model buffers as shared GPU memory;
+  // fewer GPU layers may therefore report more shared usage without paging.
+  // Dedicated VRAM against the safe cap, readiness, and llama.cpp's explicit
+  // fit result are the reliable load-only boundary signals.
   const fit = ready && vramReady !== null && vramReady <= safeCap
-    && (sharedGrowth === null || sharedGrowth <= sharedConfirm)
     && parsed.fit_status !== "failed_but_running";
 
   return {

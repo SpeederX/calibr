@@ -33,6 +33,17 @@ test("estimateOffloadCliff predicts and validates a linear boundary", () => {
   assert.equal(result.confidence, "linear");
 });
 
+test("estimateOffloadCliff jumps to the upper boundary after fitted probes beat prediction", () => {
+  const result = estimateOffloadCliff({
+    blockCount: 32, safeCapMib: 7782, initialEstimate: 22,
+    probes: [probe(22, 6551), probe(27, 7596), probe(28, 7619)],
+  });
+  assert.equal(result.predicted_fit_layers, 28);
+  assert.equal(result.verified_fit_layers, 28);
+  assert.equal(result.next_probe_layers, 32);
+  assert.match(result.reason, /upper boundary/);
+});
+
 test("estimateOffloadCliff completes on an adjacent fit/spill bracket", () => {
   const result = estimateOffloadCliff({
     blockCount: 40, safeCapMib: 7800, initialEstimate: 20,
