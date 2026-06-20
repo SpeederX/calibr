@@ -54,6 +54,18 @@ test("estimateOffloadCliff detects actual-layer clamping through deduplication",
   assert.equal(result.next_probe_layers, 30);
 });
 
+
+test("estimateOffloadCliff uses a failed high probe as a spill boundary", () => {
+  const failed = { requested_layers: 24, offloaded_layers: null, vram_ready_mib: null, fit_under_safe_cap: false, ready: false };
+  const result = estimateOffloadCliff({
+    blockCount: 40, safeCapMib: 7800, initialEstimate: 16,
+    probes: [probe(16, 6500, true), failed],
+  });
+  assert.equal(result.verified_fit_layers, 16);
+  assert.equal(result.first_spill_layers, 24);
+  assert.equal(result.next_probe_layers, 20);
+  assert.match(result.reason, /bracket/);
+});
 test("buildOffloadBenchmarkCandidates is dense around the cliff and clamped", () => {
   assert.deepEqual(buildOffloadBenchmarkCandidates(20, 40), [14, 17, 19, 20, 21, 23]);
   assert.deepEqual(buildOffloadBenchmarkCandidates(1, 4), [0, 1, 2, 4]);

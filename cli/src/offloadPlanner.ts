@@ -65,9 +65,11 @@ export function estimateOffloadCliff(options: {
   const initial = clampLayer(options.initialEstimate, blockCount);
   const maxProbeCount = Math.max(1, Math.trunc(options.maxProbeCount ?? 4));
   const valid = uniqueValidProbes(options.probes, blockCount);
-  const tested = new Set(valid.map((probe) => probe.layer));
-  const fitLayers = valid.filter((probe) => probe.fit_under_safe_cap).map((probe) => probe.layer);
-  const spillLayers = valid.filter((probe) => !probe.fit_under_safe_cap).map((probe) => probe.layer);
+  const boundary = options.probes.map((probe) => ({ probe, layer: actualLayer(probe, blockCount) }))
+    .filter((entry): entry is { probe: OffloadProbeObservation; layer: number } => entry.layer !== null);
+  const tested = new Set(boundary.map((entry) => entry.layer));
+  const fitLayers = boundary.filter(({ probe }) => probe.ready && probe.fit_under_safe_cap).map(({ layer }) => layer);
+  const spillLayers = boundary.filter(({ probe }) => !probe.ready || !probe.fit_under_safe_cap).map(({ layer }) => layer);
   const verifiedFit = fitLayers.length > 0 ? Math.max(...fitLayers) : null;
   const firstSpill = spillLayers.length > 0 ? Math.min(...spillLayers) : null;
   const regression = linearFit(valid);
@@ -81,8 +83,22 @@ export function estimateOffloadCliff(options: {
   let next: number | null = null;
   let reason = "probe initial structural estimate";
   if (!complete) {
-    if (valid.length === 0) {
+    if (verifiedFit !== null && firstSpill !== null) {
+      next = firstUntested([
+        clampLayer(Math.floor((verifiedFit + firstSpill) / 2), blockCount),
+        clampLayer(verifiedFit + 1, blockCount),
+      ], tested);
+      reason = "narrow verified fit/spill bracket";
+    } else if (boundary.length === 0) {
       next = initial;
+    } else if (valid.length === 0) {
+      const failedLayer = firstSpill ?? initial;
+      next = firstUntested([
+        clampLayer(Math.floor(failedLayer / 2), blockCount),
+        clampLayer(failedLayer - 1, blockCount),
+        0,
+      ], tested);
+      reason = "probe failed before stable allocation; search downward";
     } else if (valid.length === 1) {
       const point = valid[0];
       if (point.fit_under_safe_cap) {
@@ -100,12 +116,6 @@ export function estimateOffloadCliff(options: {
         ], tested);
         reason = "single spilling probe; search downward";
       }
-    } else if (verifiedFit !== null && firstSpill !== null) {
-      next = firstUntested([
-        clampLayer(Math.floor((verifiedFit + firstSpill) / 2), blockCount),
-        clampLayer(verifiedFit + 1, blockCount),
-      ], tested);
-      reason = "narrow verified fit/spill bracket";
     } else {
       const candidates = [
         predicted,
@@ -117,7 +127,6 @@ export function estimateOffloadCliff(options: {
       reason = regression ? "validate linear cliff prediction" : "expand probe range";
     }
   }
-
   const confidence = verifiedFull ? "verified-full"
     : adjacentBracket ? "bracketed"
       : regression ? "linear"
