@@ -55,7 +55,7 @@ const sleepDefault = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 const activeChildren = new Set<ChildProcess>();
 
 export interface ProductionStreamState {
-  inferencePhase: "warmup" | "throughput" | "latency_prompt" | "latency_reasoning" | "latency_answer";
+  inferencePhase: "warmup" | "kv_fill" | "throughput" | "latency_prompt" | "latency_reasoning" | "latency_answer";
   previousServerN: number | null;
   previousServerMs: number | null;
 }
@@ -376,6 +376,9 @@ async function runOne(
       baseUrl,
       prompt: payload.cfg.bench?.prompt ?? "",
       maxTokens: payload.cfg.bench?.n_predict ?? 128,
+      workloadKind: payload.item.workload_kind ?? "baseline",
+      prefillTargetTokens: payload.item.prefill_target_tokens ?? 0,
+      kvFillTargetTokens: payload.item.kv_fill_target_tokens ?? 0,
       // b9608 cannot erase slots for multimodal servers. Skip the otherwise
       // optional warmup there so the measured request still starts cold.
       warmup: (payload.cfg.bench?.warmup ?? true) && !payload.item.mmproj_path,
@@ -400,6 +403,11 @@ async function runOne(
       "server_ttft_ms", "tpot_ms", "itl_p95_ms", "delivery_gap_median_ms",
       "delivery_gap_p95_ms", "delivery_gap_max_ms",
     ] as const) run[field] = http[field];
+    run.workload_prepare_ms = http.workload_prepare_ms;
+    run.workload_prompt_tokens = http.workload_prompt_tokens;
+    run.workload_target_error_tokens = http.workload_target_error_tokens;
+    run.kv_fill_ms = http.kv_fill_ms;
+    run.kv_fill_cached_tokens = http.kv_fill_cached_tokens;
     run.latency_total_request_ms = http.latency_total_request_ms;
     run.latency_error = null;
     run.ok = http.ok;

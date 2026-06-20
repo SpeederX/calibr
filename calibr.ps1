@@ -60,6 +60,11 @@ param(
     # CustomBenchView v2's ctx-checkbox selection.
     [string]$ContextSizes = "",
 
+    # Optional diagnostic workload curves. Baseline is always included;
+    # prefill/KV-fill profiles are added on the largest valid context config.
+    [ValidateSet("baseline", "prefill", "kv-fill", "all")]
+    [string]$WorkloadSweep = "baseline",
+
     # CLI overrides for config fields. These take priority over config.json.
     # Used by: discover (ScanPath, ExcludePattern), bench/report (LlamaServer), all (all of them), init (pre-fills instead of auto-detecting).
     [string[]]$ScanPath = @(),

@@ -13,6 +13,11 @@ import {
   type RunNonStreamingChatCompletionOptions,
   type RunStreamingChatCompletionOptions,
 } from "./benchClient.js";
+import {
+  prepareWorkloadPrompt,
+  type WorkloadFetch,
+  type WorkloadKind,
+} from "./workloadPrompt.js";
 
 export interface BenchRunnerPayload {
   baseUrl: string;
@@ -24,6 +29,9 @@ export interface BenchRunnerPayload {
   seed?: number;
   reasoningOff?: boolean;
   timeoutMs?: number;
+  workloadKind?: WorkloadKind;
+  prefillTargetTokens?: number;
+  kvFillTargetTokens?: number;
 }
 
 export interface BenchRunnerOutput {
@@ -49,6 +57,11 @@ export interface BenchRunnerOutput {
   delivery_gap_max_ms: number | null;
   latency_total_request_ms: number | null;
   warmup_error?: string;
+  workload_prepare_ms: number | null;
+  workload_prompt_tokens: number | null;
+  workload_target_error_tokens: number | null;
+  kv_fill_ms: number | null;
+  kv_fill_cached_tokens: number | null;
   error?: string;
 }
 
@@ -57,7 +70,8 @@ export interface BenchRunnerDeps {
   streamFetchImpl?: RunStreamingChatCompletionOptions["fetchImpl"];
   eraseSlot?: (baseUrl: string, slotId: number) => Promise<string | null>;
   nowMs?: () => number;
-  onPhase?: (phase: "warmup" | "latency_prompt") => void;
+  workloadFetchImpl?: WorkloadFetch;
+  onPhase?: (phase: "warmup" | "kv_fill" | "latency_prompt") => void;
   onStreamEvent?: RunStreamingChatCompletionOptions["onStreamEvent"];
 }
 
@@ -66,9 +80,24 @@ export async function runFromPayload(
   deps: BenchRunnerDeps = {},
 ): Promise<BenchRunnerOutput> {
   const slotId = Math.max(0, Math.trunc(payload.slotId ?? 0));
-  const requestFor = (maxTokens: number, stream: boolean, cachePrompt: boolean) => ({
+  const prepareStarted = (deps.nowMs ?? Date.now)();
+  let prepared;
+  try {
+    prepared = await prepareWorkloadPrompt({
+      baseUrl: payload.baseUrl,
+      basePrompt: payload.prompt,
+      kind: payload.workloadKind,
+      prefillTargetTokens: payload.prefillTargetTokens,
+      kvFillTargetTokens: payload.kvFillTargetTokens,
+      fetchImpl: deps.workloadFetchImpl,
+    });
+  } catch (error) {
+    return failure(error instanceof Error ? error.message : String(error));
+  }
+  const workloadPrepareMs = Math.max(0, (deps.nowMs ?? Date.now)() - prepareStarted);
+  const requestFor = (prompt: string, maxTokens: number, stream: boolean, cachePrompt: boolean) => ({
     ...buildChatCompletionRequest({
-      prompt: payload.prompt,
+      prompt,
       maxTokens,
       stream,
       cachePrompt,
@@ -85,7 +114,7 @@ export async function runFromPayload(
     deps.onPhase?.("warmup");
     const warmup = await runNonStreamingChatCompletion({
       baseUrl: payload.baseUrl,
-      request: requestFor(payload.warmupMaxTokens ?? 8, false, true),
+      request: requestFor(payload.prompt, payload.warmupMaxTokens ?? 8, false, true),
       fetchImpl: deps.fetchImpl,
       nowMs: deps.nowMs,
       timeoutMs: payload.timeoutMs,
@@ -100,10 +129,33 @@ export async function runFromPayload(
     }
   }
 
+  let kvFillMs: number | null = null;
+  if (prepared.kind === "kv-fill" && prepared.fillPrompt) {
+    deps.onPhase?.("kv_fill");
+    const fill = await runNonStreamingChatCompletion({
+      baseUrl: payload.baseUrl,
+      request: requestFor(prepared.fillPrompt, 1, false, true),
+      fetchImpl: deps.fetchImpl,
+      nowMs: deps.nowMs,
+      timeoutMs: payload.timeoutMs,
+    });
+    kvFillMs = fill.total_request_ms;
+    if (!fill.ok) {
+      return {
+        ...failure(`KV fill failed: ${fill.error ?? `HTTP ${fill.status}`}`),
+        status: fill.status,
+        workload_prepare_ms: workloadPrepareMs,
+        workload_prompt_tokens: prepared.actualTokens,
+        workload_target_error_tokens: prepared.targetErrorTokens,
+        kv_fill_ms: kvFillMs,
+      };
+    }
+  }
+
   deps.onPhase?.("latency_prompt");
   const measured = await runStreamingChatCompletion({
     baseUrl: payload.baseUrl,
-    request: requestFor(payload.maxTokens, true, false),
+    request: requestFor(prepared.measuredPrompt, payload.maxTokens, true, prepared.kind === "kv-fill"),
     fetchImpl: deps.streamFetchImpl,
     nowMs: deps.nowMs,
     timeoutMs: payload.timeoutMs,
@@ -130,6 +182,13 @@ export async function runFromPayload(
     delivery_gap_median_ms: measured.ok ? measured.latency.delivery_gap_median_ms : null,
     delivery_gap_p95_ms: measured.ok ? measured.latency.delivery_gap_p95_ms : null,
     delivery_gap_max_ms: measured.ok ? measured.latency.delivery_gap_max_ms : null,
+    workload_prepare_ms: workloadPrepareMs,
+    workload_prompt_tokens: prepared.kind === "baseline" ? null : prepared.actualTokens,
+    workload_target_error_tokens: prepared.kind === "baseline" ? null : prepared.targetErrorTokens,
+    kv_fill_ms: kvFillMs,
+    kv_fill_cached_tokens: prepared.kind === "kv-fill"
+      ? (measured.latency.timings?.cache_n ?? null)
+      : null,
     // Legacy alias retained while existing result/report readers still carry
     // the old two-request field name. It now equals total_request_ms.
     latency_total_request_ms: measured.total_request_ms,
@@ -162,6 +221,11 @@ function failure(error: string): BenchRunnerOutput {
     itl_p95_ms: null, delivery_gap_median_ms: null, delivery_gap_p95_ms: null,
     delivery_gap_max_ms: null,
     latency_total_request_ms: null,
+    workload_prepare_ms: null,
+    workload_prompt_tokens: null,
+    workload_target_error_tokens: null,
+    kv_fill_ms: null,
+    kv_fill_cached_tokens: null,
     error,
   };
 }

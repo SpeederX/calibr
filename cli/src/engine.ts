@@ -574,6 +574,11 @@ export interface Result {
   delivery_gap_median_ms?: number | null;
   delivery_gap_p95_ms?: number | null;
   delivery_gap_max_ms?: number | null;
+  workload_prepare_ms?: number | null;
+  workload_prompt_tokens?: number | null;
+  workload_target_error_tokens?: number | null;
+  kv_fill_ms?: number | null;
+  kv_fill_cached_tokens?: number | null;
   total_request_ms?: number | null;
   latency_total_request_ms?: number | null;
   latency_error?: string | null;

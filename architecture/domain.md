@@ -50,7 +50,7 @@ full-length streaming request after optional warm-up and KV reset.
 The input load applied to a run config: `baseline`, `prefill`, or `kv-fill`.
 Prefill and KV-fill profiles carry explicit token targets. The profile and its
 targets are part of config identity so cache/resume never mixes different
-loads.
+loads. Diagnostic profiles are not winner-eligible.
 
 ### Winner
 

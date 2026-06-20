@@ -6,7 +6,9 @@
 
 function Invoke-All {
     Ensure-WorkflowEngine
-    $planningPolicy = New-PlanningPolicy -ContextSizes (ConvertTo-ContextSizeList -Value $ContextSizes)
+    $planningPolicy = New-PlanningPolicy `
+        -ContextSizes (ConvertTo-ContextSizeList -Value $ContextSizes) `
+        -WorkloadSweep $WorkloadSweep
 
     if (-not $FetchCatalog) {
         Invoke-WorkflowBenchCycle -PlanningPolicy $planningPolicy
@@ -91,7 +93,10 @@ function Resolve-WorkflowCatalogScope {
         $contextSizes = @($presetObject.context_sizes | ForEach-Object { [int]$_ })
     }
     $maxContext = if ($presetObject -and $null -ne $presetObject.max_ctx) { [int]$presetObject.max_ctx } else { 0 }
-    $policy = New-PlanningPolicy -MaxContext $maxContext -ContextSizes $contextSizes
+    $policy = New-PlanningPolicy `
+        -MaxContext $maxContext `
+        -ContextSizes $contextSizes `
+        -WorkloadSweep $WorkloadSweep
     $entries = @(Select-ModelCatalog -Catalog (Get-ModelCatalog) -Preset $presetObject -CatalogId $CatalogId -ModelRegex $Model)
 
     if ($Preset) {

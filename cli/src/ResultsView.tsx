@@ -57,6 +57,12 @@ function kvFromArgs(args?: string): string {
   return m ? m[1] : "—";
 }
 
+function workloadFromResult(result: Result): string {
+  if (result.workload_kind === "prefill") return `prefill ${result.workload_prompt_tokens ?? result.prefill_target_tokens ?? "?"} tok`;
+  if (result.workload_kind === "kv-fill") return `KV-fill ${result.workload_prompt_tokens ?? result.kv_fill_target_tokens ?? "?"} tok`;
+  return "baseline";
+}
+
 export function ResultsView({ onExit, onRun }: Props) {
   const threshold = useMemo(() => getSharedThreshold(), []);
   const groups = useMemo<ModelGroup[]>(() => groupByModel(readResults()), []);
@@ -188,6 +194,7 @@ function DetailView({
       {sel && (
         <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
           <Text bold>{sel.label}</Text>
+          <Text dimColor>workload: {workloadFromResult(sel)}</Text>
           <Text dimColor>{sel.extra_args ?? ""}</Text>
           {sel.error && <Text color="red">error: {sel.error}</Text>}
           {sel.unsupported_architecture && (

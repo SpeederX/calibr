@@ -192,7 +192,9 @@ function Invoke-Report {
         [int]$cfg.wddm_detection.shared_delta_confirm_mib
     } else { 500 }
     $winners = @{}
-    foreach ($r in ($results | Where-Object { $_.ok })) {
+    foreach ($r in ($results | Where-Object {
+        $_.ok -and (-not $_.workload_kind -or $_.workload_kind -eq 'baseline')
+    })) {
         $key = Get-GroupKey -r $r -mode $GroupBy
         if (Test-IsBetterWinner -candidate $r -current $winners[$key] -preferSpeed:$PreferSpeed -sharedConfirmMib $confirmMib) {
             $winners[$key] = $r

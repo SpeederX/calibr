@@ -69,6 +69,29 @@ Describe "Plan workload identity" {
         Assert-False ($prefill.id -eq $kvFill.id)
         Assert-True ($prefill.id -match "prefill_32768")
         Assert-True ($kvFill.id -match "kvfill_49152")
+        Assert-True ($prefill.label -match "prefill=32768")
+        Assert-True ($kvFill.label -match "kvfill=49152")
+    }
+}
+
+Describe "Workload profile expansion" {
+    It "drops targets that would collide with generation reserve" {
+        $cfg = @{
+            bench = @{ n_predict = 128 }
+            planning = @{
+                workload_sweeps = @{
+                    prefill_tokens = @(512, 8192, 131072)
+                    kv_fill_ratios = @(0.25, 0.9, 0.99)
+                    context_reserve_tokens = 512
+                }
+            }
+        }
+        $profiles = @(Get-WorkloadProfilesForContext -ContextSize 16384 -Config $cfg -Mode "all")
+        Assert-Equal 4 $profiles.Count
+        Assert-Equal 512 $profiles[0].prefill_tokens
+        Assert-Equal 8192 $profiles[1].prefill_tokens
+        Assert-Equal 4096 $profiles[2].kv_fill_tokens
+        Assert-Equal 14745 $profiles[3].kv_fill_tokens
     }
 }
 

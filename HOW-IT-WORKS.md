@@ -90,6 +90,12 @@ The measured request has fixed output length, deterministic sampling,
 `eval_tps` come from the server clock; client timestamps are used only for
 HTTP/SSE delivery and perceived latency. See [METRICS.md](METRICS.md).
 
+Opt-in workload sweeps use the largest valid context config for each model.
+Prefill profiles send a tokenizer-sized long prompt from an empty slot.
+KV-fill profiles first cache that long prefix in the same slot, then measure a
+streaming request that extends it. The final response's `cache_n` confirms the
+actual reused prefix. Diagnostic workloads are never launcher winners.
+
 On llama-server builds that cannot erase slots for multimodal servers, calibr
 skips the optional warm-up so the measured request still starts cold.
 

@@ -204,12 +204,57 @@ arrives at the client. They are not token latency because one delta can contain
 zero, one, or multiple token pieces and several SSE events can arrive in one
 network read.
 
+## Diagnostic workload sweeps
+
+Baseline configs remain the only winner-eligible results. Prefill and KV-fill
+profiles are diagnostic curves attached to the largest valid context config for
+the model.
+
+### Prefill workload
+
+calibr builds deterministic text, applies llama-server's chat template, and
+uses the same server's `/tokenize` endpoint until the formatted prompt is near
+the requested token target. The measured streaming request then processes that
+prompt from an empty slot.
+
+```text
+workload_target_error_tokens =
+  workload_prompt_tokens - prefill_target_tokens
+```
+
+`prompt_ms`, `prompt_tps`, memory, utilization, and latency therefore describe
+one long-prompt prefill followed by normal generation.
+
+### KV-fill workload
+
+calibr prepares the same token-targeted prefix, submits it to the selected slot
+with prompt caching enabled, then sends the measured streaming request with the
+same prefix plus a short suffix.
+
+```text
+kv_fill_cached_tokens = measured request timings.cache_n
+```
+
+This field is the confirmation signal: it reports how much of the prepared
+prefix llama-server actually reused. `kv_fill_ms` is the unscored preparation
+request; official throughput and latency still come from the following measured
+stream.
+
+Targets are bounded by:
+
+```text
+target <= context size - context reserve - generated tokens
+```
+
+The reserve covers chat-template overhead and the measured suffix.
+
 ## Timeline phases
 
 New telemetry points use these phases:
 
 | Phase | Meaning |
 |---|---|
+| `kv_fill` | Unscored cached-prefix preparation before the measured stream |
 | `latency_prompt` | Prompt processing or stream setup before generated text |
 | `latency_reasoning` | A non-empty reasoning delta was received |
 | `latency_answer` | A non-empty final-answer delta was received |

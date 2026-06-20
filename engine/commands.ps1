@@ -560,7 +560,7 @@ function Invoke-Help {
             Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-Force] [-PreferSpeed] [-VramUsageWarningPct N] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
+            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-WorkloadSweep baseline|prefill|kv-fill|all] [-Force] [-PreferSpeed] [-VramUsageWarningPct N] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
             Flags    = @(
                 "Runs setup, model acquisition, benchmark policy, and report"
                 "generation as one workflow. Internal artifacts remain resumable."
@@ -573,6 +573,9 @@ function Invoke-Help {
                 "                         (phase 0)."
                 "-CatalogId <id>           (with -FetchCatalog) only fetch the matching entry"
                 "-Model <regex>           Filter download AND bench by model name"
+                "-WorkloadSweep           Add prefill and/or KV-fill diagnostics on"
+                "                         the largest valid context config. Baseline"
+                "                         remains the only winner-eligible workload."
                 "-Force                   Re-run all benchmarks (skip cache)"
                 "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
                 "-VramUsageWarningPct N   Session-only report warning threshold for baseline VRAM."

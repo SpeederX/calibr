@@ -250,7 +250,7 @@
     <aside class="timeline-panel" id="timeline-panel">
       <h3>Run timeline</h3>
       <div class="meta" id="timeline-title"></div>
-      <p class="meta">Single measured streaming pass. Official prefill and generation throughput use llama-server's internal clock; delivery gaps use the client clock.</p>
+      <p class="meta">One measured streaming pass; KV-fill workloads first prepare a cached prefix in the same slot. Official prefill and generation throughput use llama-server's internal clock; delivery gaps use the client clock.</p>
       <div class="timeline-controls">
         <label>Run <select id="timeline-run"></select></label>
       </div>
@@ -258,6 +258,7 @@
         <span class="legend-item" style="color:#22c55e"><span class="legend-line"></span>VRAM</span>
         <span class="legend-item" style="color:#f59e0b"><span class="legend-line"></span>RAM Δ</span>
         <span class="legend-item" style="color:#8b5cf6"><span class="legend-line"></span>server generation</span>
+        <span class="legend-item"><span class="legend-box" style="background:#0f766e"></span>KV fill</span>
         <span class="legend-item"><span class="legend-box" style="background:#f59e0b"></span>prefill</span>
         <span class="legend-item"><span class="legend-box" style="background:#7c3aed"></span>reasoning</span>
         <span class="legend-item"><span class="legend-box" style="background:#2563eb"></span>answer</span>
@@ -333,6 +334,7 @@
         <th>Level <span class="th-help" title="Curated hardware level: low, middle, high, or ultra.">?</span></th>
         <th>Model <span class="th-help" title="Model name grouped in the report winner list.">?</span></th>
         <th>Config <span class="th-help" title="llama-server flags used for this benchmark: context, GPU layers, KV cache, threads, and related settings.">?</span></th>
+        <th>Workload <span class="th-help" title="Baseline configs are winner-eligible. Prefill and KV-fill are diagnostic load curves and never replace the launcher winner.">?</span></th>
         <th class="num">TTFT s <span class="th-help" title="Server TTFT when per-token timings are available; otherwise client TTFT or the legacy fallback.">?</span></th>
         <th class="num">Stream ms <span class="th-help" title="Client time to the first SSE frame, which may contain no generated text. Legacy name: TTFR.">?</span></th>
         <th class="num">Prompt ms <span class="th-help" title="llama.cpp prompt processing / prefill time for the input prompt.">?</span></th>
@@ -496,8 +498,12 @@ function isSafe(result, confirmMib = DEFAULT_CONFIRM_MIB) {
     return finiteNumber(result.shared_peak_mib) <= confirmMib;
 }
 
+function isWinnerEligible(result) {
+    return !result.workload_kind || result.workload_kind === "baseline";
+}
+
 function computeAnchors(results) {
-    const ok = results.filter((r) => r.ok);
+    const ok = results.filter((r) => r.ok && isWinnerEligible(r));
     const evalMax = Math.max(1, ...ok.map((r) => finiteNumber(r.eval_tps)));
     const effs = ok
         .filter((r) => finiteNumber(r.gpu_power_peak_w) > 0)
@@ -573,7 +579,7 @@ function groupWinners(results, profile, options = {}) {
     const byModel = {};
     const fallbacks = {};
     for (const result of results) {
-        if (!result.ok)
+        if (!result.ok || !isWinnerEligible(result))
             continue;
         const model = String(result.model ?? result.id ?? "");
         if (!model)
@@ -813,6 +819,7 @@ function renderModelsList() {
       rows += '<tr' + (isWin ? ' class="is-winner"' : '') + '>' +
               '<td><code>' + escapeHtml(c.label) + '</code></td>' +
               '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
+              '<td>' + workloadLabel(c) + '</td>' +
               '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
               '<td class="num" title="' + vramCellTitle(c) + '">' + benchmarkVramUsedMib(c) + '</td>' +
@@ -820,7 +827,7 @@ function renderModelsList() {
               '<td class="num">' + fmt2(c.ttft_sec) + '</td>' +
               '<td class="num">' + ((+c.gpu_power_peak_w > 0) ? fmt0(c.gpu_power_peak_w) + ' W' : '-') + '</td>' +
               '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
-              '<td><a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a></td>' +
+              '<td>' + ((!c.workload_kind || c.workload_kind === 'baseline') ? '<a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a>' : '') + '</td>' +
               '</tr>';
     }
 
@@ -834,7 +841,7 @@ function renderModelsList() {
           coldLoadSummary(w || configs[0]) +
           '<table>' +
             '<thead><tr>' +
-              '<th>Config</th><th>Level</th>' +
+              '<th>Config</th><th>Level</th><th>Workload</th>' +
               '<th class="num">Prompt t/s</th>' +
               '<th class="num">Eval t/s</th>' +
               '<th class="num">VRAM run</th><th class="num">Shared spill</th>' +
@@ -1266,21 +1273,28 @@ function renderTimeline() {
     ? runs.map((run, index) => ({ run, index }))
     : [{ run: runs[+STATE.timelineRunIndex], index: +STATE.timelineRunIndex }];
   const series = chosenRuns.map(({ run, index }) => {
-    const latency = run.telemetry.filter(p => p.phase === 'latency_prompt' || p.phase === 'latency_eval' ||
+    const latency = run.telemetry.filter(p => p.phase === 'kv_fill' || p.phase === 'latency_prompt' || p.phase === 'latency_eval' ||
       p.phase === 'latency_reasoning' || p.phase === 'latency_answer')
       .slice().sort((a, b) => (+a.elapsed_ms || 0) - (+b.elapsed_ms || 0));
     const start = latency.length > 0 ? (+latency[0].elapsed_ms || 0) : 0;
     const relative = latency.map(p => ({ ...p, plot_ms: Math.max(0, (+p.elapsed_ms || 0) - start) }));
+    const hasKvFill = relative.some(p => p.phase === 'kv_fill');
+    const firstPrompt = relative.find(p => p.phase === 'latency_prompt')?.plot_ms ?? 0;
     const firstEval = relative.find(p => p.phase === 'latency_eval' || p.phase === 'latency_reasoning' || p.phase === 'latency_answer')?.plot_ms ?? 0;
     const end = Math.max(firstEval + 1, ...relative.map(p => +p.plot_ms || 0));
+    const kvEnd = hasKvFill ? 0.18 : 0;
+    const promptEnd = hasKvFill ? 0.32 : 0.12;
     return {
       index,
+      has_kv_fill: hasKvFill,
       eval_duration_ms: Math.max(1, end - firstEval),
       points: relative.map(p => ({
         ...p,
-        plot_x: p.phase === 'latency_prompt'
-          ? 0.12 * (firstEval > 0 ? p.plot_ms / firstEval : 0)
-          : 0.12 + 0.88 * Math.max(0, p.plot_ms - firstEval) / Math.max(1, end - firstEval)
+        plot_x: p.phase === 'kv_fill'
+          ? kvEnd * (firstPrompt > 0 ? p.plot_ms / firstPrompt : 0)
+          : p.phase === 'latency_prompt'
+            ? kvEnd + (promptEnd - kvEnd) * Math.max(0, p.plot_ms - firstPrompt) / Math.max(1, firstEval - firstPrompt)
+            : promptEnd + (1 - promptEnd) * Math.max(0, p.plot_ms - firstEval) / Math.max(1, end - firstEval)
       }))
     };
   }).filter(item => item.points.length > 0);
@@ -1292,6 +1306,9 @@ function renderTimeline() {
   const W = 1000, H = 340, M = { l: 62, r: 62, t: 28, b: 38 };
   const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
   const allPoints = series.flatMap(item => item.points);
+  const hasKvFill = series.some(item => item.has_kv_fill);
+  const kvEnd = hasKvFill ? 0.18 : 0;
+  const promptEnd = hasKvFill ? 0.32 : 0.12;
   const maxEvalDuration = Math.max(1, ...series.map(item => item.eval_duration_ms));
   const memoryValues = allPoints.flatMap(p => [+p.vram_total_mib || 0, +p.ram_used_mib || 0]);
   const memoryMinRaw = Math.min(...memoryValues);
@@ -1315,16 +1332,18 @@ function renderTimeline() {
   ).join(' ');
 
   const out = [];
-  out.push('<rect class="timeline-phase" x="' + M.l + '" y="' + M.t + '" width="' + (innerW * 0.12) + '" height="' + innerH + '" fill="#f59e0b"><title>prefill</title></rect>');
-  out.push('<rect class="timeline-phase" x="' + xs(0.12) + '" y="' + M.t + '" width="' + (innerW * 0.88) + '" height="' + innerH + '" fill="#2563eb"><title>generated output</title></rect>');
+  if (hasKvFill) out.push('<rect class="timeline-phase" x="' + M.l + '" y="' + M.t + '" width="' + (innerW * kvEnd) + '" height="' + innerH + '" fill="#0f766e"><title>KV fill</title></rect>');
+  out.push('<rect class="timeline-phase" x="' + xs(kvEnd) + '" y="' + M.t + '" width="' + (innerW * (promptEnd - kvEnd)) + '" height="' + innerH + '" fill="#f59e0b"><title>measured prefill</title></rect>');
+  out.push('<rect class="timeline-phase" x="' + xs(promptEnd) + '" y="' + M.t + '" width="' + (innerW * (1 - promptEnd)) + '" height="' + innerH + '" fill="#2563eb"><title>generated output</title></rect>');
   out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + (M.t + innerH) + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
   out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + M.t + '" x2="' + M.l + '" y2="' + (M.t + innerH) + '"/>');
   out.push('<line class="scatter-axis" x1="' + (M.l + innerW) + '" y1="' + M.t + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
-  out.push('<text class="scatter-tick" x="' + xs(0.06) + '" y="' + (H - 12) + '" text-anchor="middle">prefill</text>');
-  out.push('<text class="scatter-tick" x="' + xs(0.12) + '" y="' + (H - 12) + '" text-anchor="middle">TTFT</text>');
+  if (hasKvFill) out.push('<text class="scatter-tick" x="' + xs(kvEnd / 2) + '" y="' + (H - 12) + '" text-anchor="middle">KV fill</text>');
+  out.push('<text class="scatter-tick" x="' + xs(kvEnd + (promptEnd - kvEnd) / 2) + '" y="' + (H - 12) + '" text-anchor="middle">prefill</text>');
+  out.push('<text class="scatter-tick" x="' + xs(promptEnd) + '" y="' + (H - 12) + '" text-anchor="middle">TTFT</text>');
   for (let i = 0; i <= 4; i++) {
     const evalFraction = i / 4;
-    const x = 0.12 + 0.88 * evalFraction;
+    const x = promptEnd + (1 - promptEnd) * evalFraction;
     const evalSeconds = maxEvalDuration * evalFraction / 1000;
     if (i > 0) out.push('<text class="scatter-tick" x="' + xs(x) + '" y="' + (H - 12) + '" text-anchor="middle">+' + evalSeconds.toFixed(evalSeconds < 1 ? 2 : 1) + 's</text>');
     const memoryTick = memoryMin + (memoryMax - memoryMin) * i / 4;
@@ -1476,6 +1495,16 @@ function layersLabel(d) {
   return m ? 'req ' + m[1] : '-';
 }
 
+function workloadLabel(d) {
+  const kind = d.workload_kind || 'baseline';
+  if (kind === 'prefill') return 'prefill ' + (d.workload_prompt_tokens ?? d.prefill_target_tokens ?? '?') + ' tok';
+  if (kind === 'kv-fill') {
+    const cached = d.kv_fill_cached_tokens != null ? ' · ' + d.kv_fill_cached_tokens + ' cached' : '';
+    return 'KV-fill ' + (d.workload_prompt_tokens ?? d.kv_fill_target_tokens ?? '?') + ' tok' + cached;
+  }
+  return 'baseline';
+}
+
 // Level tabs are recomputed per rerender so counts reflect the current
 // scope. Click handling is delegated on the parent container so we don't
 // have to re-attach per-tab listeners.
@@ -1510,6 +1539,7 @@ function renderAllTable() {
         '<td class="level-' + lvl(d) + '">' + lvl(d) + '</td>' +
         '<td>' + escapeHtml(d.model) + '</td>' +
         '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + escapeHtml(d.extra_args) + '</td>' +
+        '<td>' + workloadLabel(d) + '</td>' +
         '<td class="num">' + (latencyMs(d) > 0 ? (latencyMs(d) / 1000).toFixed(2) : '-') + '</td>' +
         '<td class="num">' + ((d.stream_open_ms ?? d.ttfr_ms) != null ? (+(d.stream_open_ms ?? d.ttfr_ms)).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +
