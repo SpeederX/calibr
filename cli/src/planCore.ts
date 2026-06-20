@@ -1,3 +1,5 @@
+import type { GgufBlockTensorBytes } from "./offloadEstimator.js";
+
 export interface PlanMeta {
   path: string;
   model: string;
@@ -11,6 +13,13 @@ export interface PlanMeta {
   template_note?: string | null;
   gguf_context_length?: number | null;
   gguf_architecture?: string | null;
+  gguf_block_count?: number | null;
+  gguf_tensor_count?: number | null;
+  gguf_tensor_data_offset?: number | null;
+  gguf_tensor_bytes?: number | null;
+  gguf_global_tensor_bytes?: number | null;
+  gguf_expert_tensor_bytes?: number | null;
+  gguf_block_tensor_bytes?: GgufBlockTensorBytes[] | null;
 }
 
 export interface PlanConfig {

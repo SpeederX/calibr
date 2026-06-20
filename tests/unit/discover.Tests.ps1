@@ -144,6 +144,14 @@ Describe "Get-GgufHeaderMetadata" {
         $Writer.Write($bytes)
     }
 
+    function Write-GgufTensorInfo($Writer, [string]$Name, [uint64]$Offset, [uint32]$Type = 0) {
+        Write-GgufString $Writer $Name
+        $Writer.Write([uint32]1) # n_dims
+        $Writer.Write([uint64]16)
+        $Writer.Write($Type) # storage is inferred from offsets, including unknown future types
+        $Writer.Write($Offset)
+    }
+
     It "reads architecture and context length from a minimal GGUF header" {
         $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-gguf-" + [guid]::NewGuid().ToString('N') + ".gguf")
         $fs = $null
@@ -170,6 +178,55 @@ Describe "Get-GgufHeaderMetadata" {
             $meta = Get-GgufHeaderMetadata -Path $tmp
             Assert-Equal "llama" $meta.architecture
             Assert-Equal 32768 $meta.context_length
+        } finally {
+            if ($bw) { $bw.Dispose() }
+            if ($fs) { $fs.Dispose() }
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "aggregates aligned tensor storage by block, global, and expert tensors" {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-gguf-tensors-" + [guid]::NewGuid().ToString('N') + ".gguf")
+        $fs = $null
+        $bw = $null
+        try {
+            $fs = [System.IO.File]::Open($tmp, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write)
+            $bw = [System.IO.BinaryWriter]::new($fs)
+            $bw.Write([System.Text.Encoding]::ASCII.GetBytes("GGUF"))
+            $bw.Write([uint32]3)
+            $bw.Write([uint64]3) # tensor_count
+            $bw.Write([uint64]4) # kv_count
+
+            Write-GgufString $bw "general.architecture"
+            $bw.Write([uint32]8); Write-GgufString $bw "llama"
+            Write-GgufString $bw "llama.context_length"
+            $bw.Write([uint32]4); $bw.Write([uint32]32768)
+            Write-GgufString $bw "llama.block_count"
+            $bw.Write([uint32]4); $bw.Write([uint32]2)
+            Write-GgufString $bw "general.alignment"
+            $bw.Write([uint32]4); $bw.Write([uint32]32)
+
+            Write-GgufTensorInfo $bw "blk.0.attn_q.weight" ([uint64]0)
+            Write-GgufTensorInfo $bw "blk.1.ffn_gate_exps.weight" ([uint64]64) ([uint32]999)
+            Write-GgufTensorInfo $bw "token_embd.weight" ([uint64]128)
+
+            $padding = (32 - ($fs.Position % 32)) % 32
+            if ($padding -gt 0) { $bw.Write([byte[]]::new([int]$padding)) }
+            $bw.Write([byte[]]::new(160))
+            $bw.Dispose(); $bw = $null
+            $fs.Dispose(); $fs = $null
+
+            $meta = Get-GgufHeaderMetadata -Path $tmp
+            Assert-Equal 2 $meta.block_count
+            Assert-Equal 3 $meta.tensor_count
+            Assert-Equal 160 $meta.tensor_bytes
+            Assert-Equal 32 $meta.global_tensor_bytes
+            Assert-Equal 64 $meta.expert_tensor_bytes
+            Assert-Equal 2 $meta.block_tensor_bytes.Count
+            Assert-Equal 64 $meta.block_tensor_bytes[0].bytes
+            Assert-Equal 0 $meta.block_tensor_bytes[0].expert_bytes
+            Assert-Equal 64 $meta.block_tensor_bytes[1].bytes
+            Assert-Equal 64 $meta.block_tensor_bytes[1].expert_bytes
         } finally {
             if ($bw) { $bw.Dispose() }
             if ($fs) { $fs.Dispose() }
