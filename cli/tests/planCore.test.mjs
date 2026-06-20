@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { invokePlan } from "../dist/planCore.js";
+import { invokePlan, newPlanItem, workloadProfilesForContext } from "../dist/planCore.js";
 
 const cfg = {
   hardware: { vram_safety_budget_mib: 8000, cpu_cores_physical: 6, cpu_threads_logical: 12 },
@@ -154,4 +154,55 @@ test("invokePlan applies preset context caps and explicit context overrides", ()
     "Qwen3.5-4B Q4_K_M @ ctx=8192_kv=q8_0",
     "Qwen3.5-4B Q4_K_M @ ctx=16384_kv=q8_0",
   ]);
+});
+
+test("plan item identity includes non-baseline workload targets", () => {
+  const meta = catalog[0];
+  const baseline = newPlanItem(meta, "context", "middle", "--ctx-size 65536", "ctx=65536_kv=q8_0");
+  const prefill = newPlanItem(meta, "context", "middle", "--ctx-size 65536", "ctx=65536_kv=q8_0", {
+    kind: "prefill",
+    prefillTokens: 32768,
+  });
+  const kvFill = newPlanItem(meta, "context", "middle", "--ctx-size 65536", "ctx=65536_kv=q8_0", {
+    kind: "kv-fill",
+    kvFillTokens: 49152,
+  });
+
+  assert.equal(baseline.workload_kind, "baseline");
+  assert.equal(baseline.id.includes("workload"), false);
+  assert.notEqual(prefill.id, kvFill.id);
+  assert.match(prefill.id, /prefill_32768/);
+  assert.match(kvFill.id, /kvfill_49152/);
+});
+
+test("workload profiles respect context reserve and expand only the largest context anchor", () => {
+  const workloadCfg = {
+    ...cfg,
+    bench: { n_predict: 128 },
+    planning: {
+      ...cfg.planning,
+      workload_sweeps: {
+        prefill_tokens: [512, 8192, 131072],
+        kv_fill_ratios: [0.25, 0.9, 0.99],
+        context_reserve_tokens: 512,
+      },
+    },
+  };
+  const profiles = workloadProfilesForContext(16384, workloadCfg, "all");
+  assert.deepEqual(profiles, [
+    { kind: "prefill", prefillTokens: 512 },
+    { kind: "prefill", prefillTokens: 8192 },
+    { kind: "kv-fill", kvFillTokens: 4096 },
+    { kind: "kv-fill", kvFillTokens: 14745 },
+  ]);
+
+  const plan = invokePlan(catalog.slice(0, 1), workloadCfg, modelsCatalog, presets, {
+    presetMaxCtx: 32768,
+    workloadSweep: "all",
+  });
+  const diagnostics = plan.filter((item) => item.workload_kind !== "baseline");
+  assert.ok(diagnostics.length > 0);
+  assert.ok(diagnostics.every((item) => item.extra_args.includes("--ctx-size 32768")));
+  assert.ok(plan.filter((item) => item.workload_kind === "baseline").some((item) =>
+    item.extra_args.includes("--ctx-size 16384")));
 });

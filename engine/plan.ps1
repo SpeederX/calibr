@@ -45,8 +45,95 @@ function Get-CatalogLevelMap {
     return $map
 }
 
+function New-PlanningPolicy {
+    param(
+        [int]$MaxContext = 0,
+        [int[]]$ContextSizes = @(),
+        [ValidateSet("baseline", "prefill", "kv-fill", "all")]
+        [string]$WorkloadSweep = "baseline"
+    )
+
+    return @{
+        max_context  = $MaxContext
+        context_sizes = @($ContextSizes)
+        workload_sweep = $WorkloadSweep
+    }
+}
+
+function ConvertTo-ContextSizeList {
+    param([string]$Value)
+    if (-not $Value) { return @() }
+    return @(($Value -split ',') |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -match '^\d+$' } |
+        ForEach-Object { [int]$_ })
+}
+
+function Get-PlanWorkloadIdentity {
+    param(
+        [ValidateSet("baseline", "prefill", "kv-fill")]
+        [string]$Kind = "baseline",
+        [int]$PrefillTokens = 0,
+        [int]$KvFillTokens = 0
+    )
+
+    if ($Kind -eq "prefill") { return "prefill=$PrefillTokens" }
+    if ($Kind -eq "kv-fill") { return "kvfill=$KvFillTokens" }
+    return ""
+}
+
+function Get-WorkloadProfilesForContext {
+    param(
+        [int]$ContextSize,
+        $Config,
+        [ValidateSet("baseline", "prefill", "kv-fill", "all")]
+        [string]$Mode = "baseline"
+    )
+
+    if ($Mode -eq "baseline") { return @() }
+    $settings = $Config.planning.workload_sweeps
+    $reserve = if ($settings -and $null -ne $settings.context_reserve_tokens) {
+        [int]$settings.context_reserve_tokens
+    } else { 512 }
+    $nPredict = if ($Config.bench -and $null -ne $Config.bench.n_predict) {
+        [int]$Config.bench.n_predict
+    } else { 128 }
+    $maxTarget = [math]::Max(0, $ContextSize - $reserve - $nPredict)
+    $profiles = @()
+
+    if ($Mode -eq "prefill" -or $Mode -eq "all") {
+        foreach ($target in @($settings.prefill_tokens)) {
+            $tokens = [int]$target
+            if ($tokens -gt 0 -and $tokens -le $maxTarget) {
+                $profiles += @{ kind = "prefill"; prefill_tokens = $tokens; kv_fill_tokens = 0 }
+            }
+        }
+    }
+    if ($Mode -eq "kv-fill" -or $Mode -eq "all") {
+        foreach ($ratioValue in @($settings.kv_fill_ratios)) {
+            $ratio = [double]$ratioValue
+            $tokens = [int][math]::Floor($ContextSize * $ratio)
+            if ($ratio -gt 0 -and $ratio -lt 1 -and $tokens -gt 0 -and $tokens -le $maxTarget) {
+                $profiles += @{ kind = "kv-fill"; prefill_tokens = 0; kv_fill_tokens = $tokens }
+            }
+        }
+    }
+    return @($profiles)
+}
+
 function New-PlanItem {
-    param($meta, $sweep, $level, $extraArgs, $label, $idx)
+    param(
+        $meta,
+        $sweep,
+        $level,
+        $extraArgs,
+        $label,
+        $idx,
+        [ValidateSet("baseline", "prefill", "kv-fill")]
+        [string]$WorkloadKind = "baseline",
+        [int]$PrefillTokens = 0,
+        [int]$KvFillTokens = 0
+    )
     # IDs used to be 'T{idx:D3}_{model_variant}_{label}'. The idx prefix made
     # them NON-deterministic across plan regenerations: re-running discover
     # with a different catalog (or the per-sample loop in 'all -FetchCatalog'
@@ -62,9 +149,11 @@ function New-PlanItem {
     # (model, variant, label), which is unique within any single plan. The
     # `$idx` param is kept for backwards compat with callers but unused.
     $sanitizedModel = ($meta.model + "_" + $meta.variant) -replace '[^\w]', '_'
-    $sanitizedLabel = $label -replace '[^\w]', '_'
+    $workloadIdentity = Get-PlanWorkloadIdentity -Kind $WorkloadKind -PrefillTokens $PrefillTokens -KvFillTokens $KvFillTokens
+    $identityLabel = if ($workloadIdentity) { "${label}_${workloadIdentity}" } else { $label }
+    $sanitizedLabel = $identityLabel -replace '[^\w]', '_'
     if ($sanitizedModel.Length -gt 40) { $sanitizedModel = $sanitizedModel.Substring(0, 40) }
-    if ($sanitizedLabel.Length -gt 30) { $sanitizedLabel = $sanitizedLabel.Substring(0, 30) }
+    if ($sanitizedLabel.Length -gt 80) { $sanitizedLabel = $sanitizedLabel.Substring(0, 80) }
     $id = "{0}__{1}" -f $sanitizedModel, $sanitizedLabel
     return @{
         id          = $id
@@ -79,7 +168,10 @@ function New-PlanItem {
         template_note = $meta.template_note
         gguf_context_length = $meta.gguf_context_length
         gguf_architecture = $meta.gguf_architecture
-        label       = "$($meta.model) $($meta.variant) @ $label"
+        workload_kind = $WorkloadKind
+        prefill_target_tokens = $PrefillTokens
+        kv_fill_target_tokens = $KvFillTokens
+        label       = "$($meta.model) $($meta.variant) @ $identityLabel"
         extra_args  = $extraArgs
     }
 }
@@ -117,6 +209,8 @@ function Test-CtxAllowedForModel {
 }
 
 function Invoke-Plan {
+    param([hashtable]$PlanningPolicy = $null)
+
     $cfg = Get-Config
     Write-Host "=== plan ===" -ForegroundColor Cyan
     if (-not (Test-Path $CALIBR_CATALOG)) { throw "catalog.json missing. Run: calibr discover" }
@@ -130,12 +224,13 @@ function Invoke-Plan {
     $base = $cfg.base_args + $threadsArg
 
     $globalCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
-    # If 'all -Preset' set a preset-level ctx ceiling, apply the MORE
-    # restrictive of (preset, config) as the effective global cap. This
-    # is how presets like 'low' (max_ctx 32k) actually narrow the context
-    # sweep without needing a per-call -MaxCtx flag.
-    if ($script:_presetMaxCtx -and [int]$script:_presetMaxCtx -gt 0) {
-        $presetCap = [int]$script:_presetMaxCtx
+    if ($null -eq $PlanningPolicy) {
+        $PlanningPolicy = New-PlanningPolicy `
+            -ContextSizes (ConvertTo-ContextSizeList -Value $ContextSizes) `
+            -WorkloadSweep $WorkloadSweep
+    }
+    if ($PlanningPolicy.max_context -and [int]$PlanningPolicy.max_context -gt 0) {
+        $presetCap = [int]$PlanningPolicy.max_context
         if ($globalCtxCap -eq 0 -or $presetCap -lt $globalCtxCap) {
             $globalCtxCap = $presetCap
         }
@@ -143,17 +238,11 @@ function Invoke-Plan {
     $perModelCaps = Get-CatalogMaxContextMap
     $levelMap = Get-CatalogLevelMap
 
-    # Effective context candidates for the context sweep. -ContextSizes (CSV) or
-    # a preset's context_sizes override the config defaults; KV per size is taken
-    # from the matching config candidate, else q8_0. This is what CustomBenchView
-    # v2's ctx-checkbox set drives.
+    # Effective context candidates for the context sweep. The caller passes
+    # session policy explicitly; direct raw plan calls derive it from
+    # -ContextSizes. KV per size comes from the matching default, else q8_0.
     $ctxCandidates = $cfg.context_candidates
-    $ctxOverride = $null
-    if ($ContextSizes) {
-        $ctxOverride = @($ContextSizes -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
-    } elseif ($script:_presetCtxSizes) {
-        $ctxOverride = @($script:_presetCtxSizes | ForEach-Object { [int]$_ })
-    }
+    $ctxOverride = @($PlanningPolicy.context_sizes | ForEach-Object { [int]$_ })
     if ($ctxOverride -and $ctxOverride.Count -gt 0) {
         $kvByCtx = @{}
         foreach ($c in $cfg.context_candidates) { $kvByCtx[[int]$c.ctx] = $c.kv }
@@ -193,13 +282,35 @@ function Invoke-Plan {
                     $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv = $kv })
                     $modelCandidates = @($modelCandidates | Sort-Object { [int]$_.ctx })
                 }
+                $validCandidates = @()
                 foreach ($c in $modelCandidates) {
                     if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $globalCtxCap -PerModelCap $perModelCap)) {
                         $skipped++
                         continue
                     }
+                    $validCandidates += $c
                     $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base"
                     $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
+                }
+                $anchor = @($validCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
+                if ($anchor.Count -gt 0) {
+                    $anchorCtx = [int]$anchor[0].ctx
+                    $anchorKv = $anchor[0].kv
+                    $argStr = "--ctx-size $anchorCtx --gpu-layers 99 --cache-type-k $anchorKv --cache-type-v $anchorKv $base"
+                    $profiles = @(Get-WorkloadProfilesForContext `
+                        -ContextSize $anchorCtx `
+                        -Config $cfg `
+                        -Mode $PlanningPolicy.workload_sweep)
+                    foreach ($profile in $profiles) {
+                        $target = if ($profile.kind -eq "prefill") { $profile.prefill_tokens } else { $profile.kv_fill_tokens }
+                        $label = "ctx=${anchorCtx}_kv=${anchorKv}"
+                        $plan += (New-PlanItem `
+                            -meta $m -sweep $sweep -level $level -extraArgs $argStr -label $label -idx $idx `
+                            -WorkloadKind $profile.kind `
+                            -PrefillTokens $profile.prefill_tokens `
+                            -KvFillTokens $profile.kv_fill_tokens)
+                        $idx++
+                    }
                 }
                 if ($skipped -gt 0 -and $perModelCap -gt 0) {
                     Write-Host ("  skipped {0} context candidates above {1}'s max_context ({2})" -f $skipped, $m.model, $perModelCap) -ForegroundColor DarkGray

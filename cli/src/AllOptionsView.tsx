@@ -49,6 +49,8 @@ function readDiscoveredModelNames(): string[] {
 const ALL_RUNS_VALUES: number[] = [0, 1, 3, 5];
 const DOWNLOAD_RETENTION_VALUES = ["cleanup", "keep-all", "keep-top-3", "keep-top-1"] as const;
 export type DownloadRetention = (typeof DOWNLOAD_RETENTION_VALUES)[number];
+const WORKLOAD_SWEEP_VALUES = ["baseline", "prefill", "kv-fill", "all"] as const;
+export type WorkloadSweep = (typeof WORKLOAD_SWEEP_VALUES)[number];
 const DEFAULT_VRAM_WARNING_PCT = 10;
 const VRAM_WARNING_STEP = 5;
 
@@ -63,6 +65,15 @@ function retentionLabel(policy: DownloadRetention): string {
     case "keep-top-3": return "keep top 3 results";
     case "keep-top-1": return "keep top 1 result";
     default: return "yes (delete each downloaded model when its bench finishes)";
+  }
+}
+
+function workloadSweepLabel(mode: WorkloadSweep): string {
+  switch (mode) {
+    case "prefill": return "baseline + prefill curve";
+    case "kv-fill": return "baseline + KV-fill curve";
+    case "all": return "baseline + prefill + KV-fill (heavy)";
+    default: return "baseline only";
   }
 }
 
@@ -192,6 +203,7 @@ export interface AllArgsOpts {
   vramUsageWarningPct?: number | null;
   rerunAll: boolean;
   contextSizes?: number[] | null;
+  workloadSweep: WorkloadSweep;
 }
 
 // Pure arg builder for `all` (exported for tests). A fixed model overrides the
@@ -224,6 +236,10 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
   if (o.contextSizes && o.contextSizes.length > 0) {
     const csv = o.contextSizes.join(",");
     args.push("-ContextSizes", csv); parts.push(`-ContextSizes ${csv}`);
+  }
+  if (o.workloadSweep !== "baseline") {
+    args.push("-WorkloadSweep", o.workloadSweep);
+    parts.push(`-WorkloadSweep ${o.workloadSweep}`);
   }
   if (o.runs > 0)        { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
   if (o.downloadRetention !== "cleanup") {
@@ -270,6 +286,7 @@ export interface GuidedRunSession {
   currentPreset?: string;
   customIds?: string;
   customCtxSizes?: number[] | null;
+  workloadSweep?: WorkloadSweep;
   runs?: number;
   downloadRetention?: DownloadRetention;
   preferSpeed?: boolean;
@@ -305,6 +322,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   });
   const [model, setModel] = useState<string | null>(session?.model ?? null);
   const [runs, setRuns] = useState<number>(session?.runs ?? 0);
+  const [workloadSweep, setWorkloadSweep] = useState<WorkloadSweep>(session?.workloadSweep ?? "baseline");
   const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(session?.llamaDecision ?? null);
   const [llamaVersionInput, setLlamaVersionInput] = useState<string>("");
   const [llamaCandidates, setLlamaCandidates] = useState<LlamaServerCandidate[]>([]);
@@ -379,6 +397,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     { kind: "fetch"    as const, label: `source:          ${fetchCatalog ? "catalog downloads" : "local folder"}` },
     { kind: "preset"   as const, label: `scope:           ${presetLabel}`, disabled: !fetchCatalog },
     { kind: "model"    as const, label: `model:           ${model === null ? (fetchCatalog ? "all in scope" : "all local models") : model}` },
+    { kind: "workload" as const, label: `load sweep:      ${workloadSweepLabel(workloadSweep)}` },
     { kind: "runs"     as const, label: `runs per config: ${runs === 0 ? `default (${runsDefault} from config)` : String(runs)}` },
     { kind: "rotate"   as const, label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
@@ -397,7 +416,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes });
+    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes, workloadSweep });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -425,6 +444,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         model,
         customIds,
         contextSizes: customCtxSizes,
+        workloadSweep,
         runs,
         downloadRetention,
         preferSpeed,
@@ -604,6 +624,12 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         const nextModel = next(modelChoices, model);
         setModel(nextModel);
         onSessionChange?.({ model: nextModel });
+        break;
+      }
+      case "workload": {
+        const nextWorkload = next(WORKLOAD_SWEEP_VALUES, workloadSweep);
+        setWorkloadSweep(nextWorkload);
+        onSessionChange?.({ workloadSweep: nextWorkload });
         break;
       }
       case "runs": {

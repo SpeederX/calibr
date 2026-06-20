@@ -10,7 +10,7 @@ import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableM
 const base = {
   decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",
   currentPreset: "low", runs: 0, downloadRetention: "cleanup", preferSpeed: false,
-  minimalPolling: false, rerunAll: false,
+  minimalPolling: false, rerunAll: false, workloadSweep: "baseline",
 };
 
 test("preset path: -FetchCatalog -Preset low", () => {
@@ -63,6 +63,11 @@ test("context sizes pass through as -ContextSizes csv", () => {
   const i = a.indexOf("-ContextSizes");
   assert.ok(i >= 0, "should include -ContextSizes");
   assert.equal(a[i + 1], "16384,32768");
+});
+
+test("diagnostic workload sweep passes through explicitly", () => {
+  assert.deepEqual(buildAllArgs({ ...base, workloadSweep: "all" }).args,
+    ["all", "-FetchCatalog", "-Preset", "low", "-WorkloadSweep", "all"]);
 });
 
 test("download retention passes through as -DownloadRetention", () => {

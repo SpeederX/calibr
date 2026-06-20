@@ -23,7 +23,13 @@ export interface PlanConfig {
     overhead_mib?: number | null;
     moecpu_sweep?: number[] | null;
     offload_sweep?: number[] | null;
+    workload_sweeps?: {
+      prefill_tokens?: number[] | null;
+      kv_fill_ratios?: number[] | null;
+      context_reserve_tokens?: number | null;
+    } | null;
   };
+  bench?: { n_predict?: number | null };
   context_candidates?: Array<{ ctx: number; kv: string }> | null;
   max_context_cap?: number | null;
   base_args?: string | null;
@@ -48,6 +54,7 @@ export interface PlanOptions {
   contextSizes?: number[] | null;
   presetMaxCtx?: number | null;
   presetCtxSizes?: number[] | null;
+  workloadSweep?: "baseline" | "prefill" | "kv-fill" | "all";
 }
 
 export interface PlanItem {
@@ -63,6 +70,9 @@ export interface PlanItem {
   template_note: string | null | undefined;
   gguf_context_length: number | null | undefined;
   gguf_architecture: string | null | undefined;
+  workload_kind: "baseline" | "prefill" | "kv-fill";
+  prefill_target_tokens: number;
+  kv_fill_target_tokens: number;
   label: string;
   extra_args: string;
 }
@@ -116,9 +126,62 @@ export function testCtxAllowedForModel(ctx: number, globalCap: number, perModelC
   return true;
 }
 
-export function newPlanItem(meta: PlanMeta, sweep: PlanItem["sweep"], level: string | null, extraArgs: string, label: string): PlanItem {
+export interface PlanWorkload {
+  kind?: PlanItem["workload_kind"];
+  prefillTokens?: number;
+  kvFillTokens?: number;
+}
+
+export function planWorkloadIdentity(workload: PlanWorkload = {}): string {
+  const kind = workload.kind ?? "baseline";
+  if (kind === "prefill") return `prefill=${asInt(workload.prefillTokens)}`;
+  if (kind === "kv-fill") return `kvfill=${asInt(workload.kvFillTokens)}`;
+  return "";
+}
+
+export function workloadProfilesForContext(
+  contextSize: number,
+  cfg: PlanConfig,
+  mode: NonNullable<PlanOptions["workloadSweep"]> = "baseline",
+): PlanWorkload[] {
+  if (mode === "baseline") return [];
+  const settings = cfg.planning?.workload_sweeps;
+  const reserve = asInt(settings?.context_reserve_tokens, 512);
+  const nPredict = asInt(cfg.bench?.n_predict, 128);
+  const maxTarget = Math.max(0, contextSize - reserve - nPredict);
+  const out: PlanWorkload[] = [];
+
+  if (mode === "prefill" || mode === "all") {
+    for (const value of settings?.prefill_tokens ?? [512, 2048, 8192, 32768]) {
+      const tokens = asInt(value);
+      if (tokens > 0 && tokens <= maxTarget) out.push({ kind: "prefill", prefillTokens: tokens });
+    }
+  }
+  if (mode === "kv-fill" || mode === "all") {
+    for (const value of settings?.kv_fill_ratios ?? [0.25, 0.5, 0.75, 0.9]) {
+      const ratio = typeof value === "number" && Number.isFinite(value) ? value : 0;
+      const tokens = Math.floor(contextSize * ratio);
+      if (ratio > 0 && ratio < 1 && tokens > 0 && tokens <= maxTarget) {
+        out.push({ kind: "kv-fill", kvFillTokens: tokens });
+      }
+    }
+  }
+  return out;
+}
+
+export function newPlanItem(
+  meta: PlanMeta,
+  sweep: PlanItem["sweep"],
+  level: string | null,
+  extraArgs: string,
+  label: string,
+  workload: PlanWorkload = {},
+): PlanItem {
   const sanitizedModel = `${meta.model}_${meta.variant}`.replace(/[^\w]/g, "_").slice(0, 40);
-  const sanitizedLabel = label.replace(/[^\w]/g, "_").slice(0, 30);
+  const workloadKind = workload.kind ?? "baseline";
+  const workloadIdentity = planWorkloadIdentity(workload);
+  const identityLabel = workloadIdentity ? `${label}_${workloadIdentity}` : label;
+  const sanitizedLabel = identityLabel.replace(/[^\w]/g, "_").slice(0, 80);
   return {
     id: `${sanitizedModel}__${sanitizedLabel}`,
     model_path: meta.path,
@@ -132,7 +195,10 @@ export function newPlanItem(meta: PlanMeta, sweep: PlanItem["sweep"], level: str
     template_note: meta.template_note,
     gguf_context_length: meta.gguf_context_length,
     gguf_architecture: meta.gguf_architecture,
-    label: `${meta.model} ${meta.variant} @ ${label}`,
+    workload_kind: workloadKind,
+    prefill_target_tokens: asInt(workload.prefillTokens),
+    kv_fill_target_tokens: asInt(workload.kvFillTokens),
+    label: `${meta.model} ${meta.variant} @ ${identityLabel}`,
     extra_args: extraArgs,
   };
 }
@@ -186,11 +252,21 @@ export function invokePlan(
           kv: next?.kv ?? fallback?.kv ?? "q8_0",
         }].sort((a, b) => a.ctx - b.ctx);
       }
-      for (const candidate of modelCandidates) {
-        if (!testCtxAllowedForModel(candidate.ctx, globalCtxCap, perModelCap)) continue;
+      const validCandidates = modelCandidates.filter((candidate) =>
+        testCtxAllowedForModel(candidate.ctx, globalCtxCap, perModelCap));
+      for (const candidate of validCandidates) {
         const label = `ctx=${candidate.ctx}_kv=${candidate.kv}`;
         const args = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${candidate.kv} --cache-type-v ${candidate.kv}${suffix}`;
         plan.push(newPlanItem(meta, sweep, level, args, label));
+      }
+      const anchor = validCandidates.at(-1);
+      if (anchor) {
+        const args = `--ctx-size ${anchor.ctx} --gpu-layers 99 --cache-type-k ${anchor.kv} --cache-type-v ${anchor.kv}${suffix}`;
+        for (const workload of workloadProfilesForContext(anchor.ctx, cfg, opts.workloadSweep ?? "baseline")) {
+          const target = workload.kind === "prefill" ? workload.prefillTokens : workload.kvFillTokens;
+          const label = `ctx=${anchor.ctx}_kv=${anchor.kv}`;
+          plan.push(newPlanItem(meta, sweep, level, args, label, workload));
+        }
       }
     } else if (sweep === "moe-cpu") {
       for (const n of cfg.planning?.moecpu_sweep ?? [28, 30, 32, 34, 36]) {

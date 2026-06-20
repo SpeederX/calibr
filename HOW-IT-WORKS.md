@@ -47,7 +47,8 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - context/KV sweep for models expected to fit;
    - CPU-expert sweep for MoE models;
    - GPU-layer offload sweep for oversized dense models;
-   - cap contexts at model metadata and selected policy limits.
+   - cap contexts at model metadata and selected policy limits;
+   - attach an explicit workload profile and token targets to every config.
 5. **Benchmark**
    - start llama-server and wait for readiness;
    - optionally warm up, then reset the KV slot;
@@ -88,6 +89,12 @@ The measured request has fixed output length, deterministic sampling,
 `timings_per_token`, and continuous socket draining. Official `prompt_tps` and
 `eval_tps` come from the server clock; client timestamps are used only for
 HTTP/SSE delivery and perceived latency. See [METRICS.md](METRICS.md).
+
+Opt-in workload sweeps use the largest valid context config for each model.
+Prefill profiles send a tokenizer-sized long prompt from an empty slot.
+KV-fill profiles first cache that long prefix in the same slot, then measure a
+streaming request that extends it. The final response's `cache_n` confirms the
+actual reused prefix. Diagnostic workloads are never launcher winners.
 
 On llama-server builds that cannot erase slots for multimodal servers, calibr
 skips the optional warm-up so the measured request still starts cold.

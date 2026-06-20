@@ -25,6 +25,9 @@ function item() {
     series: "qwen",
     level: "high",
     sweep: "context",
+    workload_kind: "kv-fill",
+    prefill_target_tokens: 0,
+    kv_fill_target_tokens: 49152,
     reasoning_mode: "default",
     template_note: null,
     gguf_context_length: 131072,
@@ -124,6 +127,9 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   assert.equal(result.first_eval_tps, 46);
   assert.equal(result.repeat_eval_tps, 55);
   assert.equal(result.eval_spread_pct, 32.7);
+  assert.equal(result.workload_kind, "kv-fill");
+  assert.equal(result.prefill_target_tokens, 0);
+  assert.equal(result.kv_fill_target_tokens, 49152);
   assert.equal(result.gpu_power_peak_w, 180);
   assert.equal(result.gpu_temp_peak_c, 72);
   assert.equal(result.ram_used_peak_mib, 900);

@@ -198,6 +198,7 @@ Describe "New-AggregatedBenchResult" {
             id = "qwen3.5-9b-q4km__ctx16384_q8"
             label = "Qwen3.5-9B Q4_K_M @ ctx=16384 / kv=q8_0"
             model = "Qwen3.5-9B"; variant = "Q4_K_M"; series = "Qwen3.5"; sweep = "context"; level = "high"
+            workload_kind = "prefill"; prefill_target_tokens = 8192; kv_fill_target_tokens = 0
             model_path = "C:\models\Qwen3.5-9B-Q4_K_M.gguf"
             mmproj_path = $null
             extra_args = "--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0"
@@ -279,6 +280,9 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal "Qwen3.5-9B" $r.model
         Assert-Equal "context" $r.sweep
         Assert-Equal "high" $r.level
+        Assert-Equal "prefill" $r.workload_kind
+        Assert-Equal 8192 $r.prefill_target_tokens
+        Assert-Equal 0 $r.kv_fill_target_tokens
         Assert-Equal 80 $r.prompt_n          # runs[0]
         Assert-Equal 128 $r.eval_n           # runs[0]
         Assert-Equal "33/33" $r.layers_offloaded

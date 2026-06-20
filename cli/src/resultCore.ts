@@ -6,6 +6,9 @@ export interface BenchItem {
   series?: string;
   level?: string;
   sweep?: string;
+  workload_kind?: "baseline" | "prefill" | "kv-fill";
+  prefill_target_tokens?: number;
+  kv_fill_target_tokens?: number;
   reasoning_mode?: string | null;
   template_note?: string | null;
   gguf_context_length?: number | null;
@@ -76,6 +79,11 @@ export interface BenchRun {
   delivery_gap_median_ms?: number | null;
   delivery_gap_p95_ms?: number | null;
   delivery_gap_max_ms?: number | null;
+  workload_prepare_ms?: number | null;
+  workload_prompt_tokens?: number | null;
+  workload_target_error_tokens?: number | null;
+  kv_fill_ms?: number | null;
+  kv_fill_cached_tokens?: number | null;
   total_request_ms?: number | null;
   latency_total_request_ms?: number | null;
   latency_error?: string | null;
@@ -91,7 +99,7 @@ export interface BenchRun {
 
 export interface BenchTelemetryPoint {
   elapsed_ms: number;
-  phase: "warmup" | "throughput" | "latency_prompt" | "latency_eval" | "latency_reasoning" | "latency_answer";
+  phase: "warmup" | "kv_fill" | "throughput" | "latency_prompt" | "latency_eval" | "latency_reasoning" | "latency_answer";
   token_index?: number | null;
   rolling_tps?: number | null;
   event_index?: number | null;
@@ -145,6 +153,8 @@ export const METRIC_GLOSSARY = {
   gpu_util_avg_pct: "Average GPU utilization across collected samples.",
   cpu_util_avg_pct: "Average total CPU utilization across collected samples.",
   telemetry: "Time-series samples for prefill/reasoning/answer, server generation rate, delivery gaps, memory pressure, and utilization.",
+  workload_prompt_tokens: "Actual chat-templated prompt tokens prepared for the diagnostic workload.",
+  kv_fill_cached_tokens: "Prompt tokens reused from the prepared KV prefix by the measured request.",
 } as const;
 
 export interface ParsedLlamaServerStderr {
@@ -355,6 +365,11 @@ export function buildReportRows(
       delivery_gap_median_ms: num(result.delivery_gap_median_ms),
       delivery_gap_p95_ms: num(result.delivery_gap_p95_ms),
       delivery_gap_max_ms: num(result.delivery_gap_max_ms),
+      workload_prepare_ms: num(result.workload_prepare_ms),
+      workload_prompt_tokens: num(result.workload_prompt_tokens),
+      workload_target_error_tokens: num(result.workload_target_error_tokens),
+      kv_fill_ms: num(result.kv_fill_ms),
+      kv_fill_cached_tokens: num(result.kv_fill_cached_tokens),
       total_request_ms: num(result.total_request_ms),
       latency_total_request_ms: num(result.latency_total_request_ms),
       latency_error: result.latency_error ?? null,
@@ -422,6 +437,9 @@ export function aggregateBenchResult(payload: {
     series: item.series,
     level: item.level,
     sweep: item.sweep,
+    workload_kind: item.workload_kind ?? "baseline",
+    prefill_target_tokens: int(item.prefill_target_tokens),
+    kv_fill_target_tokens: int(item.kv_fill_target_tokens),
     reasoning_mode: item.reasoning_mode,
     template_note: item.template_note,
     gguf_context_length: item.gguf_context_length,
@@ -471,6 +489,11 @@ export function aggregateBenchResult(payload: {
     delivery_gap_median_ms: roundOrNull(metricMedian("delivery_gap_median_ms"), 2),
     delivery_gap_p95_ms: roundOrNull(metricMedian("delivery_gap_p95_ms"), 2),
     delivery_gap_max_ms: roundOrNull(metricMedian("delivery_gap_max_ms"), 2),
+    workload_prepare_ms: roundOrNull(metricMedian("workload_prepare_ms"), 2),
+    workload_prompt_tokens: roundOrNull(metricMedian("workload_prompt_tokens"), 0),
+    workload_target_error_tokens: roundOrNull(metricMedian("workload_target_error_tokens"), 0),
+    kv_fill_ms: roundOrNull(metricMedian("kv_fill_ms"), 2),
+    kv_fill_cached_tokens: roundOrNull(metricMedian("kv_fill_cached_tokens"), 0),
     total_request_ms: roundOrNull(totalReqMs, 2),
     latency_total_request_ms: roundOrNull(latReqMs, 2),
     gpu_util_avg_pct: int(median(runs.map((r) => num(r.gpu_util_avg_pct)))),

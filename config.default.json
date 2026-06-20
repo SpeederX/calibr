@@ -61,7 +61,13 @@
     "overhead_mib": 1200,
     "_comment_overhead": "Approximate fixed VRAM overhead beyond model weights: compute buffers (~500), recurrent/SSM state (~50-200), mmproj (~900 if present), graph+misc (~100). Used to decide which sweep a model gets: context (fits fully) vs offload (too big).",
     "moecpu_sweep": [28, 30, 32, 34, 36],
-    "offload_sweep": [20, 24, 28, 32, 36]
+    "offload_sweep": [20, 24, 28, 32, 36],
+    "workload_sweeps": {
+      "prefill_tokens": [512, 2048, 8192, 32768],
+      "kv_fill_ratios": [0.25, 0.5, 0.75, 0.9],
+      "context_reserve_tokens": 512,
+      "_comment": "Opt-in diagnostic loads applied only to the largest valid context config per model. Reserve leaves room for chat-template overhead, the measured suffix, and generated tokens."
+    }
   },
 
   "context_candidates": [

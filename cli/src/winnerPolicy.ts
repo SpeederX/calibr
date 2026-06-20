@@ -10,6 +10,7 @@ export interface WinnerPolicyResult {
   vram_peak_mib?: number | null;
   ctx_size?: number | null;
   extra_args?: string | null;
+  workload_kind?: string | null;
   [key: string]: unknown;
 }
 
@@ -58,8 +59,12 @@ export function isSafe(result: WinnerPolicyResult, confirmMib = DEFAULT_CONFIRM_
   return finiteNumber(result.shared_peak_mib) <= confirmMib;
 }
 
+export function isWinnerEligible(result: WinnerPolicyResult): boolean {
+  return !result.workload_kind || result.workload_kind === "baseline";
+}
+
 export function computeAnchors(results: WinnerPolicyResult[]): WinnerPolicyAnchors {
-  const ok = results.filter((r) => r.ok);
+  const ok = results.filter((r) => r.ok && isWinnerEligible(r));
   const evalMax = Math.max(1, ...ok.map((r) => finiteNumber(r.eval_tps)));
   const effs = ok
     .filter((r) => finiteNumber(r.gpu_power_peak_w) > 0)
@@ -152,7 +157,7 @@ export function groupWinners<T extends WinnerPolicyResult>(
   const fallbacks: Record<string, WinnerWithMeta<T>> = {};
 
   for (const result of results) {
-    if (!result.ok) continue;
+    if (!result.ok || !isWinnerEligible(result)) continue;
     const model = String(result.model ?? result.id ?? "");
     if (!model) continue;
 
@@ -179,6 +184,7 @@ export function createReportWinnerPolicySource(): string {
     ctxValue,
     kvQualityValue,
     isSafe,
+    isWinnerEligible,
     computeAnchors,
     winnerScore,
     lowerMemoryTieBreak,

@@ -35,3 +35,12 @@ test("winnerScore disqualifies efficiency when power is unavailable", () => {
 test("isBetterWinner accepts the first candidate", () => {
   assert.equal(isBetterWinner({ id: "a", eval_tps: 1 }, null, "speed"), true);
 });
+
+test("diagnostic workloads never replace a baseline winner", () => {
+  const winners = groupWinners([
+    { id: "baseline", model: "m", ok: true, eval_tps: 50, workload_kind: "baseline" },
+    { id: "prefill", model: "m", ok: true, eval_tps: 500, workload_kind: "prefill" },
+    { id: "kv", model: "m", ok: true, eval_tps: 600, workload_kind: "kv-fill" },
+  ], "speed");
+  assert.equal(winners.m.id, "baseline");
+});

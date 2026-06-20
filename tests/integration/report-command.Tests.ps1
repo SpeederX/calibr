@@ -73,6 +73,12 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function downloadBat')      "downloadBat function missing"
         Assert-True ($tpl -match 'data-cfg-id=')              "config-id data attribute missing on bat links"
     }
+
+    It "keeps diagnostic workload results out of launcher winner selection" {
+        $source = Get-Content (Join-Path $labRoot "engine\report.ps1") -Raw
+        Assert-True ($source -match "workload_kind.*baseline") "PowerShell winner filter must require baseline workloads"
+        Assert-True ($tpl -match "isWinnerEligible") "browser winner policy must exclude diagnostic workloads"
+    }
     It "marks winners visually in scatter, bars, and tables" {
         Assert-True ($tpl -match 'is-winner')                 "is-winner CSS class missing"
         Assert-True ($tpl -match 'scatter-dot\.is-winner')    "scatter winner styling missing"

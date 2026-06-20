@@ -205,6 +205,11 @@ function New-AggregatedBenchResult {
     $deliveryMedianRaw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_median_ms })
     $deliveryP95Raw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_p95_ms })
     $deliveryMaxRaw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_max_ms })
+    $workloadPrepareRaw = Get-Median -values @($runs | ForEach-Object { $_.workload_prepare_ms })
+    $workloadPromptRaw = Get-Median -values @($runs | ForEach-Object { $_.workload_prompt_tokens })
+    $workloadErrorRaw = Get-Median -values @($runs | ForEach-Object { $_.workload_target_error_tokens })
+    $kvFillMsRaw = Get-Median -values @($runs | ForEach-Object { $_.kv_fill_ms })
+    $kvFillCachedRaw = Get-Median -values @($runs | ForEach-Object { $_.kv_fill_cached_tokens })
     $totalReqRaw   = Get-Median -values @($runs | ForEach-Object { $_.total_request_ms })
     $latReqRaw     = Get-Median -values @($runs | ForEach-Object { $_.latency_total_request_ms })
     $utilAvgMed    = [int](Get-Median   -values @($runs | ForEach-Object { $_.gpu_util_avg_pct }))
@@ -226,6 +231,9 @@ function New-AggregatedBenchResult {
         series          = $item.series
         level           = $item.level
         sweep           = $item.sweep
+        workload_kind   = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+        prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
+        kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
         reasoning_mode  = $item.reasoning_mode
         template_note   = $item.template_note
         gguf_context_length = $item.gguf_context_length
@@ -286,6 +294,11 @@ function New-AggregatedBenchResult {
         delivery_gap_median_ms = if ($null -ne $deliveryMedianRaw) { [math]::Round($deliveryMedianRaw, 2) } else { $null }
         delivery_gap_p95_ms  = if ($null -ne $deliveryP95Raw) { [math]::Round($deliveryP95Raw, 2) } else { $null }
         delivery_gap_max_ms  = if ($null -ne $deliveryMaxRaw) { [math]::Round($deliveryMaxRaw, 2) } else { $null }
+        workload_prepare_ms  = if ($null -ne $workloadPrepareRaw) { [math]::Round($workloadPrepareRaw, 2) } else { $null }
+        workload_prompt_tokens = if ($null -ne $workloadPromptRaw) { [int]$workloadPromptRaw } else { $null }
+        workload_target_error_tokens = if ($null -ne $workloadErrorRaw) { [int]$workloadErrorRaw } else { $null }
+        kv_fill_ms            = if ($null -ne $kvFillMsRaw) { [math]::Round($kvFillMsRaw, 2) } else { $null }
+        kv_fill_cached_tokens = if ($null -ne $kvFillCachedRaw) { [int]$kvFillCachedRaw } else { $null }
         total_request_ms     = if ($null -ne $totalReqRaw)  { [math]::Round($totalReqRaw, 2) } else { $null }
         latency_total_request_ms = if ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
         gpu_util_avg_pct     = $utilAvgMed
@@ -610,7 +623,11 @@ function Invoke-TsBenchRequest {
         [string]$Prompt,
         [int]$MaxTokens,
         [switch]$ReasoningOff,
-        [switch]$Warmup
+        [switch]$Warmup,
+        [ValidateSet("baseline", "prefill", "kv-fill")]
+        [string]$WorkloadKind = "baseline",
+        [int]$PrefillTargetTokens = 0,
+        [int]$KvFillTargetTokens = 0
     )
     $node   = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
     $script = $env:CALIBR_TS_BENCH_SCRIPT
@@ -624,6 +641,9 @@ function Invoke-TsBenchRequest {
         seed         = 42
         reasoningOff = [bool]$ReasoningOff
         timeoutMs    = 900000
+        workloadKind = $WorkloadKind
+        prefillTargetTokens = $PrefillTargetTokens
+        kvFillTargetTokens = $KvFillTargetTokens
     } | ConvertTo-Json -Compress -Depth 5
     # Use a UTF-8 temp file instead of stdin. Windows PowerShell can pipe
     # native-process stdin as UTF-16, which made Node read invalid JSON.
@@ -1110,6 +1130,11 @@ function Invoke-OneBenchRun {
         delivery_gap_median_ms = $null
         delivery_gap_p95_ms  = $null
         delivery_gap_max_ms  = $null
+        workload_prepare_ms  = $null
+        workload_prompt_tokens = $null
+        workload_target_error_tokens = $null
+        kv_fill_ms            = $null
+        kv_fill_cached_tokens = $null
         total_request_ms     = $null
         latency_total_request_ms = $null
         latency_error        = $null
@@ -1156,7 +1181,10 @@ function Invoke-OneBenchRun {
                     -Prompt $prompt `
                     -MaxTokens $nPred `
                     -ReasoningOff:($item.reasoning_mode -eq "off") `
-                    -Warmup:([bool]$cfg.bench.warmup -and -not [bool]$item.mmproj_path)
+                    -Warmup:([bool]$cfg.bench.warmup -and -not [bool]$item.mmproj_path) `
+                    -WorkloadKind $(if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }) `
+                    -PrefillTargetTokens $(if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }) `
+                    -KvFillTargetTokens $(if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 })
                 if (-not $resp.ok) { throw "ts bench runner: $($resp.error)" }
                 if ($null -ne $resp.total_request_ms) { $run.total_request_ms = [math]::Round([double]$resp.total_request_ms, 2) }
                 if ($null -ne $resp.ttfr_ms) { $run.ttfr_ms = [math]::Round([double]$resp.ttfr_ms, 2) }
@@ -1165,7 +1193,9 @@ function Invoke-OneBenchRun {
                     'ttfh_ms', 'stream_open_ms', 'client_ttft_ms',
                     'e2e_first_reasoning_ms', 'e2e_first_content_ms', 'reasoning_delay_ms',
                     'e2e_latency_ms', 'server_prefill_ms', 'server_ttft_ms', 'tpot_ms',
-                    'itl_p95_ms', 'delivery_gap_median_ms', 'delivery_gap_p95_ms', 'delivery_gap_max_ms'
+                    'itl_p95_ms', 'delivery_gap_median_ms', 'delivery_gap_p95_ms', 'delivery_gap_max_ms',
+                    'workload_prepare_ms', 'workload_prompt_tokens', 'workload_target_error_tokens',
+                    'kv_fill_ms', 'kv_fill_cached_tokens'
                 )) {
                     if ($null -ne $resp.$metric) { $run.$metric = [math]::Round([double]$resp.$metric, 3) }
                 }
@@ -1174,6 +1204,9 @@ function Invoke-OneBenchRun {
                 }
                 if ($resp.latency_error) { $run.latency_error = [string]$resp.latency_error }
             } else {
+                if ($item.workload_kind -and $item.workload_kind -ne 'baseline') {
+                    throw "workload '$($item.workload_kind)' requires the TypeScript benchmark runner"
+                }
                 if ($cfg.bench.warmup) {
                     try {
                         $warmupReq = @{
@@ -1376,6 +1409,9 @@ function Invoke-OneBench {
         $failResult = [ordered]@{
             id = $item.id; label = $item.label; model = $item.model; variant = $item.variant
             series = $item.series; level = $item.level; sweep = $item.sweep
+            workload_kind = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+            prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
+            kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
             reasoning_mode = $item.reasoning_mode; template_note = $item.template_note
             gguf_context_length = $item.gguf_context_length; gguf_architecture = $item.gguf_architecture
             timestamp = (Get-Date).ToUniversalTime().ToString('o')
@@ -1467,6 +1503,9 @@ function Invoke-OneBench {
                 series          = $item.series
                 level           = $item.level
                 sweep           = $item.sweep
+                workload_kind   = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+                prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
+                kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
                 reasoning_mode  = $item.reasoning_mode
                 template_note   = $item.template_note
                 gguf_context_length = $item.gguf_context_length

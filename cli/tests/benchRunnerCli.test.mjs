@@ -111,6 +111,52 @@ test("runFromPayload keeps a failed warmup non-fatal", async () => {
   assert.equal(out.timings.predicted_per_second, 20);
 });
 
+test("diagnostic workloads keep the optional warmup on the short base prompt", async () => {
+  const requests = [];
+  const workloadFetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.endsWith("/apply-template")) {
+      return { ok: true, status: 200, json: async () => ({ prompt: body.messages[0].content }) };
+    }
+    const count = String(body.content).trim().split(/\s+/).filter(Boolean).length;
+    return { ok: true, status: 200, json: async () => ({ tokens: Array.from({ length: count }, (_, i) => i) }) };
+  };
+  const out = await runFromPayload({
+    baseUrl: "http://127.0.0.1:18080",
+    prompt: "short warmup",
+    maxTokens: 8,
+    warmup: true,
+    workloadKind: "prefill",
+    prefillTargetTokens: 128,
+  }, {
+    workloadFetchImpl,
+    eraseSlot: async () => null,
+    fetchImpl: async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ timings: { prompt_n: 2, predicted_n: 1, predicted_ms: 10 } }),
+      };
+    },
+    streamFetchImpl: async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        body: streamParts([
+          'data: {"choices":[{"delta":{"content":"ok"}}],"timings":{"prompt_n":128,"predicted_n":8,"predicted_ms":400,"predicted_per_second":20,"cache_n":0}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      };
+    },
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(requests[0].messages[0].content, "short warmup");
+  assert.notEqual(requests[1].messages[0].content, "short warmup");
+});
+
 test("runFromPayload rejects a measured run when KV reset fails after warmup", async () => {
   let streamed = false;
   const out = await runFromPayload(
@@ -145,6 +191,56 @@ test("runFromPayload treats measured streaming failure as benchmark failure", as
   assert.equal(out.ok, false);
   assert.match(out.error ?? "", /connection refused/);
   assert.equal(out.timings, null);
+});
+
+test("runFromPayload fills KV then measures a cached-prefix stream", async () => {
+  const requests = [];
+  const workloadFetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    if (url.endsWith("/apply-template")) {
+      return { ok: true, status: 200, json: async () => ({ prompt: body.messages[0].content }) };
+    }
+    const count = String(body.content).trim().split(/\s+/).filter(Boolean).length;
+    return { ok: true, status: 200, json: async () => ({ tokens: Array.from({ length: count }, (_, i) => i) }) };
+  };
+  const out = await runFromPayload({
+    baseUrl: "http://127.0.0.1:18080",
+    prompt: "baseline",
+    maxTokens: 8,
+    workloadKind: "kv-fill",
+    kvFillTargetTokens: 128,
+  }, {
+    workloadFetchImpl,
+    fetchImpl: async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ timings: { prompt_n: 128, predicted_n: 1, predicted_ms: 10 } }),
+      };
+    },
+    streamFetchImpl: async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        body: streamParts([
+          'data: {"choices":[{"delta":{"content":"ok"}}],"timings":{"prompt_n":8,"predicted_n":8,"predicted_ms":400,"predicted_per_second":20,"cache_n":126}}\n\n',
+          "data: [DONE]\n\n",
+        ]),
+      };
+    },
+  });
+
+  assert.equal(out.ok, true);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].stream, false);
+  assert.equal(requests[0].cache_prompt, true);
+  assert.equal(requests[1].stream, true);
+  assert.equal(requests[1].cache_prompt, true);
+  assert.ok(requests[1].messages[0].content.startsWith(requests[0].messages[0].content));
+  assert.equal(out.kv_fill_cached_tokens, 126);
+  assert.ok(out.kv_fill_ms >= 0);
 });
 
 test("CLI entrypoint reads payload from --json-file as UTF-8 JSON", () => {
