@@ -182,6 +182,7 @@ $script:CALIBR_ENGINE_MODULES = @(
     'llama.ps1'
     'commands.ps1'
     'discover.ps1'
+    'offload.ps1'
     'plan.ps1'
     'bench.ps1'
     'report.ps1'

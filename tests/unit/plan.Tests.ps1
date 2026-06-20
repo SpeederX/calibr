@@ -41,6 +41,35 @@ Describe "Planning policy" {
     }
 }
 
+Describe "Adaptive offload adapter" {
+    It "honors the explicit TypeScript calibration opt-out" {
+        $old = $env:CALIBR_TS_OFFLOAD_CALIBRATION
+        try {
+            $env:CALIBR_TS_OFFLOAD_CALIBRATION = '0'
+            Assert-Equal $null (Resolve-TsOffloadCalibrationScript)
+        } finally {
+            if ($null -eq $old) {
+                Remove-Item Env:\CALIBR_TS_OFFLOAD_CALIBRATION -ErrorAction SilentlyContinue
+            } else {
+                $env:CALIBR_TS_OFFLOAD_CALIBRATION = $old
+            }
+        }
+    }
+
+    It "preserves a quoted base argument as one token" {
+        $args = @(ConvertTo-OffloadArgumentList '--flash-attn auto --path "C:\model files\x"')
+        Assert-Equal 4 $args.Count
+        Assert-Equal "C:\model files\x" $args[3]
+    }
+
+    It "keeps a documented conservative raw-engine fallback" {
+        $layers = @(Get-FallbackOffloadLayers)
+        Assert-Equal 5 $layers.Count
+        Assert-Equal 20 $layers[0]
+        Assert-Equal 36 $layers[4]
+    }
+}
+
 Describe "Plan workload identity" {
     function _meta {
         return @{
@@ -71,6 +100,24 @@ Describe "Plan workload identity" {
         Assert-True ($kvFill.id -match "kvfill_49152")
         Assert-True ($prefill.label -match "prefill=32768")
         Assert-True ($kvFill.label -match "kvfill=49152")
+    }
+
+    It "records adaptive calibration provenance" {
+        $calibration = @{
+            calibrated = $true
+            predicted_fit_layers = 27
+            verified_fit_layers = 26
+            first_spill_layers = 27
+            probe_count = 3
+        }
+        $item = New-PlanItem -meta (_meta) -sweep "offload" -level "middle" `
+            -extraArgs "--gpu-layers 27 --fit off" -label "ngl_27" -idx 1 `
+            -Calibration $calibration -CalibrationId "abc123" -FitOffset 1
+
+        Assert-Equal "adaptive-offload" $item.planning_mode
+        Assert-Equal "abc123" $item.calibration_id
+        Assert-Equal 26 $item.verified_fit_layers
+        Assert-Equal 1 $item.fit_offset
     }
 }
 

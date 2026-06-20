@@ -120,6 +120,14 @@ the current run.
 quant/variant, context/KV-cache choice, offload flags, memory behavior, and a
 ready launcher.
 
+For oversized dense models, guided run no longer assumes a fixed GPU-layer
+range tuned for one VRAM size. It performs bounded load-only probes using the
+detected VRAM budget, finds the highest non-spilling layer count, then
+benchmarks densely around that boundary. The probes do not generate tokens
+and do not participate in winner selection. Raw/headless planning falls back
+to a conservative static range when the TypeScript calibration adapter is
+unavailable.
+
 There is not one universal winner. The report exposes profiles:
 
 - **Speed**: highest measured `eval_tps`. It ignores spill and power.

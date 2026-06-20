@@ -25,7 +25,9 @@ export function PreferencesView({ onExit }: Props) {
   const [saved, setSaved] = useState(false);
   const cfg = useMemo(loadConfig, []);
   const moeSweep = Array.isArray(cfg.planning?.moecpu_sweep) ? cfg.planning.moecpu_sweep.join(", ") : "default";
-  const offloadSweep = Array.isArray(cfg.planning?.offload_sweep) ? cfg.planning.offload_sweep.join(", ") : "default";
+  const offloadOffsets = Array.isArray(cfg.planning?.offload_planning?.benchmark_offsets)
+    ? cfg.planning.offload_planning.benchmark_offsets.map((value: number) => value >= 0 ? `+${value}` : value).join(", ")
+    : "adaptive defaults";
 
   const save = (nextPct: number) => {
     const cfg = loadConfig();
@@ -89,10 +91,10 @@ export function PreferencesView({ onExit }: Props) {
       <Box marginTop={1} flexDirection="column">
         <Text bold>planned advanced defaults</Text>
         <Text>
-          gpu layers sweep: <Text color="gray">{offloadSweep}</Text> <Text dimColor>(planned)</Text>
+          gpu offload planning: <Text color="gray">adaptive around N_fit ({offloadOffsets})</Text>
         </Text>
         <Text dimColor>
-          Controls how many model layers llama.cpp attempts to place on GPU.
+          Short load-only probes find the local VRAM cliff before benchmark configs are expanded.
         </Text>
         <Text>
           cpu moe sweep: <Text color="gray">{moeSweep}</Text> <Text dimColor>(planned)</Text>
