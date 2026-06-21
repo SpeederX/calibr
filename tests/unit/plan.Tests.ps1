@@ -168,6 +168,13 @@ Describe "Plan workload identity" {
         Assert-Equal "baseline" $item.workload_kind
     }
 
+    It "marks a vanilla llama.cpp control without tuning arguments" {
+        $item = New-PlanItem -meta (_meta) -sweep "context" -level "middle" `
+            -extraArgs "" -label "vanilla_llama_cpp" -idx 1 -ControlKind "vanilla"
+        Assert-Equal "vanilla" $item.control_kind
+        Assert-Equal "" $item.extra_args
+    }
+
     It "makes prefill and KV-fill targets part of config identity" {
         $prefill = New-PlanItem -meta (_meta) -sweep "context" -level "middle" `
             -extraArgs "--ctx-size 65536" -label "ctx=65536_kv=q8_0" -idx 1 `

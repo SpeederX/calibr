@@ -86,6 +86,7 @@ export interface PlanItem {
   gguf_context_length: number | null | undefined;
   gguf_architecture: string | null | undefined;
   workload_kind: "baseline" | "prefill" | "kv-fill";
+  control_kind?: "vanilla" | null;
   prefill_target_tokens: number;
   kv_fill_target_tokens: number;
   label: string;
@@ -202,6 +203,7 @@ export function newPlanItem(
   extraArgs: string,
   label: string,
   workload: PlanWorkload = {},
+  controlKind: "vanilla" | null = null,
 ): PlanItem {
   const sanitizedModel = `${meta.model}_${meta.variant}`.replace(/[^\w]/g, "_").slice(0, 40);
   const workloadKind = workload.kind ?? "baseline";
@@ -222,6 +224,7 @@ export function newPlanItem(
     gguf_context_length: meta.gguf_context_length,
     gguf_architecture: meta.gguf_architecture,
     workload_kind: workloadKind,
+    control_kind: controlKind,
     prefill_target_tokens: asInt(workload.prefillTokens),
     kv_fill_target_tokens: asInt(workload.kvFillTokens),
     label: `${meta.model} ${meta.variant} @ ${identityLabel}`,
@@ -270,6 +273,7 @@ export function invokePlan(
     if (opts.level && level !== opts.level) continue;
 
     const perModelCap = name && contextMap[name] ? contextMap[name] : asInt(meta.gguf_context_length);
+    plan.push(newPlanItem(meta, sweep, level, "", "vanilla_llama_cpp", {}, "vanilla"));
     if (sweep === "context") {
       let modelCandidates = ctxCandidates;
       if (!ctxOverride && perModelCap > 0 && (globalCtxCap === 0 || perModelCap <= globalCtxCap)

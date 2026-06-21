@@ -133,6 +133,8 @@ function New-PlanItem {
         [string]$WorkloadKind = "baseline",
         [int]$PrefillTokens = 0,
         [int]$KvFillTokens = 0,
+        [ValidateSet("", "vanilla")]
+        [string]$ControlKind = "",
         $Calibration = $null,
         [string]$CalibrationId = "",
         $FitOffset = $null
@@ -172,6 +174,7 @@ function New-PlanItem {
         gguf_context_length = $meta.gguf_context_length
         gguf_architecture = $meta.gguf_architecture
         workload_kind = $WorkloadKind
+        control_kind = $(if ($ControlKind) { $ControlKind } else { $null })
         prefill_target_tokens = $PrefillTokens
         kv_fill_target_tokens = $KvFillTokens
         label       = "$($meta.model) $($meta.variant) @ $identityLabel"
@@ -346,6 +349,11 @@ function Invoke-Plan {
         } elseif ($m.gguf_context_length) {
             $perModelCap = [int]$m.gguf_context_length
         }
+
+        $plan += (New-PlanItem `
+            -meta $m -sweep $sweep -level $level -extraArgs "" `
+            -label "vanilla_llama_cpp" -idx $idx -ControlKind "vanilla")
+        $idx++
 
         switch ($sweep) {
             "context" {
