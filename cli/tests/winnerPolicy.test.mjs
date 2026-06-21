@@ -7,7 +7,16 @@ import {
   isBetterWinner,
   isSafe,
   winnerScore,
+  kvQualityValue,
 } from "../dist/winnerPolicy.js";
+
+test("KV quality ranks mixed q8/q5 above the q4 rescue profile", () => {
+  const standard = kvQualityValue({ extra_args: "--cache-type-k q8_0 --cache-type-v q8_0" });
+  const compromise = kvQualityValue({ extra_args: "--cache-type-k q8_0 --cache-type-v q5_1" });
+  const rescue = kvQualityValue({ extra_args: "--cache-type-k q4_0 --cache-type-v q4_0" });
+  assert.ok(standard > compromise);
+  assert.ok(compromise > rescue);
+});
 
 const fixturePath = join(process.cwd(), "..", "tests", "fixtures", "winner-policy-cases.json");
 const CASES = JSON.parse(readFileSync(fixturePath, "utf8"));

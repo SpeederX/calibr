@@ -482,18 +482,22 @@ function ctxValue(result) {
 
 function kvQualityValue(result) {
     const args = String(result.extra_args ?? "");
-    const match = args.match(/--cache-type-k\s+(\S+)/) ?? args.match(/--cache-type-v\s+(\S+)/);
-    const kv = match ? match[1].toLowerCase() : "";
-    const numMatch = kv.match(/^q(\d+)(?:_(\d+))?/);
-    if (numMatch)
-        return Number(numMatch[1]) * 10 + Number(numMatch[2] ?? 0);
-    if (kv === "f16")
-        return 160;
-    if (kv === "bf16")
-        return 160;
-    if (kv === "f32")
-        return 320;
-    return 0;
+    const quality = (kv) => {
+        const normalized = kv.toLowerCase();
+        const numMatch = normalized.match(/^q(\d+)(?:_(\d+))?/);
+        if (numMatch)
+            return Number(numMatch[1]) * 10 + Number(numMatch[2] ?? 0);
+        if (normalized === "f16" || normalized === "bf16")
+            return 160;
+        if (normalized === "f32")
+            return 320;
+        return 0;
+    };
+    const k = quality(args.match(/--cache-type-k\s+(\S+)/)?.[1] ?? "");
+    const v = quality(args.match(/--cache-type-v\s+(\S+)/)?.[1] ?? "");
+    if (k > 0 && v > 0)
+        return 0.6 * k + 0.4 * v;
+    return Math.max(k, v);
 }
 
 function isSafe(result, confirmMib = DEFAULT_CONFIRM_MIB) {

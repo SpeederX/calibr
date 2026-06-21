@@ -57,6 +57,18 @@ function ConvertTo-ContextSizeList {
         ForEach-Object { [int]$_ })
 }
 
+function Get-ContextCandidateKv {
+    param($Candidate)
+    $fallback = if ($Candidate.kv) { [string]$Candidate.kv } else { "q8_0" }
+    $k = if ($Candidate.kv_k) { [string]$Candidate.kv_k } else { $fallback }
+    $v = if ($Candidate.kv_v) { [string]$Candidate.kv_v } else { $fallback }
+    return @{
+        k = $k
+        v = $v
+        label = $(if ($k -eq $v) { "kv=$k" } else { "kvk=${k}_kvv=$v" })
+    }
+}
+
 function Get-PlanWorkloadIdentity {
     param(
         [ValidateSet("baseline", "prefill", "kv-fill")]
@@ -254,8 +266,11 @@ function Invoke-Plan {
     $ctxOverride = @($PlanningPolicy.context_sizes | ForEach-Object { [int]$_ })
     if ($ctxOverride -and $ctxOverride.Count -gt 0) {
         $kvByCtx = @{}
-        foreach ($c in $cfg.context_candidates) { $kvByCtx[[int]$c.ctx] = $c.kv }
-        $ctxCandidates = @($ctxOverride | ForEach-Object { @{ ctx = $_; kv = $(if ($kvByCtx.ContainsKey($_)) { $kvByCtx[$_] } else { 'q8_0' }) } })
+        foreach ($c in $cfg.context_candidates) { $kvByCtx[[int]$c.ctx] = Get-ContextCandidateKv -Candidate $c }
+        $ctxCandidates = @($ctxOverride | ForEach-Object {
+            $kv = if ($kvByCtx.ContainsKey($_)) { $kvByCtx[$_] } else { @{ k = 'q8_0'; v = 'q8_0' } }
+            @{ ctx = $_; kv_k = $kv.k; kv_v = $kv.v }
+        })
     }
 
     $plan = @()
@@ -341,8 +356,9 @@ function Invoke-Plan {
                     @($ctxCandidates | Where-Object { [int]$_.ctx -eq $perModelCap }).Count -eq 0) {
                     $next = @($ctxCandidates | Where-Object { [int]$_.ctx -gt $perModelCap } | Sort-Object { [int]$_.ctx } | Select-Object -First 1)
                     $fallback = @($ctxCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
-                    $kv = if ($next.Count -gt 0) { $next[0].kv } elseif ($fallback.Count -gt 0) { $fallback[0].kv } else { 'q8_0' }
-                    $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv = $kv })
+                    $source = if ($next.Count -gt 0) { $next[0] } elseif ($fallback.Count -gt 0) { $fallback[0] } else { @{ kv = 'q8_0' } }
+                    $kv = Get-ContextCandidateKv -Candidate $source
+                    $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv_k = $kv.k; kv_v = $kv.v })
                     $modelCandidates = @($modelCandidates | Sort-Object { [int]$_.ctx })
                 }
                 $validCandidates = @()
@@ -352,27 +368,28 @@ function Invoke-Plan {
                         continue
                     }
                     $validCandidates += $c
+                    $kv = Get-ContextCandidateKv -Candidate $c
                     $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
-                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base$fitArg"
+                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($kv.k) --cache-type-v $($kv.v) $base$fitArg"
                     $plan += (New-PlanItem `
                         -meta $m -sweep $sweep -level $level -extraArgs $argStr `
-                        -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx `
+                        -label "ctx=$($c.ctx)_$($kv.label)" -idx $idx `
                         -Calibration $calibration -CalibrationId $calibrationId)
                     $idx++
                 }
                 $anchor = @($validCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
                 if ($anchor.Count -gt 0) {
                     $anchorCtx = [int]$anchor[0].ctx
-                    $anchorKv = $anchor[0].kv
+                    $anchorKv = Get-ContextCandidateKv -Candidate $anchor[0]
                     $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
-                    $argStr = "--ctx-size $anchorCtx --gpu-layers 99 --cache-type-k $anchorKv --cache-type-v $anchorKv $base$fitArg"
+                    $argStr = "--ctx-size $anchorCtx --gpu-layers 99 --cache-type-k $($anchorKv.k) --cache-type-v $($anchorKv.v) $base$fitArg"
                     $profiles = @(Get-WorkloadProfilesForContext `
                         -ContextSize $anchorCtx `
                         -Config $cfg `
                         -Mode $PlanningPolicy.workload_sweep)
                     foreach ($profile in $profiles) {
                         $target = if ($profile.kind -eq "prefill") { $profile.prefill_tokens } else { $profile.kv_fill_tokens }
-                        $label = "ctx=${anchorCtx}_kv=${anchorKv}"
+                        $label = "ctx=${anchorCtx}_$($anchorKv.label)"
                         $plan += (New-PlanItem `
                             -meta $m -sweep $sweep -level $level -extraArgs $argStr -label $label -idx $idx `
                             -WorkloadKind $profile.kind `

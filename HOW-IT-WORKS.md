@@ -44,7 +44,9 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - derive lineage/series/model/variant metadata;
    - pair sibling multimodal projectors.
 4. **Expand run configs**
-   - context/KV sweep for models expected to fit;
+   - quality-first context/KV sweep for models expected to fit: `q8_0/q8_0`
+     normally, `q8_0/q5_1` as a moderate long-context compromise, and
+     `q4_0/q4_0` only for the final rescue candidate;
    - for MoE models, estimate expert tensor placement from GGUF metadata and
      load-probe an initial `--n-cpu-moe` allocation anchor;
    - for dense models, estimate an initial GPU-layer position from GGUF tensor
@@ -101,6 +103,11 @@ expert weights through WDDM shared memory even when dedicated VRAM looked
 acceptable at startup. The actual benchmark therefore samples near the anchor,
 at proportional CPU-offload points, and near full expert CPU offload. Winner
 selection remains empirical and can prefer a much larger `--n-cpu-moe`.
+
+Context candidates may define K and V cache types independently. The legacy
+single `kv` field remains shorthand for a symmetric pair. Winner tie-breaking
+scores both sides, with more weight on K, so a larger context using rescue
+`q4_0/q4_0` does not silently outrank a near-equivalent higher-quality cache.
 
 ## Why internal stages still exist
 
