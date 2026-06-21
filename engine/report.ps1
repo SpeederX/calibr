@@ -193,7 +193,7 @@ function Invoke-Report {
     } else { 500 }
     $winners = @{}
     foreach ($r in ($results | Where-Object {
-        $_.ok -and (-not $_.workload_kind -or $_.workload_kind -eq 'baseline')
+        $_.ok -and -not $_.control_kind -and (-not $_.workload_kind -or $_.workload_kind -eq 'baseline')
     })) {
         $key = Get-GroupKey -r $r -mode $GroupBy
         if (Test-IsBetterWinner -candidate $r -current $winners[$key] -preferSpeed:$PreferSpeed -sharedConfirmMib $confirmMib) {

@@ -7,6 +7,7 @@ export interface BenchItem {
   level?: string;
   sweep?: string;
   workload_kind?: "baseline" | "prefill" | "kv-fill";
+  control_kind?: "vanilla" | null;
   prefill_target_tokens?: number;
   kv_fill_target_tokens?: number;
   reasoning_mode?: string | null;
@@ -450,6 +451,7 @@ export function aggregateBenchResult(payload: {
     level: item.level,
     sweep: item.sweep,
     workload_kind: item.workload_kind ?? "baseline",
+    control_kind: item.control_kind ?? null,
     prefill_target_tokens: int(item.prefill_target_tokens),
     kv_fill_target_tokens: int(item.kv_fill_target_tokens),
     reasoning_mode: item.reasoning_mode,

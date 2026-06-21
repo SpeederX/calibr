@@ -18,6 +18,14 @@ test("KV quality ranks mixed q8/q5 above the q4 rescue profile", () => {
   assert.ok(compromise > rescue);
 });
 
+test("vanilla controls never participate in winner selection", () => {
+  const winner = groupWinners([
+    { model: "m", id: "vanilla", ok: true, eval_tps: 100, control_kind: "vanilla" },
+    { model: "m", id: "tuned", ok: true, eval_tps: 80 },
+  ], "speed").m;
+  assert.equal(winner.id, "tuned");
+});
+
 const fixturePath = join(process.cwd(), "..", "tests", "fixtures", "winner-policy-cases.json");
 const CASES = JSON.parse(readFileSync(fixturePath, "utf8"));
 

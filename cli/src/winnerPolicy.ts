@@ -11,6 +11,7 @@ export interface WinnerPolicyResult {
   ctx_size?: number | null;
   extra_args?: string | null;
   workload_kind?: string | null;
+  control_kind?: string | null;
   [key: string]: unknown;
 }
 
@@ -64,7 +65,7 @@ export function isSafe(result: WinnerPolicyResult, confirmMib = DEFAULT_CONFIRM_
 }
 
 export function isWinnerEligible(result: WinnerPolicyResult): boolean {
-  return !result.workload_kind || result.workload_kind === "baseline";
+  return !result.control_kind && (!result.workload_kind || result.workload_kind === "baseline");
 }
 
 export function computeAnchors(results: WinnerPolicyResult[]): WinnerPolicyAnchors {

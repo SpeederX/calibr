@@ -17,6 +17,25 @@ calibr deliberately keeps two clocks separate:
 Server metrics describe inference. Client metrics describe delivery. A client
 timestamp must not be presented as token-generation time.
 
+## Vanilla control and calibr uplift
+
+Every model has one `control_kind = vanilla` run using llama.cpp defaults
+instead of calibr's launch tuning. It uses the same measured request and repeat
+policy as the optimized configs, but context and allocation may differ because
+that difference is part of the product comparison.
+
+When both runs complete:
+
+`uplift_tps = winner_eval_tps - vanilla_eval_tps`
+
+`uplift_pct = uplift_tps / vanilla_eval_tps * 100`
+
+The report compares a winner with the vanilla control from the same benchmark
+session when possible. If vanilla fails to load or complete and an optimized
+config succeeds, the outcome is reported as “calibr made it usable”; no
+percentage is calculated from a missing or zero baseline. Controls are
+excluded from winner selection and launcher generation.
+
 ## Request sequence
 
 Each measured configuration runs:

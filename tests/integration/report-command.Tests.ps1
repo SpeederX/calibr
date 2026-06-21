@@ -86,6 +86,14 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($source -match "workload_kind.*baseline") "PowerShell winner filter must require baseline workloads"
         Assert-True ($tpl -match "isWinnerEligible") "browser winner policy must exclude diagnostic workloads"
     }
+    It "shows vanilla llama.cpp controls without treating them as winners or launchers" {
+        $source = Get-Content (Join-Path $labRoot "engine\report.ps1") -Raw
+        Assert-True ($source -match "not.*control_kind") "PowerShell winner filter must exclude controls"
+        Assert-True ($tpl -match "function vanillaClaim") "vanilla uplift helper missing"
+        Assert-True ($tpl -match "calibr made it usable") "loadability claim missing"
+        Assert-True ($tpl -match "vanilla control") "control row label missing"
+        Assert-True ($tpl -match "!c\.control_kind") "controls must not expose launcher downloads"
+    }
     It "marks winners visually in scatter, bars, and tables" {
         Assert-True ($tpl -match 'is-winner')                 "is-winner CSS class missing"
         Assert-True ($tpl -match 'scatter-dot\.is-winner')    "scatter winner styling missing"

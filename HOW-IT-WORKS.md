@@ -44,6 +44,8 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - derive lineage/series/model/variant metadata;
    - pair sibling multimodal projectors.
 4. **Expand run configs**
+   - add one untuned llama.cpp control per model, excluded from winner
+     selection;
    - quality-first context/KV sweep for models expected to fit: `q8_0/q8_0`
      normally, `q8_0/q5_1` as a moderate long-context compromise, and
      `q4_0/q4_0` only for the final rescue candidate;
@@ -69,6 +71,15 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - render `data/report.html`;
    - generate launch scripts;
    - retain raw result JSON and per-run telemetry.
+
+The vanilla control receives only the model/support assets plus unavoidable
+benchmark harness arguments for localhost networking and temporary state. It
+does not receive calibr's base arguments, context size, cache types, GPU-layer
+count, MoE placement, batch/thread tuning, or `--fit off`. It uses the same
+prompt, generation length, request policy, warmup policy, and repeat count as
+the optimized configs. This is a product-value comparison against real
+llama.cpp defaults, not an isolated single-flag microbenchmark; the report
+therefore shows both configurations and labels the claim accordingly.
 
 Adaptive offload probes reuse the TypeScript llama-server lifecycle and
 hardware sampler. They force `--fit off`, disable warmup and prompt-cache

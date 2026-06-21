@@ -232,6 +232,7 @@ function New-AggregatedBenchResult {
         level           = $item.level
         sweep           = $item.sweep
         workload_kind   = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+        control_kind    = $item.control_kind
         prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
         kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
         reasoning_mode  = $item.reasoning_mode
@@ -1422,6 +1423,7 @@ function Invoke-OneBench {
             id = $item.id; label = $item.label; model = $item.model; variant = $item.variant
             series = $item.series; level = $item.level; sweep = $item.sweep
             workload_kind = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+            control_kind = $item.control_kind
             prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
             kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
             reasoning_mode = $item.reasoning_mode; template_note = $item.template_note
@@ -1516,6 +1518,7 @@ function Invoke-OneBench {
                 level           = $item.level
                 sweep           = $item.sweep
                 workload_kind   = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+                control_kind    = $item.control_kind
                 prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
                 kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
                 reasoning_mode  = $item.reasoning_mode

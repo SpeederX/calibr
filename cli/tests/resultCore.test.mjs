@@ -16,7 +16,7 @@ import {
   runStats,
 } from "../dist/resultCore.js";
 
-function item() {
+function item(overrides = {}) {
   return {
     id: "qwen3.5-9b-q4km__ctx16384_q8",
     label: "Qwen3.5-9B Q4_K_M @ ctx=16384_kv=q8_0",
@@ -47,6 +47,7 @@ function item() {
     model_path: "C:\\models\\qwen.gguf",
     mmproj_path: null,
     extra_args: "--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0",
+    ...overrides,
   };
 }
 
@@ -155,6 +156,16 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   assert.equal(result.disk_read_peak_mb_s, 500);
   assert.equal(result.bench_session_id, "s1");
   assert.equal(result.llama_server_version, "b9999");
+});
+
+test("aggregateBenchResult preserves vanilla control provenance", () => {
+  const result = aggregateBenchResult({
+    item: item({ control_kind: "vanilla", workload_kind: "baseline", extra_args: "" }),
+    cfg: cfg(),
+    runs: [run(0, 7000, 30, 410, 46)],
+  });
+  assert.equal(result.control_kind, "vanilla");
+  assert.equal(result.extra_args, "");
 });
 
 test("fit and failure classification match the transitional engine rules", () => {

@@ -70,7 +70,8 @@ const presets = {
 
 test("invokePlan matches the PowerShell-equivalent mixed-sweep fixture", () => {
   const plan = invokePlan(catalog, cfg, modelsCatalog, presets);
-  assert.deepEqual(plan.map((p) => ({
+  assert.equal(plan.filter((p) => p.control_kind === "vanilla").length, 3);
+  assert.deepEqual(plan.filter((p) => !p.control_kind).map((p) => ({
     id: p.id,
     model: p.model,
     level: p.level,
@@ -150,7 +151,7 @@ test("invokePlan applies preset context caps and explicit context overrides", ()
     presetMaxCtx: 32768,
     contextSizes: [8192, 16384, 65536],
   });
-  assert.deepEqual(plan.map((p) => p.label), [
+  assert.deepEqual(plan.filter((p) => !p.control_kind).map((p) => p.label), [
     "Qwen3.5-4B Q4_K_M @ ctx=8192_kv=q8_0",
     "Qwen3.5-4B Q4_K_M @ ctx=16384_kv=q8_0",
   ]);
@@ -177,11 +178,22 @@ test("context candidates preserve K quality before using the final q4 rescue pro
     qualityCfg,
     [],
     {},
-  );
+  ).filter((item) => !item.control_kind);
   assert.match(standard.extra_args, /--cache-type-k q8_0 --cache-type-v q8_0/);
   assert.match(compromise.extra_args, /--cache-type-k q8_0 --cache-type-v q5_1/);
   assert.match(compromise.label, /kvk=q8_0_kvv=q5_1/);
   assert.match(rescue.extra_args, /--cache-type-k q4_0 --cache-type-v q4_0/);
+});
+
+test("vanilla control carries no tuning arguments and is excluded from workload sweeps", () => {
+  const plan = invokePlan(catalog.slice(0, 1), cfg, modelsCatalog, presets, {
+    workloadSweep: "all",
+  });
+  const controls = plan.filter((item) => item.control_kind === "vanilla");
+  assert.equal(controls.length, 1);
+  assert.equal(controls[0].extra_args, "");
+  assert.equal(controls[0].workload_kind, "baseline");
+  assert.match(controls[0].id, /vanilla_llama_cpp/);
 });
 
 test("plan item identity includes non-baseline workload targets", () => {

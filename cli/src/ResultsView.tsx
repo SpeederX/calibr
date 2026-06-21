@@ -61,6 +61,7 @@ function kvFromArgs(args?: string): string {
 }
 
 function workloadFromResult(result: Result): string {
+  if (result.control_kind === "vanilla") return "vanilla llama.cpp control";
   if (result.workload_kind === "prefill") return `prefill ${result.workload_prompt_tokens ?? result.prefill_target_tokens ?? "?"} tok`;
   if (result.workload_kind === "kv-fill") {
     const cached = result.kv_fill_cached_tokens != null ? ` · ${result.kv_fill_cached_tokens} cached` : "";

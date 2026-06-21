@@ -155,6 +155,15 @@ There is not one universal winner. The report exposes profiles:
 - **Efficiency**: best tokens per watt when GPU power data is available.
 - **Overall**: weighted view across speed, safety, and efficiency.
 
+Each model also gets one untuned llama.cpp control run. It supplies the model
+(and a required projector, when present) but none of calibr's context, KV,
+offload, MoE, batch, thread, or fit flags. The request workload and repetition
+policy stay identical. Controls never become winners or launchers; the report
+uses them to show the selected config's absolute and percentage throughput
+uplift. If the vanilla control cannot load or complete while a calibrated
+config does, the report records that calibr made the model usable instead of
+inventing a percentage from a zero baseline.
+
 "Safe" currently means no confirmed shared-memory spill. On Windows, that is a
 delta above `wddm_detection.shared_delta_confirm_mib` (default `500 MiB`) in
 the WDDM shared-memory counter. A high VRAM saturation warning also appears
