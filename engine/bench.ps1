@@ -223,6 +223,8 @@ function New-AggregatedBenchResult {
     $flagSharedPos = ($sharedPeakMed -gt $confirmThresh)
 
     $result = [ordered]@{
+        # The portable PowerShell fallback does not yet emit sampled energy.
+        # CUDA runs use the TypeScript coordinator and metric schema v5.
         metric_schema_version = 4
         id              = $item.id
         label           = $item.label

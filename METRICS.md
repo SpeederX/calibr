@@ -327,6 +327,28 @@ RAM delta = available RAM baseline - minimum available RAM
 Arithmetic mean of the hardware samples collected during the run. Power,
 temperature, RAM growth, and disk throughput are retained as peaks.
 
+### `run_duration_ms`
+
+Wall-clock duration from the start of a llama-server run through process
+shutdown. Each run stores full UTC `run_started_at` and `run_ended_at`
+timestamps, so durations remain correct when a benchmark crosses midnight.
+The aggregate config value is the sum across repetitions; the median is also
+stored as `run_duration_median_ms`.
+
+### `gpu_energy_wh`
+
+Approximate GPU-board energy derived by integrating sampled `nvidia-smi` power
+over elapsed time with the trapezoidal rule:
+
+```text
+energy_Wh = sum(((power[i-1] + power[i]) / 2) * delta_hours)
+```
+
+The last observed power value is extended to the recorded run end. This is an
+estimate at the sampling frequency, not a wall-socket measurement. Config
+energy is summed across repetitions; the report sums configs in the selected
+session to show campaign energy.
+
 ## Aggregation across runs
 
 Typical varying metrics use the median, not the maximum. For three runs:
@@ -341,7 +363,8 @@ temperature, RAM growth, and disk throughput use the maximum.
 
 ## Compatibility
 
-Metric schema version 4 makes one full streaming request the common source for
+Metric schema version 5 adds full run timestamps, duration, and integrated GPU
+energy. Version 4 makes one full streaming request the common source for
 throughput and latency. Version 3 introduced the server/client clock split.
 Legacy aliases remain:
 

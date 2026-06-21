@@ -168,6 +168,36 @@ test("aggregateBenchResult preserves vanilla control provenance", () => {
   assert.equal(result.extra_args, "");
 });
 
+test("aggregateBenchResult sums measured duration and energy across repetitions", () => {
+  const first = {
+    ...run(0, 7000, 30, 410, 46),
+    run_started_at: "2026-06-21T10:00:00.000Z",
+    run_ended_at: "2026-06-21T10:00:02.000Z",
+    run_duration_ms: 2_000,
+    gpu_energy_wh: 0.05,
+    gpu_energy_j: 180,
+  };
+  const second = {
+    ...run(1, 7100, 40, 420, 55),
+    run_started_at: "2026-06-21T10:00:03.000Z",
+    run_ended_at: "2026-06-21T10:00:07.000Z",
+    run_duration_ms: 4_000,
+    gpu_energy_wh: 0.1,
+    gpu_energy_j: 360,
+  };
+  const result = aggregateBenchResult({
+    item: item(),
+    cfg: cfg(),
+    runs: [first, second],
+  });
+  assert.equal(result.run_started_at, "2026-06-21T10:00:00.000Z");
+  assert.equal(result.run_ended_at, "2026-06-21T10:00:07.000Z");
+  assert.equal(result.run_duration_ms, 6_000);
+  assert.equal(result.run_duration_median_ms, 2_000);
+  assert.equal(result.gpu_energy_wh, 0.15);
+  assert.equal(result.gpu_energy_j, 540);
+});
+
 test("fit and failure classification match the transitional engine rules", () => {
   assert.equal(inferFitStatus("unknown", true, 40, 500), "success");
   assert.equal(inferFitStatus("unknown", true, 800, 500), "failed_but_running");
@@ -250,7 +280,7 @@ test("buildReportRows assigns cold load and disk once per model", () => {
   assert.equal(rows[0].model_cold_load_ms, 1500);
   assert.equal(rows[0].model_cold_disk_read_peak_mb_s, 400);
   assert.equal(rows[1].model_cold_load_ms, 1500);
-  assert.equal(rows[1].metric_schema_version, 4);
+  assert.equal(rows[1].metric_schema_version, 5);
 });
 
 test("resultCoreCli reads a JSON-file aggregate payload", () => {

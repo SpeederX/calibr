@@ -42,7 +42,7 @@ models to consider; sweep chooses how each model is measured.
 
 ### Run
 
-One measured execution of one run config. In metric schema v4, a run uses one
+One measured execution of one run config. In metric schema v5, a run uses one
 full-length streaming request after optional warm-up and KV reset.
 
 ### Workload profile

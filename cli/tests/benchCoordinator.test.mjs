@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runBenchCoordinator } from "../dist/benchCoordinator.js";
+import { integrateGpuEnergyWh, runBenchCoordinator } from "../dist/benchCoordinator.js";
 
 function child() {
   const proc = new EventEmitter();
@@ -19,6 +19,23 @@ function child() {
   };
   return proc;
 }
+
+test("integrateGpuEnergyWh integrates sampled board power across elapsed time", () => {
+  const wh = integrateGpuEnergyWh([
+    { elapsed_ms: 0, gpu_power_w: 100 },
+    { elapsed_ms: 1_000, gpu_power_w: 200 },
+    { elapsed_ms: 2_000, gpu_power_w: 100 },
+  ]);
+  assert.equal(wh, 300 / 3600);
+});
+
+test("integrateGpuEnergyWh extends final sampled power to the run end", () => {
+  const wh = integrateGpuEnergyWh([
+    { elapsed_ms: 0, gpu_power_w: 50 },
+    { elapsed_ms: 1_000, gpu_power_w: 50 },
+  ], 2_000);
+  assert.equal(wh, 100 / 3600);
+});
 
 test("runBenchCoordinator repeats runs and aggregates in one process", async () => {
   const root = mkdtempSync(join(tmpdir(), "calibr-coordinator-"));

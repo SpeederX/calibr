@@ -280,6 +280,8 @@
         <tr><td><code>server_ttft_ms</code></td><td>Server-side time through prefill and first-token decode.</td><td><code>prompt_ms + predicted_ms @ token 1</code></td><td>Canonical model TTFT; available only when the server emits first-token timing.</td></tr>
         <tr><td><code>tpot_ms</code> / <code>itl_p95_ms</code></td><td>Average and p95 steady-state server inter-token latency.</td><td><code>Î” predicted_ms / Î” predicted_n</code>, excluding token 1</td><td>Exposes decode stalls hidden by average throughput.</td></tr>
         <tr><td><code>eval_tps</code></td><td>Decode throughput for generated tokens.</td><td><code>generated tokens / decode seconds</code></td><td>Main sustained generation-speed metric.</td></tr>
+        <tr><td><code>gpu_energy_wh</code></td><td>Estimated GPU-board energy used across all measured repetitions of a config.</td><td><code>sum((power[i-1] + power[i]) / 2 * elapsed hours)</code></td><td>Shows the total energy cost of benchmarking, rather than only peak power.</td></tr>
+        <tr><td><code>run_duration_ms</code></td><td>Sum of measured wall-clock run durations for a config.</td><td><code>sum(run end - run start)</code></td><td>Makes repeated-run cost and campaign duration auditable across date boundaries.</td></tr>
         <tr><td><code>ttfh_ms</code></td><td>Client time until HTTP response headers are available.</td><td><code>headers received - request start</code></td><td>Separates connection/HTTP setup from streamed model output.</td></tr>
         <tr><td><code>stream_open_ms</code></td><td>Client time until the first SSE frame, which may contain no text.</td><td><code>first SSE frame - request start</code></td><td>Diagnoses stream setup and replaces the ambiguous legacy name <code>ttfr_ms</code>.</td></tr>
         <tr><td><code>client_ttft_ms</code></td><td>Client time until the first non-empty reasoning or answer delta.</td><td><code>min(first reasoning, first answer) - request start</code></td><td>Measures when the user first receives generated text.</td></tr>
@@ -426,10 +428,29 @@ function renderOverallStats() {
   const totalModels = modelsSet.size;
   const okModels = modelsWithSuccess.size;
   const pct = totalModels > 0 ? Math.round((okModels / totalModels) * 100) : 0;
+  const energyWh = VIEW.reduce((sum, d) => sum + (Number.isFinite(+d.gpu_energy_wh) ? +d.gpu_energy_wh : 0), 0);
+  const measuredMs = VIEW.reduce((sum, d) => sum + (Number.isFinite(+d.run_duration_ms) ? +d.run_duration_ms : 0), 0);
+  const starts = VIEW.map(d => Date.parse(d.run_started_at)).filter(Number.isFinite);
+  const ends = VIEW.map(d => Date.parse(d.run_ended_at)).filter(Number.isFinite);
+  const campaignMs = starts.length && ends.length ? Math.max(0, Math.max(...ends) - Math.min(...starts)) : 0;
+  const durationLabel = ms => {
+    const seconds = Math.round(ms / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const rest = seconds % 60;
+    return (hours ? hours + 'h ' : '') + minutes + 'm ' + rest + 's';
+  };
+  const energyLabel = energyWh >= 1000 ? (energyWh / 1000).toFixed(3) + ' kWh' : energyWh.toFixed(2) + ' Wh';
+  const telemetrySummary = energyWh > 0 || measuredMs > 0
+    ? ' Estimated GPU energy: <b>' + energyLabel + '</b>; measured run time: <b>' +
+      durationLabel(measuredMs) + '</b>' +
+      (campaignMs > 0 ? '; campaign elapsed: <b>' + durationLabel(campaignMs) + '</b>.' : '.')
+    : '';
   document.getElementById('overall-pct').innerHTML =
     '<b>' + okModels + '/' + totalModels + ' models</b> have at least one successful config ' +
     '(<b>' + pct + '%</b>). ' +
-    VIEW.length + ' bench configs in view, ' + VIEW.filter(d => d.ok).length + ' ok.';
+    VIEW.length + ' bench configs in view, ' + VIEW.filter(d => d.ok).length + ' ok.' +
+    telemetrySummary;
 }
 
 function filterByScope(data, scope) {
