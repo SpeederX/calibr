@@ -116,6 +116,19 @@ expert weights through WDDM shared memory even when dedicated VRAM looked
 acceptable at startup. The actual benchmark therefore samples near the anchor,
 at proportional CPU-offload points, and near full expert CPU offload. Winner
 selection remains empirical and can prefer a much larger `--n-cpu-moe`.
+When diagnostic workloads are enabled, calibr completes the baseline MoE
+sweep first, selects its empirical speed winner, then runs the configured
+prefill and KV-fill targets only on that placement. This preserves diagnostic
+coverage without multiplying every MoE allocation candidate by every workload.
+Large WDDM shared allocations remain visible for MoE, but are not called
+confirmed spill unless llama.cpp itself reports a fit failure: CPU expert
+mapping can legitimately appear in the shared-memory counter.
+
+Cache reuse belongs to the current benchmark campaign even when the underlying
+measurement is older. Reused results retain their original
+`measurement_session_*` provenance while their `bench_session_*` fields are
+stamped with the campaign that consumed them, so the report's latest-session
+view does not hide valid cached baselines.
 
 Context candidates may define K and V cache types independently. The legacy
 single `kv` field remains shorthand for a symmetric pair. Winner tie-breaking

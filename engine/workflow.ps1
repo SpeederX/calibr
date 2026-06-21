@@ -76,6 +76,82 @@ function Invoke-WorkflowBenchCycle {
     Invoke-Discover
     Invoke-Plan -PlanningPolicy $PlanningPolicy
     Invoke-Bench
+    if ((Add-MoeWorkloadDiagnostics -PlanningPolicy $PlanningPolicy) -gt 0) {
+        Invoke-Bench
+    }
+}
+
+function Add-MoeWorkloadDiagnostics {
+    param([hashtable]$PlanningPolicy)
+
+    $mode = if ($PlanningPolicy.workload_sweep) { [string]$PlanningPolicy.workload_sweep } else { 'baseline' }
+    if ($mode -eq 'baseline' -or -not (Test-Path $CALIBR_PLAN)) { return 0 }
+
+    $cfg = Get-Config
+    $plan = @(Get-Content $CALIBR_PLAN -Raw | ConvertFrom-Json | ForEach-Object { $_ })
+    $existingIds = @{}
+    foreach ($item in $plan) { $existingIds[[string]$item.id] = $true }
+    $added = @()
+
+    $groups = @($plan | Where-Object {
+        $_.sweep -eq 'moe-cpu' -and
+        -not $_.control_kind -and
+        ((-not $_.workload_kind) -or $_.workload_kind -eq 'baseline')
+    } | Group-Object model_path)
+
+    foreach ($group in $groups) {
+        $measured = @()
+        foreach ($item in @($group.Group)) {
+            $resultPath = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
+            if (-not (Test-Path $resultPath)) { continue }
+            $result = Get-Content $resultPath -Raw | ConvertFrom-Json
+            if ($result.ok -and [double]$result.eval_tps -gt 0) {
+                $measured += [pscustomobject]@{ item = $item; result = $result }
+            }
+        }
+        if ($measured.Count -eq 0) { continue }
+
+        # Diagnostics follow the empirically fastest baseline placement. This
+        # keeps the second pass bounded while testing the configuration users
+        # would actually launch, instead of multiplying every MoE candidate by
+        # every prefill/KV target.
+        $anchor = @($measured | Sort-Object `
+            @{ Expression = { [double]$_.result.eval_tps }; Descending = $true }, `
+            @{ Expression = { [double]$_.result.prompt_tps }; Descending = $true } |
+            Select-Object -First 1)[0]
+        $source = $anchor.item
+        $ctx = if ([string]$source.extra_args -match '--ctx-size\s+(\d+)') {
+            [int]$Matches[1]
+        } elseif ($cfg.planning.moe_planning.context_size) {
+            [int]$cfg.planning.moe_planning.context_size
+        } else { 16384 }
+
+        foreach ($profile in @(Get-WorkloadProfilesForContext -ContextSize $ctx -Config $cfg -Mode $mode)) {
+            $target = if ($profile.kind -eq 'prefill') { [int]$profile.prefill_tokens } else { [int]$profile.kv_fill_tokens }
+            $suffix = if ($profile.kind -eq 'prefill') { "prefill_$target" } else { "kvfill_$target" }
+            $id = "$($source.id)__$suffix"
+            if ($existingIds.ContainsKey($id)) { continue }
+
+            $clone = [ordered]@{}
+            foreach ($property in $source.PSObject.Properties) {
+                $clone[$property.Name] = $property.Value
+            }
+            $clone.id = $id
+            $clone.label = "$($source.label) [$($profile.kind)=$target]"
+            $clone.workload_kind = $profile.kind
+            $clone.prefill_target_tokens = [int]$profile.prefill_tokens
+            $clone.kv_fill_target_tokens = [int]$profile.kv_fill_tokens
+            $clone.diagnostic_source_id = $source.id
+            $added += [pscustomobject]$clone
+            $existingIds[$id] = $true
+        }
+    }
+
+    if ($added.Count -eq 0) { return 0 }
+    $combinedPlan = @($plan) + @($added)
+    ConvertTo-Json -InputObject @($combinedPlan) -Depth 10 | Out-File -Encoding utf8 $CALIBR_PLAN
+    Write-Host ("[plan] added {0} MoE workload diagnostics from empirical speed winner(s)" -f $added.Count) -ForegroundColor Cyan
+    return $added.Count
 }
 
 function Resolve-WorkflowCatalogScope {
@@ -170,6 +246,9 @@ function Invoke-CatalogEntry {
 
     $script:Model = $Entry.model
     Invoke-Bench
+    if ((Add-MoeWorkloadDiagnostics -PlanningPolicy $PlanningPolicy) -gt 0) {
+        Invoke-Bench
+    }
 
     $timer.Stop()
     Write-Host ("[sample-done {0}/{1}] {2} elapsed_ms={3}" -f $Number, $Total, $Entry.id, $timer.ElapsedMilliseconds)

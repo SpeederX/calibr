@@ -522,6 +522,10 @@ function kvQualityValue(result) {
 }
 
 function isSafe(result, confirmMib = DEFAULT_CONFIRM_MIB) {
+    if (result.sweep === "moe-cpu" && result.fit_status_source !== "llama.cpp")
+        return true;
+    if (result.fit_status === "failed_but_running")
+        return false;
     return finiteNumber(result.shared_peak_mib) <= confirmMib;
 }
 

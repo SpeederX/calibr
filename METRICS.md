@@ -312,7 +312,10 @@ VRAM run = system VRAM peak - pre-run VRAM baseline
 ### `shared_peak_mib`
 
 Growth in shared GPU memory above its pre-run baseline. calibr treats it as
-confirmed spill only after the configured confirmation threshold.
+confirmed spill only after the configured confirmation threshold. For
+`moe-cpu` configs, shared allocation can be intentional CPU expert mapping;
+it remains diagnostic and affects fit only when llama.cpp explicitly reports
+a fit failure. Throughput degradation remains the empirical cost signal.
 
 ### `ram_used_peak_mib`
 

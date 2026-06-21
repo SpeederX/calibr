@@ -92,7 +92,7 @@
       "prefill_tokens": [512, 2048, 8192, 32768],
       "kv_fill_ratios": [0.25, 0.5, 0.75, 0.9],
       "context_reserve_tokens": 512,
-      "_comment": "Opt-in diagnostic loads applied only to the largest valid context config per model. Reserve leaves room for chat-template overhead, the measured suffix, and generated tokens."
+      "_comment": "Opt-in diagnostic loads use the largest valid context config for dense/context sweeps. For MoE, the baseline allocation sweep completes first and diagnostics run only on its empirical speed winner. Reserve leaves room for chat-template overhead, the measured suffix, and generated tokens."
     }
   },
 

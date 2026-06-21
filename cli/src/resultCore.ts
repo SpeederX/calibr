@@ -78,6 +78,7 @@ export interface BenchRun {
   compute_host_mib?: number | null;
   layers_offloaded?: string | null;
   fit_status?: string | null;
+  fit_status_source?: "llama.cpp" | "inferred" | null;
   unsupported_architecture?: string | null;
   ttft_sec?: number | null;
   prompt_ms?: number | null;
@@ -271,6 +272,7 @@ export function finalizeBenchRun(payload: {
     ...payload.run,
     ...parsed,
     fit_status: inferFitStatus(parsed.fit_status, payload.run.ok === true, sharedPeak, confirm),
+    fit_status_source: parsed.fit_status ? "llama.cpp" : "inferred",
     wddm_vram_saturation: round(saturation, 3),
     wddm_flag_high_vram: saturation > threshold,
     wddm_flag_shared_pos: sharedPeak > confirm,
@@ -507,7 +509,13 @@ export function aggregateBenchResult(payload: {
     compute_cuda_mib: first.compute_cuda_mib,
     compute_host_mib: first.compute_host_mib,
     layers_offloaded: first.layers_offloaded,
-    fit_status: inferFitStatus(first.fit_status, true, sharedPeakMed, confirm),
+    fit_status: item.sweep === "moe-cpu" && first.fit_status_source !== "llama.cpp"
+      ? "success"
+      : inferFitStatus(first.fit_status, true, sharedPeakMed, confirm),
+    fit_status_source: first.fit_status_source ?? "inferred",
+    shared_memory_interpretation: item.sweep === "moe-cpu"
+      ? "cpu_expert_mapping_or_wddm_pressure"
+      : "wddm_pressure",
     vram_peak_mib: vramPeakMed,
     vram_total_peak_mib: vramTotalPeakMed,
     vram_process_peak_mib: roundOrNull(vramProcessPeakMed, 0),

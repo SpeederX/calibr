@@ -45,6 +45,21 @@ test("isSafe uses the shared-memory confirmation threshold", () => {
   assert.equal(isSafe({ shared_peak_mib: 501 }, 500), false);
 });
 
+test("isSafe does not treat inferred MoE shared allocation as confirmed spill", () => {
+  assert.equal(isSafe({
+    sweep: "moe-cpu",
+    shared_peak_mib: 10_000,
+    fit_status: "failed_but_running",
+    fit_status_source: "inferred",
+  }, 500), true);
+  assert.equal(isSafe({
+    sweep: "moe-cpu",
+    shared_peak_mib: 10_000,
+    fit_status: "failed_but_running",
+    fit_status_source: "llama.cpp",
+  }, 500), false);
+});
+
 test("winnerScore disqualifies efficiency when power is unavailable", () => {
   assert.equal(winnerScore({ eval_tps: 100, gpu_power_peak_w: 0 }, "efficiency"), -Infinity);
 });
