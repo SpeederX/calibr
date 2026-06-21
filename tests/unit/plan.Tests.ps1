@@ -39,6 +39,17 @@ Describe "Planning policy" {
         Assert-Equal 131072 $policy.max_context
         Assert-Equal 2 $policy.context_sizes.Count
     }
+
+    It "supports asymmetric quality-first KV cache candidates" {
+        $standard = Get-ContextCandidateKv -Candidate @{ kv = "q8_0" }
+        $compromise = Get-ContextCandidateKv -Candidate @{ kv_k = "q8_0"; kv_v = "q5_1" }
+        Assert-Equal "q8_0" $standard.k
+        Assert-Equal "q8_0" $standard.v
+        Assert-Equal "kv=q8_0" $standard.label
+        Assert-Equal "q8_0" $compromise.k
+        Assert-Equal "q5_1" $compromise.v
+        Assert-Equal "kvk=q8_0_kvv=q5_1" $compromise.label
+    }
 }
 
 Describe "Adaptive offload adapter" {

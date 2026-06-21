@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { invokePlan, newPlanItem, workloadProfilesForContext } from "../dist/planCore.js";
+import { contextCandidateKv, invokePlan, newPlanItem, workloadProfilesForContext } from "../dist/planCore.js";
 
 const cfg = {
   hardware: { vram_safety_budget_mib: 8000, cpu_cores_physical: 6, cpu_threads_logical: 12 },
@@ -154,6 +154,34 @@ test("invokePlan applies preset context caps and explicit context overrides", ()
     "Qwen3.5-4B Q4_K_M @ ctx=8192_kv=q8_0",
     "Qwen3.5-4B Q4_K_M @ ctx=16384_kv=q8_0",
   ]);
+});
+
+test("context candidates preserve K quality before using the final q4 rescue profile", () => {
+  assert.deepEqual(contextCandidateKv({ kv: "q8_0" }), {
+    k: "q8_0", v: "q8_0", label: "kv=q8_0",
+  });
+  assert.deepEqual(contextCandidateKv({ kv_k: "q8_0", kv_v: "q5_1" }), {
+    k: "q8_0", v: "q5_1", label: "kvk=q8_0_kvv=q5_1",
+  });
+
+  const qualityCfg = {
+    ...cfg,
+    context_candidates: [
+      { ctx: 65536, kv: "q8_0" },
+      { ctx: 131072, kv_k: "q8_0", kv_v: "q5_1" },
+      { ctx: 262144, kv_k: "q4_0", kv_v: "q4_0", rescue: true },
+    ],
+  };
+  const [standard, compromise, rescue] = invokePlan(
+    [{ ...catalog[0], gguf_context_length: 262144 }],
+    qualityCfg,
+    [],
+    {},
+  );
+  assert.match(standard.extra_args, /--cache-type-k q8_0 --cache-type-v q8_0/);
+  assert.match(compromise.extra_args, /--cache-type-k q8_0 --cache-type-v q5_1/);
+  assert.match(compromise.label, /kvk=q8_0_kvv=q5_1/);
+  assert.match(rescue.extra_args, /--cache-type-k q4_0 --cache-type-v q4_0/);
 });
 
 test("plan item identity includes non-baseline workload targets", () => {

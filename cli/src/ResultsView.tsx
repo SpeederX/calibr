@@ -53,6 +53,9 @@ function ctxFromArgs(args?: string): string {
 }
 
 function kvFromArgs(args?: string): string {
+  const k = args?.match(/--cache-type-k\s+(\S+)/)?.[1];
+  const v = args?.match(/--cache-type-v\s+(\S+)/)?.[1];
+  if (k && v && k !== v) return `${k}/${v}`;
   const m = args?.match(/--cache-type-k\s+(\S+)/);
   return m ? m[1] : "—";
 }

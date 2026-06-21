@@ -39,7 +39,13 @@ export interface PlanConfig {
     } | null;
   };
   bench?: { n_predict?: number | null };
-  context_candidates?: Array<{ ctx: number; kv: string }> | null;
+  context_candidates?: Array<{
+    ctx: number;
+    kv?: string;
+    kv_k?: string;
+    kv_v?: string;
+    rescue?: boolean;
+  }> | null;
   max_context_cap?: number | null;
   base_args?: string | null;
 }
@@ -92,6 +98,17 @@ function asInt(value: unknown, fallback = 0): number {
 
 function baseName(path: string): string {
   return path.split(/[\\/]/).pop() || "";
+}
+
+export function contextCandidateKv(candidate: {
+  kv?: string;
+  kv_k?: string;
+  kv_v?: string;
+}): { k: string; v: string; label: string } {
+  const fallback = candidate.kv ?? "q8_0";
+  const k = candidate.kv_k ?? fallback;
+  const v = candidate.kv_v ?? fallback;
+  return { k, v, label: k === v ? `kv=${k}` : `kvk=${k}_kvv=${v}` };
 }
 
 export function getSweepKind(meta: Pick<PlanMeta, "is_moe" | "size_mib" | "mmproj_mib">, cfg: PlanConfig): PlanItem["sweep"] {
@@ -235,9 +252,12 @@ export function invokePlan(
   let ctxCandidates = cfg.context_candidates ?? [];
   const ctxOverride = opts.contextSizes?.length ? opts.contextSizes : (opts.presetCtxSizes?.length ? opts.presetCtxSizes : null);
   if (ctxOverride) {
-    const kvByCtx: Record<number, string> = {};
-    for (const candidate of cfg.context_candidates ?? []) kvByCtx[candidate.ctx] = candidate.kv;
-    ctxCandidates = ctxOverride.map((ctx) => ({ ctx, kv: kvByCtx[ctx] ?? "q8_0" }));
+    const kvByCtx: Record<number, { kv_k: string; kv_v: string }> = {};
+    for (const candidate of cfg.context_candidates ?? []) {
+      const kv = contextCandidateKv(candidate);
+      kvByCtx[candidate.ctx] = { kv_k: kv.k, kv_v: kv.v };
+    }
+    ctxCandidates = ctxOverride.map((ctx) => ({ ctx, ...(kvByCtx[ctx] ?? { kv: "q8_0" }) }));
   }
 
   const plan: PlanItem[] = [];
@@ -256,24 +276,28 @@ export function invokePlan(
         && !ctxCandidates.some((candidate) => candidate.ctx === perModelCap)) {
         const next = ctxCandidates.find((candidate) => candidate.ctx > perModelCap);
         const fallback = ctxCandidates.at(-1);
+        const inherited = contextCandidateKv(next ?? fallback ?? { kv: "q8_0" });
         modelCandidates = [...ctxCandidates, {
           ctx: perModelCap,
-          kv: next?.kv ?? fallback?.kv ?? "q8_0",
+          kv_k: inherited.k,
+          kv_v: inherited.v,
         }].sort((a, b) => a.ctx - b.ctx);
       }
       const validCandidates = modelCandidates.filter((candidate) =>
         testCtxAllowedForModel(candidate.ctx, globalCtxCap, perModelCap));
       for (const candidate of validCandidates) {
-        const label = `ctx=${candidate.ctx}_kv=${candidate.kv}`;
-        const args = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${candidate.kv} --cache-type-v ${candidate.kv}${suffix}`;
+        const kv = contextCandidateKv(candidate);
+        const label = `ctx=${candidate.ctx}_${kv.label}`;
+        const args = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${kv.k} --cache-type-v ${kv.v}${suffix}`;
         plan.push(newPlanItem(meta, sweep, level, args, label));
       }
       const anchor = validCandidates.at(-1);
       if (anchor) {
-        const args = `--ctx-size ${anchor.ctx} --gpu-layers 99 --cache-type-k ${anchor.kv} --cache-type-v ${anchor.kv}${suffix}`;
+        const kv = contextCandidateKv(anchor);
+        const args = `--ctx-size ${anchor.ctx} --gpu-layers 99 --cache-type-k ${kv.k} --cache-type-v ${kv.v}${suffix}`;
         for (const workload of workloadProfilesForContext(anchor.ctx, cfg, opts.workloadSweep ?? "baseline")) {
           const target = workload.kind === "prefill" ? workload.prefillTokens : workload.kvFillTokens;
-          const label = `ctx=${anchor.ctx}_kv=${anchor.kv}`;
+          const label = `ctx=${anchor.ctx}_${kv.label}`;
           plan.push(newPlanItem(meta, sweep, level, args, label, workload));
         }
       }

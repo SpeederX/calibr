@@ -120,6 +120,13 @@ the current run.
 quant/variant, context/KV-cache choice, offload flags, memory behavior, and a
 ready launcher.
 
+The default context sweep is quality-first. It uses `q8_0` for both K and V
+through ordinary contexts, then preserves K at `q8_0` while using `q5_1` for V
+as the moderate long-context compromise. Symmetric `q4_0` is reserved for the
+final rescue context, where its purpose is to test whether an otherwise
+unusable configuration can run. The active llama.cpp build must advertise the
+selected cache types.
+
 For oversized dense models, guided run no longer assumes a fixed GPU-layer
 range tuned for one VRAM size. It performs bounded load-only probes using the
 detected VRAM budget, finds the highest non-spilling layer count, then
