@@ -1411,6 +1411,19 @@ function Invoke-OneBench {
         [int]$cfg.wddm_detection.shared_delta_confirm_mib
     } else { 500 }
 
+    $stampCachedResult = {
+        param($cachedResult)
+        if (-not ($cachedResult.PSObject.Properties.Name -contains 'measurement_session_id')) {
+            $cachedResult | Add-Member -NotePropertyName measurement_session_id -NotePropertyValue $cachedResult.bench_session_id -Force
+            $cachedResult | Add-Member -NotePropertyName measurement_session_started_at -NotePropertyValue $cachedResult.bench_session_started_at -Force
+        }
+        $cachedResult | Add-Member -NotePropertyName bench_session_id -NotePropertyValue $(if ($script:BENCH_SESSION_ID) { $script:BENCH_SESSION_ID } else { 'unknown' }) -Force
+        $cachedResult | Add-Member -NotePropertyName bench_session_started_at -NotePropertyValue $(if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }) -Force
+        $cachedResult | Add-Member -NotePropertyName cache_reused -NotePropertyValue $true -Force
+        $cachedResult | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $jsonFile
+        return $cachedResult
+    }
+
     # Pre-flight: the model .gguf (and its mmproj, if any) must exist on disk.
     # When a model was rotated/deleted but the catalog/plan still reference it,
     # llama-server just exits with "No such file or directory" and the run
@@ -1474,16 +1487,16 @@ function Invoke-OneBench {
                 Write-Host ("[{0}] cached failure from llama-server {1}, current is {2} - re-running" -f $item.id, $cachedVer, $script:LLAMA_SERVER_VERSION) -ForegroundColor DarkYellow
             } else {
                 Write-Host ("[{0}] cached failure (use -Force to retry)" -f $item.id) -ForegroundColor DarkGray
-                return $cached
+                return (& $stampCachedResult $cached)
             }
         } else {
             if ($null -ne $cached.runs -and $cached.runs.Count -eq $N) {
                 Write-Host ("[{0}] cached N={1} (use -Force to rerun)" -f $item.id, $N) -ForegroundColor DarkGray
-                return $cached
+                return (& $stampCachedResult $cached)
             }
             if ($null -eq $cached.runs -and $N -eq 1) {
                 Write-Host ("[{0}] cached legacy N=1 (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
-                return $cached
+                return (& $stampCachedResult $cached)
             }
             $haveN = if ($null -ne $cached.runs) { $cached.runs.Count } else { 0 }
             Write-Host ("[{0}] cache miss (have N={1}, want N={2}) - re-running" -f $item.id, $haveN, $N) -ForegroundColor DarkGray
@@ -2019,12 +2032,31 @@ function Invoke-Bench {
     $rotatedCount = 0
     $keptCount    = 0
 
+    $getAbandonmentKey = {
+        param($planItem)
+        $pathKey = [string]$planItem.model_path
+        if ($planItem.sweep -eq 'context') {
+            $args = [string]$planItem.extra_args
+            $kvK = if ($args -match '--cache-type-k\s+(\S+)') { $Matches[1] } else { 'default' }
+            $kvV = if ($args -match '--cache-type-v\s+(\S+)') { $Matches[1] } else { 'default' }
+            return "$pathKey|context|$kvK|$kvV"
+        }
+        return "$pathKey|$($planItem.sweep)"
+    }
+
     foreach ($item in $filtered) {
         $i++
         $mp = $item.model_path
+        $allAbandonmentKey = "$mp|all"
+        $sweepAbandonmentKey = & $getAbandonmentKey $item
 
-        if ($abandoned.ContainsKey($item.model)) {
-            $reason = $abandoned[$item.model]
+        $activeAbandonmentKey = if ($abandoned.ContainsKey($allAbandonmentKey)) {
+            $allAbandonmentKey
+        } elseif ($abandoned.ContainsKey($sweepAbandonmentKey)) {
+            $sweepAbandonmentKey
+        } else { $null }
+        if ($activeAbandonmentKey) {
+            $reason = $abandoned[$activeAbandonmentKey]
             Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkYellow
             $skipCount++
             $modelStatus[$mp].skip++
@@ -2058,7 +2090,7 @@ function Invoke-Bench {
         $modelStatus[$mp].done++
 
         if (-not $r.ok -and $r.unsupported_architecture) {
-            $abandoned[$item.model] = "unsupported architecture '$($r.unsupported_architecture)'"
+            $abandoned[$allAbandonmentKey] = "unsupported architecture '$($r.unsupported_architecture)'"
             Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
         }
 
@@ -2069,10 +2101,14 @@ function Invoke-Bench {
         # raises n-cpu-moe ascending = MORE on CPU = LESS GPU pressure, so a
         # failure on 28 (most-on-GPU) does NOT predict failure on 36;
         # do not abandon a moe-cpu sweep on vram_overflow.
-        if (-not $r.ok -and -not $abandoned.ContainsKey($item.model)) {
+        $isBaselineCandidate = (-not $item.control_kind) -and
+            ((-not $item.workload_kind) -or $item.workload_kind -eq 'baseline')
+        if (-not $r.ok -and $isBaselineCandidate -and
+            -not $abandoned.ContainsKey($allAbandonmentKey) -and
+            -not $abandoned.ContainsKey($sweepAbandonmentKey)) {
             $reason = Get-FailureReason -result $r -sharedConfirmMib $confirmThresh
             if ($reason -eq "vram_overflow" -and ($item.sweep -eq "context" -or $item.sweep -eq "offload")) {
-                $abandoned[$item.model] = "vram overflow at smallest config in the $($item.sweep) sweep; larger configs will be worse"
+                $abandoned[$sweepAbandonmentKey] = "vram overflow in this monotonic $($item.sweep) profile; larger configs with the same cache profile will be worse"
                 Write-Host ("  -> abandoning remaining {0}-sweep tests for model '{1}' (vram overflow detected; bigger ctx/ngl can only worsen it)" -f $item.sweep, $item.model) -ForegroundColor DarkYellow
             }
         }
@@ -2100,7 +2136,7 @@ function Invoke-Bench {
     Write-Host (" calibr - bench completed in $durStr") -ForegroundColor Cyan
     Write-Host ("   configs: {0} ok ({1}%) - {2} fail - {3} skipped / {4}{5}" -f $okCount, $okPct, $failCount, $skipCount, $total, $runsHint)
     if ($abandoned.Count -gt 0) {
-        Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
+        Write-Host ("   abandoned monotonic profiles: {0}" -f $abandoned.Count) -ForegroundColor DarkYellow
         $reasons = @($abandoned.Values | Sort-Object -Unique)
         Write-Host ("   reason: {0}" -f ($reasons -join '; ')) -ForegroundColor DarkYellow
     }

@@ -7,6 +7,9 @@ export interface WinnerPolicyResult {
   eval_tps?: number | null;
   gpu_power_peak_w?: number | null;
   shared_peak_mib?: number | null;
+  sweep?: string | null;
+  fit_status?: string | null;
+  fit_status_source?: string | null;
   vram_peak_mib?: number | null;
   ctx_size?: number | null;
   extra_args?: string | null;
@@ -61,6 +64,8 @@ export function kvQualityValue(result: WinnerPolicyResult): number {
 }
 
 export function isSafe(result: WinnerPolicyResult, confirmMib = DEFAULT_CONFIRM_MIB): boolean {
+  if (result.sweep === "moe-cpu" && result.fit_status_source !== "llama.cpp") return true;
+  if (result.fit_status === "failed_but_running") return false;
   return finiteNumber(result.shared_peak_mib) <= confirmMib;
 }
 

@@ -247,6 +247,22 @@ test("finalizeBenchRun derives WDDM flags and infers fit when stderr is silent",
   assert.equal(finalized.wddm_flag_shared_pos, true);
 });
 
+test("MoE aggregate keeps inferred shared allocation diagnostic instead of declaring fit failure", () => {
+  const moeRun = {
+    ...run(0, 7000, 10_000, 100, 12),
+    fit_status: "failed_but_running",
+    fit_status_source: "inferred",
+  };
+  const result = aggregateBenchResult({
+    item: item({ sweep: "moe-cpu" }),
+    cfg: cfg(),
+    runs: [moeRun],
+  });
+  assert.equal(result.fit_status, "success");
+  assert.equal(result.wddm_flag_shared_pos, true);
+  assert.equal(result.shared_memory_interpretation, "cpu_expert_mapping_or_wddm_pressure");
+});
+
 test("derived fields and run stats can be reconstructed from existing result JSON", () => {
   const result = {
     prompt_n: 80,
