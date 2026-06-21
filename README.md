@@ -76,6 +76,10 @@ calibr
 
 You get a menu with `guided run`, `results`, `configure llama path`, and
 `help`. Walk through it with arrow keys + enter.
+`results` contains two views: `benchmark results` keeps the model leaderboard
+and per-config drilldown, while `benchmark run logs` lists the retained
+llama-server command/stderr logs, previews their tail, and can open either the
+full log or the logs folder.
 If something won't start, open `help` -> `doctor`: it checks your CPU/GPU/OS
 and every dependency, tells you exactly what's missing and how to fix it, and
 can export a redacted bundle to attach to a GitHub issue. Start with

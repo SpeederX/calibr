@@ -75,6 +75,22 @@ test("traceAction writes JSONL and human log with redacted paths", () => {
   assert.doesNotMatch(human, new RegExp(dataDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
+test("listBenchmarkLogs excludes action traces and exposes per-config run counts", () => {
+  mkdirSync(engine.CALIBR_LOGS_DIR, { recursive: true });
+  writeFileSync(join(engine.CALIBR_LOGS_DIR, "config-a.log"),
+    "===== RUN 0 =====\nfirst\n===== RUN 1 =====\nsecond\n");
+  writeFileSync(join(engine.CALIBR_LOGS_DIR, "campaign.out.log"), "campaign output\n");
+  writeFileSync(join(engine.CALIBR_LOGS_DIR, "action-trace.log"), "trace\n");
+
+  const logs = engine.listBenchmarkLogs();
+  const config = logs.find((entry) => entry.name === "config-a.log");
+  assert.equal(config.runCount, 2);
+  assert.equal(config.kind, "config");
+  assert.equal(config.configId, "config-a");
+  assert.equal(logs.some((entry) => entry.name === "action-trace.log"), false);
+  assert.deepEqual(engine.readBenchmarkLogTail(config.path, 2), ["===== RUN 1 =====", "second"]);
+});
+
 test("groupByModel applies the same near-tie winner rule as the report", () => {
   const cfg = { wddm_detection: { shared_delta_confirm_mib: 500 } };
   const groups = engine.groupByModel([
