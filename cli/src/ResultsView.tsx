@@ -75,7 +75,7 @@ function calibrationFromResult(result: Result): string | null {
     const offset = result.fit_offset == null
       ? ""
       : ` · candidate ${result.fit_offset >= 0 ? "+" : ""}${result.fit_offset}`;
-    return `adaptive MoE · minimum n-cpu-moe ${verified} · ${source}${offset}`;
+    return `adaptive MoE · load-fit anchor n-cpu-moe ${verified} · ${source}${offset}`;
   }
   if (result.planning_mode !== "adaptive-offload") return null;
   const verified = result.verified_fit_layers ?? "?";

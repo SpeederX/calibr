@@ -90,7 +90,13 @@ function Invoke-TsMoeCalibration {
             runtimeReserveMib = $(if ($null -ne $settings.runtime_reserve_mib) { [int]$settings.runtime_reserve_mib } else { 512 })
             benchmarkOffsets = if ($settings.benchmark_offsets) {
                 @($settings.benchmark_offsets | ForEach-Object { [int]$_ })
-            } else { @(-6, -3, -1, 0, 1, 3) }
+            } else { @(-3, -1, 0, 1, 3) }
+            benchmarkRatios = if ($settings.benchmark_ratios) {
+                @($settings.benchmark_ratios | ForEach-Object { [double]$_ })
+            } else { @(0.5, 0.75) }
+            tailOffsets = if ($settings.tail_offsets) {
+                @($settings.tail_offsets | ForEach-Object { [int]$_ })
+            } else { @(-3, -1, 0) }
             maxProbeCount = $(if ($settings.max_probe_count) { [int]$settings.max_probe_count } else { 4 })
             stableSampleCount = $(if ($settings.stable_sample_count) { [int]$settings.stable_sample_count } else { 3 })
             stableToleranceMib = $(if ($settings.stable_tolerance_mib) { [double]$settings.stable_tolerance_mib } else { 16 })

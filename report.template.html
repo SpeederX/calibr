@@ -1529,7 +1529,7 @@ function calibrationSummary(configs) {
     const spill = calibrated.first_spill_n_cpu_moe != null
       ? ' · first spilling n-cpu-moe ' + calibrated.first_spill_n_cpu_moe
       : '';
-    return '<div class="planning-summary">planner: <code>adaptive MoE</code> · minimum safe <code>n-cpu-moe ' +
+    return '<div class="planning-summary">planner: <code>adaptive MoE</code> · load-fit anchor <code>n-cpu-moe ' +
       escapeHtml(calibrated.verified_n_cpu_moe ?? '?') + '</code> · ' + escapeHtml(source) + spill + '</div>';
   }
   const spill = calibrated.first_spill_layers != null

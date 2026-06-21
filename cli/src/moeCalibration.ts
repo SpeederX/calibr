@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 import { collectMetricSample, type MetricSample } from "./metricsPoller.js";
-import { buildOffloadBenchmarkCandidates, estimateOffloadCliff, type OffloadProbeObservation } from "./offloadPlanner.js";
+import { estimateOffloadCliff, type OffloadProbeObservation } from "./offloadPlanner.js";
 import { runLoadProbe, type LoadProbePayload, type LoadProbeResult } from "./offloadProbe.js";
 import type { GgufWeightMetadata } from "./offloadEstimator.js";
 
@@ -18,6 +18,8 @@ export interface MoeCalibrationPayload {
   planning?: {
     runtimeReserveMib?: number;
     benchmarkOffsets?: number[];
+    benchmarkRatios?: number[];
+    tailOffsets?: number[];
     maxProbeCount?: number;
     stableSampleCount?: number;
     stableToleranceMib?: number;
@@ -52,6 +54,26 @@ export interface MoeCalibrationDeps {
   collectBaseline?: () => Promise<MetricSample>;
   findPort?: () => Promise<number>;
   runProbe?: (payload: LoadProbePayload) => Promise<LoadProbeResult>;
+}
+
+export function buildMoeBenchmarkCandidates(
+  loadFitAnchor: number,
+  expertBlockCount: number,
+  offsets: number[] = [-3, -1, 0, 1, 3],
+  ratios: number[] = [0.5, 0.75],
+  tailOffsets: number[] = [-3, -1, 0],
+): number[] {
+  const count = Math.max(0, Math.trunc(expertBlockCount));
+  const anchor = Math.max(0, Math.min(count, Math.trunc(loadFitAnchor)));
+  const candidates = new Set<number>();
+  const add = (value: number) => candidates.add(Math.max(0, Math.min(count, Math.trunc(value))));
+
+  for (const offset of offsets) add(anchor + offset);
+  for (const ratio of ratios) {
+    if (Number.isFinite(ratio) && ratio >= 0 && ratio <= 1) add(Math.round(count * ratio));
+  }
+  for (const offset of tailOffsets) add(count + offset);
+  return [...candidates].sort((a, b) => a - b);
 }
 
 function removeOption(args: string[], names: string[]): string[] {
@@ -208,11 +230,12 @@ export async function calibrateMoe(
     };
   }
   const verifiedNcpu = expertCount - cliff.verified_fit_layers;
-  const nCpuOffsets = payload.planning?.benchmarkOffsets ?? [-6, -3, -1, 0, 1, 3];
-  const gpuCandidates = buildOffloadBenchmarkCandidates(
-    cliff.verified_fit_layers,
+  const benchmarkCandidates = buildMoeBenchmarkCandidates(
+    verifiedNcpu,
     expertCount,
-    nCpuOffsets.map((offset) => -offset),
+    payload.planning?.benchmarkOffsets,
+    payload.planning?.benchmarkRatios,
+    payload.planning?.tailOffsets,
   );
   return {
     mode: "moe-cpu", planning_mode: "adaptive-moe", calibrated: true,
@@ -221,7 +244,7 @@ export async function calibrateMoe(
     predicted_n_cpu_moe: expertCount - cliff.predicted_fit_layers,
     verified_n_cpu_moe: verifiedNcpu,
     first_spill_n_cpu_moe: cliff.first_spill_layers === null ? null : expertCount - cliff.first_spill_layers,
-    benchmark_n_cpu_moe: [...new Set(gpuCandidates.map((gpu) => expertCount - gpu))].sort((a, b) => a - b),
+    benchmark_n_cpu_moe: benchmarkCandidates,
     probe_count: probes.length, probes,
     reason: cliff.reason,
   };

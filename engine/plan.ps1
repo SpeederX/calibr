@@ -313,7 +313,7 @@ function Invoke-Plan {
                         -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
                 }
                 $source = if ($calibration.cache_hit) { "cached" } else { "$($calibration.probe_count) probes" }
-                Write-Host ("  adaptive MoE: {0}, minimum n-cpu-moe {1} ({2})" -f `
+                Write-Host ("  adaptive MoE: {0}, load-fit anchor n-cpu-moe {1} ({2})" -f `
                     $m.model, $calibration.verified_n_cpu_moe, $source) -ForegroundColor DarkCyan
             } elseif ($calibration) {
                 Write-Host ("  adaptive MoE fallback for {0}: {1}" -f $m.model, $calibration.reason) `

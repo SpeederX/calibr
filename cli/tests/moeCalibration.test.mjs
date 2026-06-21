@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildMoeProbeArgs, calibrateMoe, estimateInitialCpuMoe } from "../dist/moeCalibration.js";
+import {
+  buildMoeBenchmarkCandidates,
+  buildMoeProbeArgs,
+  calibrateMoe,
+  estimateInitialCpuMoe,
+} from "../dist/moeCalibration.js";
 import { validateMoeCalibrationPayload } from "../dist/moeCalibrationCli.js";
 
 const metadata = {
@@ -51,7 +56,18 @@ test("buildMoeProbeArgs forces exact n-cpu-moe allocation without inference help
   assert.ok(args.includes("--no-warmup"));
 });
 
-test("calibrateMoe returns the minimum verified CPU-expert count and nearby candidates", async () => {
+test("buildMoeBenchmarkCandidates covers the load anchor and CPU-heavy performance region", () => {
+  assert.deepEqual(
+    buildMoeBenchmarkCandidates(0, 31),
+    [0, 1, 3, 16, 23, 28, 30, 31],
+  );
+  assert.deepEqual(
+    buildMoeBenchmarkCandidates(13, 40),
+    [10, 12, 13, 14, 16, 20, 30, 37, 39, 40],
+  );
+});
+
+test("calibrateMoe returns the load-fit anchor and a broad performance sweep", async () => {
   const seen = [];
   const result = await calibrateMoe({
     executable: "llama-server", modelPath: "model.gguf", baseArgs: [],
@@ -71,6 +87,7 @@ test("calibrateMoe returns the minimum verified CPU-expert count and nearby cand
   assert.equal(result.verified_n_cpu_moe, 1);
   assert.ok(result.benchmark_n_cpu_moe.includes(1));
   assert.ok(result.benchmark_n_cpu_moe.includes(0));
+  assert.ok(result.benchmark_n_cpu_moe.includes(6));
 });
 
 test("validateMoeCalibrationPayload rejects unsafe contracts", () => {

@@ -46,7 +46,7 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
 4. **Expand run configs**
    - context/KV sweep for models expected to fit;
    - for MoE models, estimate expert tensor placement from GGUF metadata and
-     load-probe the minimum safe `--n-cpu-moe`;
+     load-probe an initial `--n-cpu-moe` allocation anchor;
    - for dense models, estimate an initial GPU-layer position from GGUF tensor
      storage, then run bounded load-only probes against the detected VRAM
      budget;
@@ -94,10 +94,13 @@ the configured tolerance and the record must be younger than
 identify whether planning used fresh probes or a cached calibration.
 
 For MoE, llama.cpp keeps expert weights from the first `N` layers on CPU.
-calibr maps that inverse axis to the same monotonic cliff estimator used for
-dense GPU layers, then maps the result back to `--n-cpu-moe`. A negative
-candidate offset keeps more experts on GPU and intentionally measures spill;
-a positive offset keeps more experts on CPU.
+calibr maps that inverse axis to the same monotonic load-time estimator used
+for dense GPU layers, then maps the result back to `--n-cpu-moe`. Unlike dense
+offload, this load-fit point is only an anchor: runtime routing can activate
+expert weights through WDDM shared memory even when dedicated VRAM looked
+acceptable at startup. The actual benchmark therefore samples near the anchor,
+at proportional CPU-offload points, and near full expert CPU offload. Winner
+selection remains empirical and can prefer a much larger `--n-cpu-moe`.
 
 ## Why internal stages still exist
 

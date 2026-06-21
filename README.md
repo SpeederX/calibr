@@ -133,9 +133,12 @@ llama.cpp build, model files, allocation policy, hardware budget, and current
 VRAM baseline still agree. The expanded model details show the verified fit,
 probe/cache source, and candidate offset.
 
-MoE models use the same measured approach on `--n-cpu-moe`: calibr finds the
-minimum number of first-layer expert weights that must remain on CPU, then
-benchmarks both the faster spill side and safer CPU side around that boundary.
+MoE models use load probes to find an initial `--n-cpu-moe` allocation anchor.
+That anchor is not treated as a performance boundary: expert activation during
+inference can create heavy WDDM shared-memory traffic that is invisible at
+load time. The benchmark therefore covers the anchor neighborhood, proportional
+CPU-offload points, and the CPU-heavy tail; measured throughput and spill decide
+the winner.
 
 There is not one universal winner. The report exposes profiles:
 
