@@ -74,7 +74,10 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - select winners using the active policy;
    - render `data/report.html`;
    - generate launch scripts;
-   - retain raw result JSON and per-run telemetry.
+   - retain raw result JSON, per-run telemetry, and one command/stderr log per
+     run config under `data/logs`;
+   - expose both the benchmark leaderboard and retained run logs under the
+     CLI's `results` menu.
 
 The vanilla control receives only the model/support assets plus unavoidable
 benchmark harness arguments for localhost networking and temporary state. It

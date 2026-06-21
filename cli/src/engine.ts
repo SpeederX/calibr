@@ -941,6 +941,95 @@ function launchDetached(cmd: string, args: string[]): boolean {
   }
 }
 
+function systemOpener(target: string): [string, string[]] {
+  if (process.platform === "win32") return ["cmd", ["/c", "start", "", target]];
+  if (process.platform === "darwin") return ["open", [target]];
+  return ["xdg-open", [target]];
+}
+
+export interface BenchmarkLog {
+  name: string;
+  path: string;
+  configId: string | null;
+  kind: "config" | "campaign";
+  sizeBytes: number;
+  modifiedAt: string;
+  runCount: number;
+}
+
+export function listBenchmarkLogs(): BenchmarkLog[] {
+  if (!existsSync(CALIBR_LOGS_DIR)) return [];
+  return readdirSync(CALIBR_LOGS_DIR)
+    .filter((name) => name.endsWith(".log") && !name.startsWith("action-trace."))
+    .map((name): BenchmarkLog | null => {
+      const path = join(CALIBR_LOGS_DIR, name);
+      try {
+        const stat = statSync(path);
+        if (!stat.isFile()) return null;
+        const content = readFileSync(path, "utf8");
+        const runCount = [...content.matchAll(/^===== RUN \d+ =====$/gm)].length;
+        const isCampaign = /\.out\.log$/i.test(name);
+        return {
+          name,
+          path,
+          configId: isCampaign ? null : name.replace(/\.log$/i, ""),
+          kind: isCampaign ? "campaign" : "config",
+          sizeBytes: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+          runCount,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is BenchmarkLog => entry !== null)
+    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+}
+
+export function readBenchmarkLogTail(path: string, maxLines = 40): string[] {
+  const absolute = resolve(path);
+  const logsRoot = resolve(CALIBR_LOGS_DIR);
+  if (absolute !== logsRoot && !absolute.startsWith(`${logsRoot}${process.platform === "win32" ? "\\" : "/"}`)) {
+    return [];
+  }
+  try {
+    return readFileSync(absolute, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-Math.max(1, maxLines));
+  } catch {
+    return [];
+  }
+}
+
+export function openBenchmarkLog(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const [cmd, args] = systemOpener(path);
+  const ok = launchDetached(cmd, args);
+  traceAction({
+    flow: "results",
+    action: "open benchmark log",
+    status: ok ? "completed" : "failed",
+    message: `results > benchmark run logs > open ${ok ? "launched" : "failed"}`,
+    details: { log: path },
+  });
+  return ok;
+}
+
+export function openBenchmarkLogsFolder(): boolean {
+  mkdirSync(CALIBR_LOGS_DIR, { recursive: true });
+  const [cmd, args] = systemOpener(CALIBR_LOGS_DIR);
+  const ok = launchDetached(cmd, args);
+  traceAction({
+    flow: "results",
+    action: "open benchmark logs folder",
+    status: ok ? "completed" : "failed",
+    message: `results > benchmark run logs > open folder ${ok ? "launched" : "failed"}`,
+    details: { folder: CALIBR_LOGS_DIR },
+  });
+  return ok;
+}
+
 /** Open a URL in the OS default browser. */
 export function openUrl(url: string): void {
   const [cmd, args] = browserOpener(url);
