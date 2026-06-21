@@ -65,6 +65,8 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - use llama-server timings for official prefill/decode throughput;
    - collect TTFT, TPOT, ITL, delivery, VRAM/RAM, power, temperature, and
      utilization from the same measured run;
+   - integrate sampled GPU-board power over the complete run and retain full
+     UTC start/end timestamps plus elapsed duration;
    - repeat and aggregate according to metric policy.
 6. **Rank and report**
    - select winners using the active policy;
@@ -136,7 +138,8 @@ do not imply that users should manually run four commands.
 
 ## Benchmark request
 
-Metric schema v4 uses one measured streaming request per run:
+Metric schema v5 uses one measured streaming request per run and adds complete
+run duration plus sampled GPU-energy integration:
 
 ```text
 optional warm-up -> KV erase -> measured stream

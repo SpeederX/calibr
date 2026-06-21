@@ -49,6 +49,11 @@ export interface BenchRun {
   [key: string]: unknown;
   run_index?: number;
   timestamp?: string;
+  run_started_at?: string;
+  run_ended_at?: string;
+  run_duration_ms?: number | null;
+  gpu_energy_wh?: number | null;
+  gpu_energy_j?: number | null;
   vram_before_mib?: number | null;
   vram_peak_mib?: number | null;
   vram_baseline_mib?: number | null;
@@ -131,6 +136,7 @@ export interface BenchTelemetryPoint {
   shared_mib: number;
   gpu_util_pct: number | null;
   cpu_util_pct: number | null;
+  gpu_power_w?: number | null;
 }
 
 export interface ResultCoreSession {
@@ -139,7 +145,7 @@ export interface ResultCoreSession {
   llama_server_version?: string;
 }
 
-export const METRIC_SCHEMA_VERSION = 4;
+export const METRIC_SCHEMA_VERSION = 5;
 
 export const METRIC_GLOSSARY = {
   load_ms: "Process start to /v1/models readiness; model load plus backend initialization.",
@@ -165,6 +171,8 @@ export const METRIC_GLOSSARY = {
   ram_used_peak_mib: "Peak reduction in available system RAM relative to the pre-run baseline.",
   gpu_util_avg_pct: "Average GPU utilization across collected samples.",
   cpu_util_avg_pct: "Average total CPU utilization across collected samples.",
+  gpu_energy_wh: "Estimated GPU-board energy used during the measured run, integrated from sampled power over elapsed time.",
+  run_duration_ms: "Wall-clock duration from the beginning to the end of the measured llama-server run.",
   telemetry: "Time-series samples for prefill/reasoning/answer, server generation rate, delivery gaps, memory pressure, and utilization.",
   workload_prompt_tokens: "Actual chat-templated prompt tokens prepared for the diagnostic workload.",
   kv_fill_cached_tokens: "Prompt tokens reused from the prepared KV prefix by the measured request.",
@@ -439,6 +447,11 @@ export function aggregateBenchResult(payload: {
   const totalReqMs = median(runs.map((r) => num(r.total_request_ms)));
   const latReqMs = median(runs.map((r) => num(r.latency_total_request_ms)));
   const metricMedian = (field: keyof BenchRun) => median(runs.map((run) => num(run[field])));
+  const runStartedAt = runs.map((run) => String(run.run_started_at ?? "")).filter(Boolean).sort()[0] ?? null;
+  const runEndedAt = runs.map((run) => String(run.run_ended_at ?? "")).filter(Boolean).sort().at(-1) ?? null;
+  const runDurationTotalMs = runs.reduce((sum, run) => sum + (num(run.run_duration_ms) ?? 0), 0);
+  const gpuEnergyWh = runs.reduce((sum, run) => sum + (num(run.gpu_energy_wh) ?? 0), 0);
+  const gpuEnergyJ = runs.reduce((sum, run) => sum + (num(run.gpu_energy_j) ?? 0), 0);
   const satRatio = vramTotal > 0 ? round(vramPeakMed / vramTotal, 3) : 0;
 
   return {
@@ -471,6 +484,12 @@ export function aggregateBenchResult(payload: {
     verified_n_cpu_moe: item.verified_n_cpu_moe,
     first_spill_n_cpu_moe: item.first_spill_n_cpu_moe,
     timestamp: first.timestamp,
+    run_started_at: runStartedAt,
+    run_ended_at: runEndedAt,
+    run_duration_ms: round(runDurationTotalMs, 2),
+    run_duration_median_ms: roundOrNull(metricMedian("run_duration_ms"), 2),
+    gpu_energy_wh: round(gpuEnergyWh, 4),
+    gpu_energy_j: round(gpuEnergyJ, 2),
     model_path: item.model_path,
     mmproj_path: item.mmproj_path,
     extra_args: item.extra_args,

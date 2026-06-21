@@ -554,6 +554,12 @@ export interface Result {
   unsupported_architecture?: string | null;
   extra_args?: string;
   timestamp?: string;
+  run_started_at?: string | null;
+  run_ended_at?: string | null;
+  run_duration_ms?: number | null;
+  run_duration_median_ms?: number | null;
+  gpu_energy_wh?: number | null;
+  gpu_energy_j?: number | null;
   // Extended metrics (v0.1.3+). Null when not collected (failure before
   // bench POST, or pre-extended-metrics legacy result JSONs).
   ttft_sec?: number | null;
