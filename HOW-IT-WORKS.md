@@ -85,6 +85,13 @@ Successful probe sets are stored separately under
 calibration id, fitted boundary, probe count, and candidate offset; probe
 records never enter ranking or winner selection.
 
+Guided planning may reuse a successful calibration when the model, mmproj,
+llama.cpp executable, GPU budget, allocation flags, context/KV settings, and
+planning policy still match. The cached VRAM baseline must also remain within
+the configured tolerance and the record must be younger than
+`cache_max_age_hours`; otherwise calibr probes again. Results and reports
+identify whether planning used fresh probes or a cached calibration.
+
 ## Why internal stages still exist
 
 The stage modules are useful implementation boundaries:

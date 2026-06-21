@@ -59,8 +59,23 @@ function kvFromArgs(args?: string): string {
 
 function workloadFromResult(result: Result): string {
   if (result.workload_kind === "prefill") return `prefill ${result.workload_prompt_tokens ?? result.prefill_target_tokens ?? "?"} tok`;
-  if (result.workload_kind === "kv-fill") return `KV-fill ${result.workload_prompt_tokens ?? result.kv_fill_target_tokens ?? "?"} tok`;
+  if (result.workload_kind === "kv-fill") {
+    const cached = result.kv_fill_cached_tokens != null ? ` · ${result.kv_fill_cached_tokens} cached` : "";
+    return `KV-fill ${result.workload_prompt_tokens ?? result.kv_fill_target_tokens ?? "?"} tok${cached}`;
+  }
   return "baseline";
+}
+
+function calibrationFromResult(result: Result): string | null {
+  if (result.planning_mode !== "adaptive-offload") return null;
+  const verified = result.verified_fit_layers ?? "?";
+  const source = result.calibration_cache_hit
+    ? `cached${result.calibration_cache_age_hours != null ? ` ${result.calibration_cache_age_hours}h` : ""}`
+    : `${result.probe_count ?? "?"} probes`;
+  const offset = result.fit_offset == null
+    ? ""
+    : ` · candidate ${result.fit_offset >= 0 ? "+" : ""}${result.fit_offset}`;
+  return `adaptive offload · verified ${verified} layers · ${source}${offset}`;
 }
 
 export function ResultsView({ onExit, onRun }: Props) {
@@ -195,6 +210,13 @@ function DetailView({
         <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
           <Text bold>{sel.label}</Text>
           <Text dimColor>workload: {workloadFromResult(sel)}</Text>
+          {sel.workload_kind !== "baseline" && (
+            <Text dimColor>
+              preparation: {sel.workload_prepare_ms ?? "—"} ms · target error: {sel.workload_target_error_tokens ?? "—"} tok
+              {sel.kv_fill_ms != null ? ` · KV fill: ${sel.kv_fill_ms} ms` : ""}
+            </Text>
+          )}
+          {calibrationFromResult(sel) && <Text color="magenta">{calibrationFromResult(sel)}</Text>}
           <Text dimColor>{sel.extra_args ?? ""}</Text>
           {sel.error && <Text color="red">error: {sel.error}</Text>}
           {sel.unsupported_architecture && (

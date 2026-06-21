@@ -164,6 +164,8 @@
   .bar-model-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 5px;
                        color: var(--c-text); font-weight: 700; font-size: 12px; }
   .bar-model-heading .meta { margin: 0; font-weight: 400; }
+  .planning-summary { margin:6px 0 8px; color:var(--c-muted); font-size:11px; }
+  .planning-summary code { color:var(--c-accent); }
 
   /* ----- Scatter (now first chart) ----- */
   .scatter-bg-ram   { fill: rgba(255,255,255,0.035); }
@@ -819,7 +821,7 @@ function renderModelsList() {
       rows += '<tr' + (isWin ? ' class="is-winner"' : '') + '>' +
               '<td><code>' + escapeHtml(c.label) + '</code></td>' +
               '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
-              '<td>' + workloadLabel(c) + '</td>' +
+              '<td title="' + escapeHtml(workloadTitle(c)) + '">' + workloadLabel(c) + '</td>' +
               '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
               '<td class="num" title="' + vramCellTitle(c) + '">' + benchmarkVramUsedMib(c) + '</td>' +
@@ -839,6 +841,7 @@ function renderModelsList() {
         '</summary>' +
         '<div class="config-list">' +
           coldLoadSummary(w || configs[0]) +
+          calibrationSummary(configs) +
           '<table>' +
             '<thead><tr>' +
               '<th>Config</th><th>Level</th><th>Workload</th>' +
@@ -1505,6 +1508,30 @@ function workloadLabel(d) {
   return 'baseline';
 }
 
+function workloadTitle(d) {
+  const kind = d.workload_kind || 'baseline';
+  if (kind === 'baseline') return 'Standard measured request.';
+  const parts = [
+    'Prepared in ' + (d.workload_prepare_ms ?? '?') + ' ms',
+    'token target error ' + (d.workload_target_error_tokens ?? '?')
+  ];
+  if (kind === 'kv-fill') parts.push('KV fill ' + (d.kv_fill_ms ?? '?') + ' ms');
+  return parts.join(' · ');
+}
+
+function calibrationSummary(configs) {
+  const calibrated = configs.find(c => c.planning_mode === 'adaptive-offload');
+  if (!calibrated) return '';
+  const source = calibrated.calibration_cache_hit
+    ? 'cached' + (calibrated.calibration_cache_age_hours != null ? ' ' + calibrated.calibration_cache_age_hours + 'h' : '')
+    : (calibrated.probe_count ?? '?') + ' load probes';
+  const spill = calibrated.first_spill_layers != null
+    ? ' · first spill ' + calibrated.first_spill_layers
+    : ' · full fit or spill not reached';
+  return '<div class="planning-summary">planner: <code>adaptive offload</code> · verified fit ' +
+    escapeHtml(calibrated.verified_fit_layers ?? '?') + ' layers · ' + escapeHtml(source) + spill + '</div>';
+}
+
 // Level tabs are recomputed per rerender so counts reflect the current
 // scope. Click handling is delegated on the parent container so we don't
 // have to re-attach per-tab listeners.
@@ -1539,7 +1566,7 @@ function renderAllTable() {
         '<td class="level-' + lvl(d) + '">' + lvl(d) + '</td>' +
         '<td>' + escapeHtml(d.model) + '</td>' +
         '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + escapeHtml(d.extra_args) + '</td>' +
-        '<td>' + workloadLabel(d) + '</td>' +
+        '<td title="' + escapeHtml(workloadTitle(d)) + '">' + workloadLabel(d) + '</td>' +
         '<td class="num">' + (latencyMs(d) > 0 ? (latencyMs(d) / 1000).toFixed(2) : '-') + '</td>' +
         '<td class="num">' + ((d.stream_open_ms ?? d.ttfr_ms) != null ? (+(d.stream_open_ms ?? d.ttfr_ms)).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +

@@ -20,6 +20,8 @@ export interface BenchItem {
   first_spill_layers?: number | null;
   probe_count?: number | null;
   fit_offset?: number | null;
+  calibration_cache_hit?: boolean | null;
+  calibration_cache_age_hours?: number | null;
   model_path?: string;
   mmproj_path?: string | null;
   extra_args?: string;
@@ -458,6 +460,8 @@ export function aggregateBenchResult(payload: {
     first_spill_layers: item.first_spill_layers,
     probe_count: item.probe_count,
     fit_offset: item.fit_offset,
+    calibration_cache_hit: item.calibration_cache_hit,
+    calibration_cache_age_hours: item.calibration_cache_age_hours,
     timestamp: first.timestamp,
     model_path: item.model_path,
     mmproj_path: item.mmproj_path,

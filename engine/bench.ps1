@@ -245,6 +245,8 @@ function New-AggregatedBenchResult {
         first_spill_layers = $item.first_spill_layers
         probe_count     = $item.probe_count
         fit_offset      = $item.fit_offset
+        calibration_cache_hit = $item.calibration_cache_hit
+        calibration_cache_age_hours = $item.calibration_cache_age_hours
         timestamp       = $first.timestamp
         model_path      = $item.model_path
         mmproj_path     = $item.mmproj_path
