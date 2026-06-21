@@ -13,6 +13,17 @@ test.after(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
+test("download footprint separates total transfer from peak disk working-set", () => {
+  assert.deepEqual(engine.downloadFootprintBytes([
+    { size_bytes: 2_000_000_000 },
+    { size_bytes: 5_000_000_000 },
+    { size_bytes: 3_000_000_000 },
+  ]), {
+    totalBytes: 10_000_000_000,
+    maxFileBytes: 5_000_000_000,
+  });
+});
+
 test("list/delete cached llama.cpp builds under CALIBR_DATA_DIR", () => {
   const binName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
   const flavorDir = join(dataDir, "llama-bin", "b9360", "vulkan");

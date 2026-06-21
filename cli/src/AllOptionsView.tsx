@@ -272,7 +272,14 @@ type Phase =
   | { kind: "modelFolderInput"; error?: string }
   | { kind: "modelFolderCreate"; path: string }
   | { kind: "modelFolderSaved"; path: string; count: number; created: boolean }
-  | { kind: "gate"; required: number; available: number; entryCount: number; sufficient: boolean }
+  | {
+      kind: "gate";
+      required: number;
+      totalDownload: number;
+      available: number;
+      entryCount: number;
+      sufficient: boolean;
+    }
   | { kind: "cachePrompt" };
 
 type LlamaDecision =
@@ -485,12 +492,13 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
 
   const runGate = (pickedIds?: string) => {
     const filtered = catalogScopeForGate(pickedIds);
-    const { maxFileBytes } = downloadFootprintBytes(filtered);
+    const { totalBytes, maxFileBytes } = downloadFootprintBytes(filtered);
     const available = freeBytesOn(destination);
     const required = maxFileBytes;
     setPhase({
       kind: "gate",
       required,
+      totalDownload: totalBytes,
       available,
       entryCount: filtered.length,
       sufficient: available < 0 ? false : available >= required,
@@ -1030,14 +1038,16 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         <Box marginTop={1} flexDirection="column">
           <Text>destination: <Text color="cyan">{destination}</Text></Text>
           <Text>catalog entries in scope: <Text color="cyan">{phase.entryCount}</Text></Text>
-          <Text>peak working-set (largest single file): <Text color="cyan">{formatBytes(phase.required)}</Text></Text>
+          <Text>total download transfer: <Text color="cyan">{formatBytes(phase.totalDownload)}</Text></Text>
+          <Text>peak disk working-set (largest single file): <Text color="cyan">{formatBytes(phase.required)}</Text></Text>
           <Text>free on destination: <Text color={sufficient ? "green" : "red"}>{formatBytes(phase.available)}</Text></Text>
         </Box>
         <Box marginTop={1}>
           {sufficient ? (
             <Text color="yellow">
-              Rotation will hold up to {formatBytes(phase.required)} on disk at peak (one
-              model at a time). Proceed?
+              The campaign will transfer {formatBytes(phase.totalDownload)} in total.
+              Rotation will hold up to {formatBytes(phase.required)} on disk at peak
+              (one model at a time). Proceed?
             </Text>
           ) : (
             <Text color="red">

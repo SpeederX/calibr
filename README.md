@@ -104,6 +104,8 @@ Don't have any `.gguf` files yet? Pick `guided run`, keep `source: catalog downl
 choose the llama.cpp setup when prompted, and let calibr walk the curated set
 one model at a time:
 download -> bench -> cleanup -> next model -> report.
+Before starting, the download gate shows both the total data transferred by the
+campaign and the peak disk working-set required by one-at-a-time rotation.
 
 Already have local `.gguf` files? In `guided run`, set `local folder` to that
 directory, then set `source: local folder`. The default local folder is
