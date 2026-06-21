@@ -68,9 +68,11 @@ test("calibrateOffload returns context mode when full offload is verified", asyn
 
 test("calibrateOffload brackets a partial fit and returns dense candidates", async () => {
   const seen = [];
+  const progress = [];
   const result = await calibrateOffload(payload(), {
     collectBaseline: async () => metric(500),
     findPort: async () => 19001 + seen.length,
+    onProbe: (event) => progress.push(event),
     runProbe: async (request) => {
       seen.push(request.requestedLayers);
       return probeResult(request.requestedLayers, request.requestedLayers <= 19);
@@ -82,6 +84,9 @@ test("calibrateOffload brackets a partial fit and returns dense candidates", asy
   assert.equal(result.first_spill_layers, 23);
   assert.deepEqual(result.benchmark_layers, [13, 16, 18, 19, 20, 22]);
   assert.equal(result.probe_count, 4);
+  assert.equal(progress.length, 8);
+  assert.deepEqual(progress.filter((event) => !event.result).map((event) => event.requestedLayers), seen);
+  assert.equal(progress.at(-1).result.fit_under_safe_cap, true);
 });
 
 test("calibrateOffload falls back when no safe probe is verified", async () => {

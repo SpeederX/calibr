@@ -69,6 +69,7 @@ test("buildMoeBenchmarkCandidates covers the load anchor and CPU-heavy performan
 
 test("calibrateMoe returns the load-fit anchor and a broad performance sweep", async () => {
   const seen = [];
+  const progress = [];
   const result = await calibrateMoe({
     executable: "llama-server", modelPath: "model.gguf", baseArgs: [],
     contextSize: 16384, kvType: "q8_0", timeoutMs: 1000,
@@ -77,6 +78,7 @@ test("calibrateMoe returns the load-fit anchor and a broad performance sweep", a
   }, {
     collectBaseline: async () => metric(500),
     findPort: async () => 18080 + seen.length,
+    onProbe: (event) => progress.push(event),
     runProbe: async (payload) => {
       const gpuExperts = payload.requestedLayers;
       seen.push(gpuExperts);
@@ -88,6 +90,8 @@ test("calibrateMoe returns the load-fit anchor and a broad performance sweep", a
   assert.ok(result.benchmark_n_cpu_moe.includes(1));
   assert.ok(result.benchmark_n_cpu_moe.includes(0));
   assert.ok(result.benchmark_n_cpu_moe.includes(6));
+  assert.equal(progress.length, seen.length * 2);
+  assert.deepEqual(progress.filter((event) => !event.result).map((event) => event.expertGpuLayers), seen);
 });
 
 test("validateMoeCalibrationPayload rejects unsafe contracts", () => {

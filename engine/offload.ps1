@@ -236,7 +236,14 @@ function Invoke-TsOffloadCalibration {
             ($payload | ConvertTo-Json -Depth 12),
             (New-Object System.Text.UTF8Encoding($false))
         )
-        $output = @(& $node $script --json-file $payloadPath 2>$null)
+        $output = @(& $node $script --json-file $payloadPath 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            if ($line.StartsWith('[planning-probe]')) {
+                Write-Host $line -ForegroundColor DarkCyan
+            } else {
+                $line
+            }
+        })
         $json = $output | Where-Object { $_ -and $_.Trim() } | Select-Object -Last 1
         if (-not $json) {
             return @{ calibrated = $false; mode = 'fallback'; reason = "adapter returned no result (exit $LASTEXITCODE)" }

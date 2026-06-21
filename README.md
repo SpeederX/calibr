@@ -142,6 +142,9 @@ benchmarks densely around that boundary. The probes do not generate tokens
 and do not participate in winner selection. Raw/headless planning falls back
 to a conservative static range when the TypeScript calibration adapter is
 unavailable.
+During this `planning & load calibration` phase, guided run shows the current
+model and probe number together with the tested allocation and ready-state
+VRAM, so long plans do not look stalled.
 
 Matching calibration records can be reused for up to seven days when the
 llama.cpp build, model files, allocation policy, hardware budget, and current

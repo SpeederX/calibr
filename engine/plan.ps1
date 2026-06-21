@@ -291,7 +291,7 @@ function Invoke-Plan {
     param([hashtable]$PlanningPolicy = $null)
 
     $cfg = Get-Config
-    Write-Host "=== plan ===" -ForegroundColor Cyan
+    Write-Host "=== planning & load calibration ===" -ForegroundColor Cyan
     $llamaCapabilities = Get-LlamaArgumentCapabilities -Config $cfg
     if ($llamaCapabilities) {
         Write-Host ("  llama.cpp compatibility: {0} options, K cache [{1}], V cache [{2}]" -f `
@@ -349,8 +349,14 @@ function Invoke-Plan {
 
     $plan = @()
     $idx = 1
+    $planningModelIndex = 0
+    $planningModelTotal = @($catalog).Count
     foreach ($m in $catalog) {
         if ($Model -and $m.model -notmatch $Model) { continue }
+        $planningModelIndex++
+        Write-Host ("[planning] model {0}/{1}: {2} ({3})" -f `
+            $planningModelIndex, $planningModelTotal, $m.model, $(if ($m.is_moe) { 'MoE' } else { 'dense' })) `
+            -ForegroundColor Cyan
         $sweep = Get-SweepKind -meta $m -cfg $cfg
         $calibration = $null
         $calibrationId = ""

@@ -52,7 +52,16 @@ async function main(): Promise<void> {
     process.exitCode = 2;
     return;
   }
-  const result = await calibrateOffload(payload);
+  const result = await calibrateOffload(payload, {
+    onProbe: (event) => {
+      const outcome = event.result
+        ? ` ${event.result.fit_under_safe_cap ? "fit" : "spill/fail"} vram=${event.result.vram_ready_mib ?? "?"}MiB`
+        : "";
+      process.stderr.write(
+        `[planning-probe] dense ${event.current}/${event.total} gpu-layers=${event.requestedLayers}${outcome}\n`,
+      );
+    },
+  });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (!result.calibrated) process.exitCode = 1;
 }

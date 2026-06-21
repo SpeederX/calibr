@@ -50,6 +50,12 @@ export interface OffloadCalibrationDeps {
   collectBaseline?: () => Promise<MetricSample>;
   findPort?: () => Promise<number>;
   runProbe?: (payload: LoadProbePayload) => Promise<LoadProbeResult>;
+  onProbe?: (event: {
+    current: number;
+    total: number;
+    requestedLayers: number;
+    result?: LoadProbeResult;
+  }) => void;
 }
 
 function removeOption(args: string[], names: string[], takesValue = true): string[] {
@@ -149,6 +155,11 @@ export async function calibrateOffload(
   while (!cliff.complete && cliff.next_probe_layers !== null && probes.length < maxProbeCount) {
     const port = await findPort();
     const requested = cliff.next_probe_layers;
+    deps.onProbe?.({
+      current: probes.length + 1,
+      total: maxProbeCount,
+      requestedLayers: requested,
+    });
     const result = await runProbe({
       executable: payload.executable,
       args: buildOffloadProbeArgs(payload, requested, port),
@@ -162,6 +173,12 @@ export async function calibrateOffload(
       stableToleranceMib: payload.planning?.stableToleranceMib,
       maxReadySamples: payload.planning?.maxReadySamples,
       sampleIntervalMs: payload.planning?.sampleIntervalMs,
+    });
+    deps.onProbe?.({
+      current: probes.length + 1,
+      total: maxProbeCount,
+      requestedLayers: requested,
+      result,
     });
     probes.push(result);
     observations.push(result);
