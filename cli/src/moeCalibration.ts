@@ -54,6 +54,13 @@ export interface MoeCalibrationDeps {
   collectBaseline?: () => Promise<MetricSample>;
   findPort?: () => Promise<number>;
   runProbe?: (payload: LoadProbePayload) => Promise<LoadProbeResult>;
+  onProbe?: (event: {
+    current: number;
+    total: number;
+    nCpuMoe: number;
+    expertGpuLayers: number;
+    result?: LoadProbeResult;
+  }) => void;
 }
 
 export function buildMoeBenchmarkCandidates(
@@ -198,6 +205,12 @@ export async function calibrateMoe(
     const expertGpuLayers = cliff.next_probe_layers;
     const nCpuMoe = expertCount - expertGpuLayers;
     const port = await findPort();
+    deps.onProbe?.({
+      current: probes.length + 1,
+      total: maxProbeCount,
+      nCpuMoe,
+      expertGpuLayers,
+    });
     const raw = await runProbe({
       executable: payload.executable,
       args: buildMoeProbeArgs(payload, nCpuMoe, port),
@@ -210,6 +223,13 @@ export async function calibrateMoe(
       stableToleranceMib: payload.planning?.stableToleranceMib,
       maxReadySamples: payload.planning?.maxReadySamples,
       sampleIntervalMs: payload.planning?.sampleIntervalMs,
+    });
+    deps.onProbe?.({
+      current: probes.length + 1,
+      total: maxProbeCount,
+      nCpuMoe,
+      expertGpuLayers,
+      result: raw,
     });
     const probe = { ...raw, n_cpu_moe: nCpuMoe, expert_gpu_layers: expertGpuLayers };
     probes.push(probe);

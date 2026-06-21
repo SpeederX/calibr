@@ -60,6 +60,12 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - attach an explicit workload profile and token targets to every config;
    - inspect the selected `llama-server --help`, adapt cache types to the
      values exposed by that build, and omit unsupported optional harness flags.
+
+The CLI labels this phase `planning & load calibration`. It reports the
+current model and each bounded load probe, including the tested GPU-layer or
+`n-cpu-moe` allocation, fit outcome, and observed ready-state VRAM. These are
+real llama-server loads rather than in-memory plan expansion, so large model
+sets can spend substantial time here before token generation begins.
 5. **Benchmark**
    - start llama-server and wait for readiness;
    - optionally warm up, then reset the KV slot;
