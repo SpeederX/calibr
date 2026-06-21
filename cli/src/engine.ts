@@ -591,6 +591,9 @@ export interface Result {
   fit_offset?: number | null;
   calibration_cache_hit?: boolean | null;
   calibration_cache_age_hours?: number | null;
+  predicted_n_cpu_moe?: number | null;
+  verified_n_cpu_moe?: number | null;
+  first_spill_n_cpu_moe?: number | null;
   gpu_power_peak_w?: number;
   gpu_temp_peak_c?: number;
   gpu_util_avg_pct?: number;
@@ -721,6 +724,8 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
           CALIBR_TS_LIFECYCLE_SCRIPT: join(__dirname, "serverLifecycleCli.js"),
           CALIBR_TS_OFFLOAD_CALIBRATION: "1",
           CALIBR_TS_OFFLOAD_CALIBRATION_SCRIPT: join(__dirname, "offloadCalibrationCli.js"),
+          CALIBR_TS_MOE_CALIBRATION: "1",
+          CALIBR_TS_MOE_CALIBRATION_SCRIPT: join(__dirname, "moeCalibrationCli.js"),
           CALIBR_NODE: process.execPath,
         }
       : {}),

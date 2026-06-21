@@ -247,6 +247,9 @@ function New-AggregatedBenchResult {
         fit_offset      = $item.fit_offset
         calibration_cache_hit = $item.calibration_cache_hit
         calibration_cache_age_hours = $item.calibration_cache_age_hours
+        predicted_n_cpu_moe = $item.predicted_n_cpu_moe
+        verified_n_cpu_moe = $item.verified_n_cpu_moe
+        first_spill_n_cpu_moe = $item.first_spill_n_cpu_moe
         timestamp       = $first.timestamp
         model_path      = $item.model_path
         mmproj_path     = $item.mmproj_path

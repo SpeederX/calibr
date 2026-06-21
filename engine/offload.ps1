@@ -99,6 +99,7 @@ function Get-CachedOffloadCalibration {
     param(
         [string]$CalibrationId,
         $Config,
+        $Settings = $null,
         $CurrentBaselineMib = $null
     )
     if (-not $CalibrationId) { return $null }
@@ -107,7 +108,7 @@ function Get-CachedOffloadCalibration {
     try {
         $record = ConvertTo-Hashtable -obj (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json)
         if (-not $record.result -or -not $record.result.calibrated) { return $null }
-        $settings = $Config.planning.offload_planning
+        $settings = if ($Settings) { $Settings } else { $Config.planning.offload_planning }
         $maxAge = if ($settings.cache_max_age_hours) { [double]$settings.cache_max_age_hours } else { 168 }
         $created = [datetime]::Parse([string]$record.created_at).ToUniversalTime()
         $ageHours = ((Get-Date).ToUniversalTime() - $created).TotalHours

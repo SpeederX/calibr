@@ -67,6 +67,16 @@ function workloadFromResult(result: Result): string {
 }
 
 function calibrationFromResult(result: Result): string | null {
+  if (result.planning_mode === "adaptive-moe") {
+    const verified = result.verified_n_cpu_moe ?? "?";
+    const source = result.calibration_cache_hit
+      ? `cached${result.calibration_cache_age_hours != null ? ` ${result.calibration_cache_age_hours}h` : ""}`
+      : `${result.probe_count ?? "?"} probes`;
+    const offset = result.fit_offset == null
+      ? ""
+      : ` · candidate ${result.fit_offset >= 0 ? "+" : ""}${result.fit_offset}`;
+    return `adaptive MoE · load-fit anchor n-cpu-moe ${verified} · ${source}${offset}`;
+  }
   if (result.planning_mode !== "adaptive-offload") return null;
   const verified = result.verified_fit_layers ?? "?";
   const source = result.calibration_cache_hit

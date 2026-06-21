@@ -24,7 +24,12 @@ export function PreferencesView({ onExit }: Props) {
   const [warningPct, setWarningPct] = useState<number>(clampPct(initial));
   const [saved, setSaved] = useState(false);
   const cfg = useMemo(loadConfig, []);
-  const moeSweep = Array.isArray(cfg.planning?.moecpu_sweep) ? cfg.planning.moecpu_sweep.join(", ") : "default";
+  const moeOffsets = Array.isArray(cfg.planning?.moe_planning?.benchmark_offsets)
+    ? cfg.planning.moe_planning.benchmark_offsets.map((value: number) => value >= 0 ? `+${value}` : value).join(", ")
+    : "adaptive defaults";
+  const moeRatios = Array.isArray(cfg.planning?.moe_planning?.benchmark_ratios)
+    ? cfg.planning.moe_planning.benchmark_ratios.map((value: number) => `${Math.round(value * 100)}%`).join(", ")
+    : "50%, 75%";
   const offloadOffsets = Array.isArray(cfg.planning?.offload_planning?.benchmark_offsets)
     ? cfg.planning.offload_planning.benchmark_offsets.map((value: number) => value >= 0 ? `+${value}` : value).join(", ")
     : "adaptive defaults";
@@ -97,10 +102,10 @@ export function PreferencesView({ onExit }: Props) {
           Short load-only probes find the local VRAM cliff before benchmark configs are expanded.
         </Text>
         <Text>
-          cpu moe sweep: <Text color="gray">{moeSweep}</Text> <Text dimColor>(planned)</Text>
+          cpu moe planning: <Text color="gray">load anchor ({moeOffsets}) + performance range ({moeRatios}, CPU-heavy tail)</Text>
         </Text>
         <Text dimColor>
-          Controls how many MoE expert/FFN layers stay on CPU to reduce VRAM pressure.
+          Load probes place the first anchor; measured throughput, power, and shared memory determine the useful config.
         </Text>
         <Text>
           polling interval: <Text color="gray">150 ms</Text> <Text dimColor>(planned)</Text>

@@ -117,6 +117,29 @@ Describe "Adaptive offload adapter" {
     }
 }
 
+Describe "Adaptive MoE adapter" {
+    It "honors the explicit TypeScript MoE calibration opt-out" {
+        $old = $env:CALIBR_TS_MOE_CALIBRATION
+        try {
+            $env:CALIBR_TS_MOE_CALIBRATION = '0'
+            Assert-Equal $null (Resolve-TsMoeCalibrationScript)
+        } finally {
+            if ($null -eq $old) {
+                Remove-Item Env:\CALIBR_TS_MOE_CALIBRATION -ErrorAction SilentlyContinue
+            } else {
+                $env:CALIBR_TS_MOE_CALIBRATION = $old
+            }
+        }
+    }
+
+    It "keeps a conservative raw-engine fallback" {
+        $values = @(Get-FallbackMoeCpuLayers)
+        Assert-Equal 5 $values.Count
+        Assert-Equal 28 $values[0]
+        Assert-Equal 36 $values[4]
+    }
+}
+
 Describe "Plan workload identity" {
     function _meta {
         return @{
@@ -165,6 +188,23 @@ Describe "Plan workload identity" {
         Assert-Equal "abc123" $item.calibration_id
         Assert-Equal 26 $item.verified_fit_layers
         Assert-Equal 1 $item.fit_offset
+    }
+
+    It "records adaptive MoE calibration in n-cpu-moe terms" {
+        $calibration = @{
+            calibrated = $true
+            planning_mode = "adaptive-moe"
+            predicted_n_cpu_moe = 24
+            verified_n_cpu_moe = 25
+            first_spill_n_cpu_moe = 24
+            probe_count = 4
+        }
+        $item = New-PlanItem -meta (_meta) -sweep "moe-cpu" -level "high" `
+            -extraArgs "--n-cpu-moe 25 --fit off" -label "ncpumoe_25" -idx 1 `
+            -Calibration $calibration -CalibrationId "moe123" -FitOffset 0
+        Assert-Equal "adaptive-moe" $item.planning_mode
+        Assert-Equal 25 $item.verified_n_cpu_moe
+        Assert-Equal 24 $item.first_spill_n_cpu_moe
     }
 }
 
