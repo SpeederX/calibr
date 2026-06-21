@@ -15,6 +15,12 @@ import {
 } from "./resultCore.js";
 import { waitForServerReady } from "./serverLifecycle.js";
 import type { StreamTelemetryEvent } from "./benchClient.js";
+import {
+  inspectLlamaServer,
+  supportsOption,
+  validateLlamaArgs,
+  type LlamaCapabilities,
+} from "./llamaCompatibility.js";
 
 export interface BenchCoordinatorPayload {
   item: BenchItem;
@@ -50,6 +56,7 @@ export interface CoordinatorDeps {
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
   clockMs?: () => number;
+  inspectLlama?: (executable: string) => LlamaCapabilities;
 }
 
 const sleepDefault = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -144,17 +151,17 @@ function splitArgs(value: string | undefined): string[] {
   return String(value ?? "").split(/\s+/).filter(Boolean);
 }
 
-function serverArgs(payload: BenchCoordinatorPayload): string[] {
+function serverArgs(payload: BenchCoordinatorPayload, capabilities: LlamaCapabilities): string[] {
   const port = payload.cfg.bench?.port ?? 18080;
   const slotSavePath = join(dirname(payload.logFile), "slots");
   mkdirSync(slotSavePath, { recursive: true });
   const args = ["-m", String(payload.item.model_path ?? "")];
   if (payload.item.mmproj_path) args.push("--mmproj", payload.item.mmproj_path);
   args.push(...splitArgs(payload.item.extra_args));
-  args.push(
-    "--port", String(port), "--host", "127.0.0.1", "--no-warmup",
-    "--cache-ram", "128", "--slot-save-path", slotSavePath,
-  );
+  args.push("--port", String(port), "--host", "127.0.0.1");
+  if (supportsOption(capabilities, "--no-warmup")) args.push("--no-warmup");
+  if (supportsOption(capabilities, "--cache-ram")) args.push("--cache-ram", "128");
+  if (supportsOption(capabilities, "--slot-save-path")) args.push("--slot-save-path", slotSavePath);
   return args;
 }
 
@@ -239,6 +246,7 @@ function failureResult(
 async function runOne(
   payload: BenchCoordinatorPayload,
   runIndex: number,
+  capabilities: LlamaCapabilities,
   deps: CoordinatorDeps,
 ): Promise<BenchRun> {
   const now = deps.now ?? (() => new Date());
@@ -248,7 +256,7 @@ async function runOne(
   const runHttp = deps.runHttp ?? runFromPayload;
   const sleep = deps.sleep ?? sleepDefault;
   const executable = String(payload.cfg.llama_server_exe ?? "");
-  const args = serverArgs(payload);
+  const args = serverArgs(payload, capabilities);
   const baseUrl = `http://127.0.0.1:${payload.cfg.bench?.port ?? 18080}`;
   const timeoutMs = (payload.cfg.bench?.wait_sec_ready ?? 180) * 1000;
 
@@ -519,10 +527,37 @@ export async function runBenchCoordinator(
   writeFileSync(payload.logFile, "", "utf8");
   const runs: BenchRun[] = [];
   try {
+    const executable = String(payload.cfg.llama_server_exe ?? "");
+    const capabilities = (deps.inspectLlama ?? inspectLlamaServer)(executable);
+    const compatibilityArgs = [
+      "-m", String(payload.item.model_path ?? ""),
+      ...(payload.item.mmproj_path ? ["--mmproj", payload.item.mmproj_path] : []),
+      ...splitArgs(payload.item.extra_args),
+      "--port", String(payload.cfg.bench?.port ?? 18080),
+      "--host", "127.0.0.1",
+    ];
+    const compatibilityIssues = capabilities.ok
+      ? validateLlamaArgs(compatibilityArgs, capabilities)
+      : [capabilities.error ?? "could not inspect llama-server arguments"];
+    if (compatibilityIssues.length > 0) {
+      const run: BenchRun = {
+        run_index: 0,
+        timestamp: new Date().toISOString(),
+        ready: false,
+        ok: false,
+        error: `llama.cpp compatibility check failed: ${compatibilityIssues.join("; ")}`,
+      };
+      return {
+        ok: false,
+        runs: [run],
+        result: failureResult(payload.item, payload.cfg, run, payload.session),
+        error: String(run.error),
+      };
+    }
     const count = Math.max(1, Math.trunc(payload.runs));
     for (let i = 0; i < count; i++) {
       if (count > 1) emit(payload.eventFile, `  run ${i + 1}/${count}`);
-      const run = await runOne(payload, i, deps);
+      const run = await runOne(payload, i, capabilities, deps);
       runs.push(run);
       if (run.ok !== true) {
         return {

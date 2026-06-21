@@ -57,7 +57,9 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - verify the highest non-spilling layer count and expand a GPU-layer sweep
      around that measured cliff;
    - cap contexts at model metadata and selected policy limits;
-   - attach an explicit workload profile and token targets to every config.
+   - attach an explicit workload profile and token targets to every config;
+   - inspect the selected `llama-server --help`, adapt cache types to the
+     values exposed by that build, and omit unsupported optional harness flags.
 5. **Benchmark**
    - start llama-server and wait for readiness;
    - optionally warm up, then reset the KV slot;
@@ -90,6 +92,23 @@ The generated benchmark configs also use `--fit off`, preventing llama.cpp
 from silently changing the allocation that planning selected. If the adapter
 or required GGUF metadata is unavailable, PowerShell reports and uses the
 explicit conservative fallback.
+
+## llama.cpp argument compatibility
+
+llama.cpp's canonical CLI registry lives in
+[`common/arg.cpp`](https://github.com/ggml-org/llama.cpp/blob/master/common/arg.cpp),
+but calibr does not identify support from a hard-coded build-number table.
+The selected executable is the authority: calibr parses its `--help` output,
+records option aliases and the allowed K/V cache types, and validates every
+generated launch before starting the server. Unsupported cache requests fall
+back quality-first to `q8_0`, then `f16`; optional harness flags such as
+`--cache-ram`, `--slot-save-path`, and `--no-warmup` are emitted only when the
+build exposes them. A missing required sweep flag produces an explicit
+compatibility failure instead of a misleading readiness timeout.
+
+This runtime capability contract survives backports and custom builds better
+than version inference. Git history for `common/arg.cpp` remains useful for
+maintainers when adding aliases or understanding a transition.
 
 Shared-memory growth is retained as probe diagnostics but is not a standalone
 fit veto: on WDDM, intentional CPU-offloaded model buffers may appear as
