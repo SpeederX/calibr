@@ -1483,6 +1483,7 @@ function fitLabel(c) {
       return c.unsupported_architecture
         ? 'unsupported arch: ' + c.unsupported_architecture
         : 'unsupported architecture';
+    case 'unsupported_llama_args': return 'unsupported llama.cpp arguments';
     case 'vram_overflow':  return 'vram overflow on load';
     case 'server_timeout': return 'llama-server timeout';
     case 'other':          return 'load failed';
@@ -1507,6 +1508,7 @@ function fitClass(c) {
 function failureLabel(reason) {
   switch (reason) {
     case 'unsupported_arch': return 'unsupported architecture (needs newer llama.cpp build)';
+    case 'unsupported_llama_args': return 'selected llama.cpp build does not support required arguments';
     case 'vram_overflow':    return 'ran out of VRAM on load';
     case 'server_timeout':   return 'llama-server never became ready';
     case 'other':            return 'load failed';

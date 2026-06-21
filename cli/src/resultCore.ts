@@ -281,6 +281,7 @@ export function finalizeBenchRun(payload: {
 
 export function getFailureReason(result: Record<string, unknown>, sharedConfirmMib = 500): string | null {
   if (result.ok === true) return null;
+  if (String(result.error ?? "").startsWith("llama.cpp compatibility check failed:")) return "unsupported_llama_args";
   if (result.unsupported_architecture) return "unsupported_arch";
   if (result.fit_status === "failed_but_running") return "vram_overflow";
   if (int(result.shared_peak_mib) > sharedConfirmMib) return "vram_overflow";

@@ -9,6 +9,61 @@ function Get-SweepKind {
     return Get-FallbackSweepKind -Meta $meta -Config $cfg
 }
 
+function Resolve-TsLlamaCompatibilityScript {
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\llamaCompatibilityCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\llamaCompatibilityCli.js")
+    )
+    return @($candidates | Where-Object { Test-Path $_ } | Select-Object -First 1)[0]
+}
+
+function Get-LlamaArgumentCapabilities {
+    param($Config)
+    if (-not $Config.llama_server_exe -or -not (Test-Path $Config.llama_server_exe)) { return $null }
+    $scriptPath = Resolve-TsLlamaCompatibilityScript
+    if (-not $scriptPath) { return $null }
+    try {
+        $json = & node $scriptPath $Config.llama_server_exe
+        if (-not $json) { return $null }
+        return ($json | ConvertFrom-Json)
+    } catch {
+        Write-Host ("  llama.cpp compatibility inspection failed: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+        return $null
+    }
+}
+
+function Test-LlamaArgumentOption {
+    param($Capabilities, [string[]]$Names)
+    if (-not $Capabilities -or -not $Capabilities.options) { return $true }
+    foreach ($name in $Names) {
+        if (@($Capabilities.options) -contains $name) { return $true }
+    }
+    return $false
+}
+
+function Resolve-CompatibleKvType {
+    param([string]$Requested, $Allowed)
+    $values = @($Allowed | ForEach-Object { [string]$_ })
+    if ($values.Count -eq 0 -or $values -contains $Requested) { return $Requested }
+    foreach ($fallback in @('q8_0', 'f16')) {
+        if ($values -contains $fallback) { return $fallback }
+    }
+    return $values[0]
+}
+
+function Get-CompatibleContextCandidateKv {
+    param($Candidate, $Capabilities)
+    $kv = Get-ContextCandidateKv -Candidate $Candidate
+    if (-not $Capabilities) { return $kv }
+    $k = Resolve-CompatibleKvType -Requested $kv.k -Allowed $Capabilities.cacheTypesK
+    $v = Resolve-CompatibleKvType -Requested $kv.v -Allowed $Capabilities.cacheTypesV
+    return @{
+        k = $k
+        v = $v
+        label = $(if ($k -eq $v) { "kv=$k" } else { "kvk=${k}_kvv=$v" })
+    }
+}
+
 function Get-CatalogLevelMap {
     # Builds {hf_file.ToLower() -> level} where level is the hardware preset
     # (low / middle / high / ultra) a curated model belongs to. The presets
@@ -237,6 +292,20 @@ function Invoke-Plan {
 
     $cfg = Get-Config
     Write-Host "=== plan ===" -ForegroundColor Cyan
+    $llamaCapabilities = Get-LlamaArgumentCapabilities -Config $cfg
+    if ($llamaCapabilities) {
+        Write-Host ("  llama.cpp compatibility: {0} options, K cache [{1}], V cache [{2}]" -f `
+            @($llamaCapabilities.options).Count, `
+            (@($llamaCapabilities.cacheTypesK) -join ','), `
+            (@($llamaCapabilities.cacheTypesV) -join ',')) -ForegroundColor DarkGray
+    }
+    $supportsMoe = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--n-cpu-moe', '-ncmoe')
+    $supportsCacheK = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--cache-type-k', '-ctk')
+    $supportsCacheV = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--cache-type-v', '-ctv')
+    $supportsFit = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--fit', '-fit')
+    $supportsCacheRam = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--cache-ram', '-cram')
+    $supportsNoWarmup = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--no-warmup')
+    $supportsAdaptiveProbe = $supportsFit -and $supportsCacheK -and $supportsCacheV -and $supportsCacheRam -and $supportsNoWarmup
     if (-not (Test-Path $CALIBR_CATALOG)) { throw "catalog.json missing. Run: calibr discover" }
     $catRaw = Get-Content $CALIBR_CATALOG -Raw | ConvertFrom-Json
     $catalog = ConvertTo-Hashtable -obj $catRaw
@@ -269,7 +338,9 @@ function Invoke-Plan {
     $ctxOverride = @($PlanningPolicy.context_sizes | ForEach-Object { [int]$_ })
     if ($ctxOverride -and $ctxOverride.Count -gt 0) {
         $kvByCtx = @{}
-        foreach ($c in $cfg.context_candidates) { $kvByCtx[[int]$c.ctx] = Get-ContextCandidateKv -Candidate $c }
+        foreach ($c in $cfg.context_candidates) {
+            $kvByCtx[[int]$c.ctx] = Get-CompatibleContextCandidateKv -Candidate $c -Capabilities $llamaCapabilities
+        }
         $ctxCandidates = @($ctxOverride | ForEach-Object {
             $kv = if ($kvByCtx.ContainsKey($_)) { $kvByCtx[$_] } else { @{ k = 'q8_0'; v = 'q8_0' } }
             @{ ctx = $_; kv_k = $kv.k; kv_v = $kv.v }
@@ -286,7 +357,7 @@ function Invoke-Plan {
         $bnameLvl = [System.IO.Path]::GetFileName($m.path)
         $level = if ($bnameLvl -and $levelMap.ContainsKey($bnameLvl.ToLower())) { $levelMap[$bnameLvl.ToLower()] } else { $null }
         if ($Level -and $level -ne $Level) { continue }
-        if (-not $m.is_moe -and -not $DryRun) {
+        if (-not $m.is_moe -and -not $DryRun -and $supportsAdaptiveProbe) {
             $offloadSettings = $cfg.planning.offload_planning
             $probeCtx = if ($offloadSettings.context_size) { [int]$offloadSettings.context_size } else { 16384 }
             $probeKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
@@ -312,10 +383,11 @@ function Invoke-Plan {
                 Write-Host ("  adaptive offload fallback for {0}: {1}" -f $m.model, $calibration.reason) `
                     -ForegroundColor DarkYellow
             }
-        } elseif ($m.is_moe -and -not $DryRun) {
+        } elseif ($m.is_moe -and -not $DryRun -and $supportsMoe -and $supportsAdaptiveProbe) {
             $moeSettings = $cfg.planning.moe_planning
             $probeCtx = if ($moeSettings.context_size) { [int]$moeSettings.context_size } else { 16384 }
-            $probeKv = if ($moeSettings.kv_type) { [string]$moeSettings.kv_type } else { "q8_0" }
+            $requestedProbeKv = if ($moeSettings.kv_type) { [string]$moeSettings.kv_type } else { "q8_0" }
+            $probeKv = Resolve-CompatibleKvType -Requested $requestedProbeKv -Allowed $llamaCapabilities.cacheTypesK
             $calibrationId = Get-MoeCalibrationId `
                 -Meta $m -Config $cfg -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
             $calibration = Get-CachedOffloadCalibration `
@@ -337,6 +409,8 @@ function Invoke-Plan {
                 Write-Host ("  adaptive MoE fallback for {0}: {1}" -f $m.model, $calibration.reason) `
                     -ForegroundColor DarkYellow
             }
+        } elseif ($m.is_moe -and -not $supportsMoe) {
+            Write-Host ("  llama.cpp build does not expose --n-cpu-moe; keeping only the vanilla control for {0}" -f $m.model) -ForegroundColor DarkYellow
         }
 
         # Per-model ctx cap if the .gguf basename matches a curated sample.
@@ -365,7 +439,7 @@ function Invoke-Plan {
                     $next = @($ctxCandidates | Where-Object { [int]$_.ctx -gt $perModelCap } | Sort-Object { [int]$_.ctx } | Select-Object -First 1)
                     $fallback = @($ctxCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
                     $source = if ($next.Count -gt 0) { $next[0] } elseif ($fallback.Count -gt 0) { $fallback[0] } else { @{ kv = 'q8_0' } }
-                    $kv = Get-ContextCandidateKv -Candidate $source
+                    $kv = Get-CompatibleContextCandidateKv -Candidate $source -Capabilities $llamaCapabilities
                     $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv_k = $kv.k; kv_v = $kv.v })
                     $modelCandidates = @($modelCandidates | Sort-Object { [int]$_.ctx })
                 }
@@ -376,9 +450,10 @@ function Invoke-Plan {
                         continue
                     }
                     $validCandidates += $c
-                    $kv = Get-ContextCandidateKv -Candidate $c
-                    $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
-                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($kv.k) --cache-type-v $($kv.v) $base$fitArg"
+                    $kv = Get-CompatibleContextCandidateKv -Candidate $c -Capabilities $llamaCapabilities
+                    $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
+                    $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $($kv.k) --cache-type-v $($kv.v)" } else { "" }
+                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99$cacheArgs $base$fitArg"
                     $plan += (New-PlanItem `
                         -meta $m -sweep $sweep -level $level -extraArgs $argStr `
                         -label "ctx=$($c.ctx)_$($kv.label)" -idx $idx `
@@ -388,9 +463,10 @@ function Invoke-Plan {
                 $anchor = @($validCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
                 if ($anchor.Count -gt 0) {
                     $anchorCtx = [int]$anchor[0].ctx
-                    $anchorKv = Get-ContextCandidateKv -Candidate $anchor[0]
-                    $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
-                    $argStr = "--ctx-size $anchorCtx --gpu-layers 99 --cache-type-k $($anchorKv.k) --cache-type-v $($anchorKv.v) $base$fitArg"
+                    $anchorKv = Get-CompatibleContextCandidateKv -Candidate $anchor[0] -Capabilities $llamaCapabilities
+                    $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
+                    $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $($anchorKv.k) --cache-type-v $($anchorKv.v)" } else { "" }
+                    $argStr = "--ctx-size $anchorCtx --gpu-layers 99$cacheArgs $base$fitArg"
                     $profiles = @(Get-WorkloadProfilesForContext `
                         -ContextSize $anchorCtx `
                         -Config $cfg `
@@ -413,6 +489,7 @@ function Invoke-Plan {
                 }
             }
             "moe-cpu" {
+                if (-not $supportsMoe) { break }
                 $values = if ($calibration -and $calibration.calibrated) {
                     @($calibration.benchmark_n_cpu_moe | ForEach-Object { [int]$_ })
                 } else {
@@ -420,10 +497,12 @@ function Invoke-Plan {
                 }
                 $moeSettings = $cfg.planning.moe_planning
                 $moeCtx = if ($moeSettings.context_size) { [int]$moeSettings.context_size } else { 16384 }
-                $moeKv = if ($moeSettings.kv_type) { [string]$moeSettings.kv_type } else { "q8_0" }
+                $requestedMoeKv = if ($moeSettings.kv_type) { [string]$moeSettings.kv_type } else { "q8_0" }
+                $moeKv = Resolve-CompatibleKvType -Requested $requestedMoeKv -Allowed $llamaCapabilities.cacheTypesK
                 foreach ($n in $values) {
-                    $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
-                    $argStr = "--ctx-size $moeCtx --gpu-layers 99 --n-cpu-moe $n --cache-type-k $moeKv --cache-type-v $moeKv $base$fitArg"
+                    $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
+                    $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $moeKv --cache-type-v $moeKv" } else { "" }
+                    $argStr = "--ctx-size $moeCtx --gpu-layers 99 --n-cpu-moe $n$cacheArgs $base$fitArg"
                     $fitOffset = if ($calibration -and $calibration.calibrated) {
                         [int]$n - [int]$calibration.verified_n_cpu_moe
                     } else { $null }
@@ -442,10 +521,12 @@ function Invoke-Plan {
                 }
                 $offloadSettings = $cfg.planning.offload_planning
                 $offloadCtx = if ($offloadSettings.context_size) { [int]$offloadSettings.context_size } else { 16384 }
-                $offloadKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
+                $requestedOffloadKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
+                $offloadKv = Resolve-CompatibleKvType -Requested $requestedOffloadKv -Allowed $llamaCapabilities.cacheTypesK
                 foreach ($n in $layers) {
-                    $fitArg = if ($calibration -and $calibration.calibrated) { " --fit off" } else { "" }
-                    $argStr = "--ctx-size $offloadCtx --gpu-layers $n --cache-type-k $offloadKv --cache-type-v $offloadKv $base$fitArg"
+                    $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
+                    $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $offloadKv --cache-type-v $offloadKv" } else { "" }
+                    $argStr = "--ctx-size $offloadCtx --gpu-layers $n$cacheArgs $base$fitArg"
                     $fitOffset = if ($calibration -and $calibration.calibrated) {
                         [int]$n - [int]$calibration.verified_fit_layers
                     } else { $null }

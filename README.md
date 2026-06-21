@@ -126,8 +126,10 @@ The default context sweep is quality-first. It uses `q8_0` for both K and V
 through ordinary contexts, then preserves K at `q8_0` while using `q5_1` for V
 as the moderate long-context compromise. Symmetric `q4_0` is reserved for the
 final rescue context, where its purpose is to test whether an otherwise
-unusable configuration can run. The active llama.cpp build must advertise the
-selected cache types.
+unusable configuration can run. calibr inspects the active
+`llama-server --help`: unsupported cache requests fall back to `q8_0`, then
+`f16`, while unsupported required sweep arguments fail before model loading
+with a compatibility message.
 
 For oversized dense models, guided run no longer assumes a fixed GPU-layer
 range tuned for one VRAM size. It performs bounded load-only probes using the
@@ -146,8 +148,10 @@ MoE models use load probes to find an initial `--n-cpu-moe` allocation anchor.
 That anchor is not treated as a performance boundary: expert activation during
 inference can create heavy WDDM shared-memory traffic that is invisible at
 load time. The benchmark therefore covers the anchor neighborhood, proportional
-CPU-offload points, and the CPU-heavy tail; measured throughput and spill decide
-the winner.
+CPU-offload points, and the CPU-heavy tail. With prefill/KV diagnostics enabled,
+the baseline sweep completes first and those heavier workloads run only on its
+empirical speed winner. Measured throughput decides the winner; shared memory
+remains diagnostic because CPU expert mapping can legitimately appear there.
 
 There is not one universal winner. The report exposes profiles:
 

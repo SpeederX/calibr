@@ -550,7 +550,7 @@ export interface Result {
   shared_peak_mib?: number;
   wddm_vram_saturation?: number;
   fit_status?: string;
-  failure_reason?: "vram_overflow" | "server_timeout" | "unsupported_arch" | "model_missing" | "other" | null;
+  failure_reason?: "vram_overflow" | "server_timeout" | "unsupported_arch" | "unsupported_llama_args" | "model_missing" | "other" | null;
   unsupported_architecture?: string | null;
   extra_args?: string;
   timestamp?: string;

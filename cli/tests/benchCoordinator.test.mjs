@@ -20,6 +20,20 @@ function child() {
   return proc;
 }
 
+const testCapabilities = {
+  executable: "llama-server",
+  version: "test",
+  options: [
+    "-m", "--ctx-size", "--port", "--host", "--no-warmup",
+    "--cache-ram", "--slot-save-path",
+  ],
+  cacheTypesK: [],
+  cacheTypesV: [],
+  helpExitCode: 0,
+  ok: true,
+  error: null,
+};
+
 test("integrateGpuEnergyWh integrates sampled board power across elapsed time", () => {
   const wh = integrateGpuEnergyWh([
     { elapsed_ms: 0, gpu_power_w: 100 },
@@ -59,6 +73,7 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
       eventFile: join(root, "events.log"),
       logFile: join(root, "bench.log"),
     }, {
+      inspectLlama: () => testCapabilities,
       spawnServer: () => child(),
       waitReady: async () => ({ ready: true, loadMs: 100, reason: "ready" }),
       collectSample: async () => ({
@@ -132,6 +147,7 @@ test("runBenchCoordinator stops after the first failed run", async () => {
       eventFile: join(root, "events.log"),
       logFile: join(root, "bench.log"),
     }, {
+      inspectLlama: () => testCapabilities,
       spawnServer: () => child(),
       waitReady: async () => ({ ready: true, loadMs: 100, reason: "ready" }),
       collectSample: async () => ({
@@ -164,6 +180,43 @@ test("runBenchCoordinator stops after the first failed run", async () => {
     assert.equal(out.ok, false);
     assert.equal(out.runs.length, 1);
     assert.equal(httpCalls, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runBenchCoordinator rejects unsupported sweep arguments before spawning llama-server", async () => {
+  const root = mkdtempSync(join(tmpdir(), "calibr-coordinator-compat-"));
+  let spawned = false;
+  try {
+    const out = await runBenchCoordinator({
+      item: {
+        id: "x",
+        model: "X",
+        model_path: "x.gguf",
+        extra_args: "--ctx-size 16 --n-cpu-moe 4",
+      },
+      cfg: {
+        llama_server_exe: "llama-server",
+        bench: { port: 18080 },
+      },
+      runs: 1,
+      eventFile: join(root, "events.log"),
+      logFile: join(root, "bench.log"),
+    }, {
+      inspectLlama: () => ({
+        ...testCapabilities,
+        options: testCapabilities.options.filter((option) => option !== "--n-cpu-moe"),
+      }),
+      spawnServer: () => {
+        spawned = true;
+        return child();
+      },
+    });
+    assert.equal(out.ok, false);
+    assert.equal(spawned, false);
+    assert.equal(out.result.failure_reason, "unsupported_llama_args");
+    assert.match(out.error, /--n-cpu-moe/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

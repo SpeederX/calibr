@@ -1666,6 +1666,7 @@ function Get-FailureReason {
     param($result, [int]$sharedConfirmMib = 500)
     if ($null -eq $result) { return $null }
     if ($result.ok) { return $null }
+    if ([string]$result.error -like 'llama.cpp compatibility check failed:*') { return "unsupported_llama_args" }
     if ($result.unsupported_architecture) { return "unsupported_arch" }
     $shared = if ($null -ne $result.shared_peak_mib) { [int]$result.shared_peak_mib } else { 0 }
     if ($result.fit_status -eq "failed_but_running" -or $shared -gt $sharedConfirmMib) {
