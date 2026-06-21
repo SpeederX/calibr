@@ -35,6 +35,45 @@ Describe "Invoke-DenseOverrideFilter" {
     }
 }
 
+Describe "Multi-shard GGUF discovery" {
+    It "recognizes only the first shard as the model entry point" {
+        $first = Get-GgufShardIdentity "Model-UD-Q3_K_XL-00001-of-00003.gguf"
+        $second = Get-GgufShardIdentity "Model-UD-Q3_K_XL-00002-of-00003.gguf"
+        Assert-Equal "Model-UD-Q3_K_XL" $first.base
+        Assert-Equal 1 $first.index
+        Assert-Equal 3 $first.total
+        Assert-Equal 2 $second.index
+        Assert-Equal $null (Get-GgufShardIdentity "Model-Q4_K_M.gguf")
+    }
+
+    It "aggregates shard size while preserving model and variant parsing" {
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-shards-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+        try {
+            $one = Join-Path $tmp "Qwen3.5-122B-A10B-UD-Q3_K_XL-00001-of-00002.gguf"
+            $two = Join-Path $tmp "Qwen3.5-122B-A10B-UD-Q3_K_XL-00002-of-00002.gguf"
+            [System.IO.File]::WriteAllBytes($one, [byte[]]::new(1024))
+            [System.IO.File]::WriteAllBytes($two, [byte[]]::new(2048))
+            $files = @(Get-ChildItem -LiteralPath $tmp -Filter "*.gguf")
+            $meta = Get-ModelMetadata -path $one -ShardFiles $files
+            Assert-Equal "Qwen3.5-122B-A10B" $meta.model
+            Assert-Equal "UD-Q3_K_XL" $meta.variant
+            Assert-True $meta.is_moe
+            Assert-Equal 3072 $meta.size_bytes
+            Assert-Equal 2 $meta.shard_count
+            Assert-Equal 2 $meta.shard_paths.Count
+            Assert-Equal $one $meta.path
+        } finally {
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "uses GGUF expert tensors to identify MoE models whose names lack A3B notation" {
+        Assert-True (Test-GgufMetadataIsMoe -Metadata @{ expert_tensor_bytes = 1024 })
+        Assert-False (Test-GgufMetadataIsMoe -Metadata @{ expert_tensor_bytes = 0 })
+    }
+}
+
 
 Describe "Find-MmprojSharedAcrossModels" {
     It "returns no warnings for an empty catalog" {

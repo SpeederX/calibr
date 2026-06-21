@@ -4,10 +4,66 @@
 # ============================================================================
 # SUBCOMMAND: discover
 # ============================================================================
+function Get-GgufShardIdentity {
+    param([string]$FileName)
+    if ($FileName -match '^(?<base>.+)-(?<index>\d{5})-of-(?<total>\d{5})\.gguf$') {
+        return @{
+            base = $Matches.base
+            index = [int]$Matches.index
+            total = [int]$Matches.total
+        }
+    }
+    return $null
+}
+
+function Merge-GgufShardMetadata {
+    param([object[]]$ShardFiles)
+    $merged = @{
+        architecture = $null
+        context_length = $null
+        block_count = $null
+        tensor_count = 0
+        tensor_data_offset = $null
+        tensor_bytes = 0
+        global_tensor_bytes = 0
+        expert_tensor_bytes = 0
+        block_tensor_bytes = @()
+    }
+    $blocks = @{}
+    foreach ($shard in @($ShardFiles)) {
+        $part = Get-GgufHeaderMetadata -Path $shard.FullName
+        if (-not $merged.architecture -and $part.architecture) { $merged.architecture = $part.architecture }
+        if (-not $merged.context_length -and $part.context_length) { $merged.context_length = $part.context_length }
+        if (-not $merged.block_count -and $part.block_count) { $merged.block_count = $part.block_count }
+        if (-not $merged.tensor_data_offset -and $part.tensor_data_offset) { $merged.tensor_data_offset = $part.tensor_data_offset }
+        $merged.tensor_count += [int]$part.tensor_count
+        $merged.tensor_bytes += [int64]$(if ($part.tensor_bytes) { $part.tensor_bytes } else { 0 })
+        $merged.global_tensor_bytes += [int64]$(if ($part.global_tensor_bytes) { $part.global_tensor_bytes } else { 0 })
+        $merged.expert_tensor_bytes += [int64]$(if ($part.expert_tensor_bytes) { $part.expert_tensor_bytes } else { 0 })
+        foreach ($entry in @($part.block_tensor_bytes)) {
+            $key = [int]$entry.block
+            if (-not $blocks.ContainsKey($key)) { $blocks[$key] = @{ bytes = [int64]0; expert_bytes = [int64]0 } }
+            $blocks[$key].bytes += [int64]$entry.bytes
+            $blocks[$key].expert_bytes += [int64]$entry.expert_bytes
+        }
+    }
+    $merged.block_tensor_bytes = @($blocks.Keys | Sort-Object | ForEach-Object {
+        @{ block = [int]$_; bytes = [int64]$blocks[$_].bytes; expert_bytes = [int64]$blocks[$_].expert_bytes }
+    })
+    return $merged
+}
+
+function Test-GgufMetadataIsMoe {
+    param($Metadata)
+    return ([int64]$(if ($Metadata.expert_tensor_bytes) { $Metadata.expert_tensor_bytes } else { 0 }) -gt 0)
+}
+
 function Get-ModelMetadata {
-    param([string]$path)
+    param([string]$path, [object[]]$ShardFiles = @())
     $file = Get-Item -LiteralPath $path
-    $fname = $file.BaseName
+    $shards = if ($ShardFiles.Count -gt 0) { @($ShardFiles | Sort-Object Name) } else { @($file) }
+    $shardIdentity = Get-GgufShardIdentity -FileName $file.Name
+    $fname = if ($shardIdentity) { $shardIdentity.base } else { $file.BaseName }
 
     $variant = "unknown"
     $model   = $fname
@@ -17,8 +73,8 @@ function Get-ModelMetadata {
         '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_S)$',
         '^(?<m>.+?)[\.\-](?<v>Q\d+_K_[A-Z]+)$',
         '^(?<m>.+?)[\.\-](?<v>Q\d+_\d+)$',
-        '^(?<m>.+?)[\.\-](?<v>IQ\d+_[A-Z_]+)$',
-        '^(?<m>.+?)[\.\-](?<v>BF16|F16|F32)$'
+        '^(?<m>.+?)[\.\-](?<v>IQ\d+_[A-Z0-9_-]+)$',
+        '^(?<m>.+?)[\.\-](?<v>BF16|F16|F32|(?i:MXFP4))$'
     )
     foreach ($p in $variantPatterns) {
         if ($fname -match $p) { $model = $Matches.m; $variant = $Matches.v; break }
@@ -50,15 +106,25 @@ function Get-ModelMetadata {
         $mmproj = $pref.FullName
     }
 
-    $gguf = Get-GgufHeaderMetadata -Path $file.FullName
+    $gguf = if ($shards.Count -gt 1) {
+        Merge-GgufShardMetadata -ShardFiles $shards
+    } else {
+        Get-GgufHeaderMetadata -Path $file.FullName
+    }
+    if (Test-GgufMetadataIsMoe -Metadata $gguf) {
+        $is_moe = $true
+    }
     $curated = Get-CuratedMetadataForFile -FileName $file.Name
+    [int64]$sizeBytes = ($shards | Measure-Object -Property Length -Sum).Sum
 
     return @{
         role       = "model"
         path       = $file.FullName
         name       = $file.Name
-        size_bytes = $file.Length
-        size_mib   = [int]($file.Length / 1MB)
+        size_bytes = $sizeBytes
+        size_mib   = [int]($sizeBytes / 1MB)
+        shard_count = $shards.Count
+        shard_paths = @($shards | ForEach-Object { $_.FullName })
         model      = $model
         series     = $series
         variant    = $variant
@@ -312,14 +378,29 @@ function Invoke-Discover {
         if ($base -eq "." -or $base -eq ".\") {
             Write-Host "  (relative path; resolves against the current working directory)" -ForegroundColor DarkYellow
         }
-        $ggufs = Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue
+        $ggufs = @(Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue)
         foreach ($f in $ggufs) {
             $skip = $false
             foreach ($ex in $cfg.exclude_patterns) {
                 if ($f.Name -like $ex) { $skip = $true; break }
             }
             if ($skip) { continue }
-            $meta = Get-ModelMetadata $f.FullName
+            $shardIdentity = Get-GgufShardIdentity -FileName $f.Name
+            $shardFiles = @()
+            if ($shardIdentity) {
+                if ($shardIdentity.index -ne 1) { continue }
+                $escapedBase = [regex]::Escape($shardIdentity.base)
+                $escapedTotal = $shardIdentity.total.ToString('D5')
+                $shardFiles = @($ggufs | Where-Object {
+                    $_.DirectoryName -eq $f.DirectoryName -and
+                    $_.Name -match "^${escapedBase}-(\d{5})-of-${escapedTotal}\.gguf$"
+                } | Sort-Object Name)
+                if ($shardFiles.Count -ne $shardIdentity.total) {
+                    Write-Warning ("incomplete GGUF shard set for {0}: found {1}/{2}; skipping" -f $shardIdentity.base, $shardFiles.Count, $shardIdentity.total)
+                    continue
+                }
+            }
+            $meta = Get-ModelMetadata -path $f.FullName -ShardFiles $shardFiles
             $meta = Invoke-DenseOverrideFilter -meta $meta -denseOverrides $cfg.dense_overrides
             $catalog += $meta
             Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.model, $meta.size_mib, $meta.variant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray
