@@ -119,3 +119,34 @@ test("groupByModel applies the same near-tie winner rule as the report", () => {
   assert.equal(groups.length, 1);
   assert.equal(groups[0].winner.id, "large-near");
 });
+
+test("groupByModel keeps rendering when a model has only controls or diagnostic workloads", () => {
+  const cfg = { wddm_detection: { shared_delta_confirm_mib: 500 } };
+  const groups = engine.groupByModel([
+    {
+      id: "vanilla",
+      model: "Gemma",
+      series: "Gemma-4",
+      variant: "Q4",
+      ok: true,
+      eval_tps: 56,
+      control_kind: "vanilla",
+      workload_kind: "baseline",
+    },
+    {
+      id: "prefill",
+      model: "Gemma",
+      series: "Gemma-4",
+      variant: "Q4",
+      ok: true,
+      eval_tps: 22,
+      workload_kind: "prefill",
+      prefill_target_tokens: 117964,
+    },
+  ], cfg);
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].winner.id, "vanilla");
+  assert.equal(groups[0].winner._fallback, true);
+  assert.equal(groups[0].series, "Gemma-4");
+});
