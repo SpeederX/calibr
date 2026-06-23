@@ -181,6 +181,11 @@ inventing a percentage from a zero baseline. The report also shows the launch
 profile for controls and calibrated configs: requested context/cache/offload
 flags plus effective slot context, parallelism, offloaded layers, buffer sizes,
 and Flash Attention state parsed from llama-server logs when available.
+Context-primary models also get a small set of vanilla-adjacent speed probes at
+the largest valid context: ctx-only, ctx+parallel=1, and ctx+parallel=1+KV cache
+type. They are diagnostic controls, not winner candidates. Their job is to
+explain whether a vanilla/calibr speed gap comes from context, auto-parallelism,
+KV-cache precision, or calibr's remaining base runtime flags.
 
 "Safe" currently means no confirmed shared-memory spill. On Windows, that is a
 delta above `wddm_detection.shared_delta_confirm_mib` (default `500 MiB`) in

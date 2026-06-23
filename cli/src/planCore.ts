@@ -94,7 +94,7 @@ export interface PlanItem {
   gguf_context_length: number | null | undefined;
   gguf_architecture: string | null | undefined;
   workload_kind: "baseline" | "prefill" | "kv-fill";
-  control_kind?: "vanilla" | null;
+  control_kind?: "vanilla" | "vanilla-adjacent" | null;
   conditional_kind?: "kv_rescue" | null;
   conditional_source_id?: string | null;
   prefill_target_tokens: number;
@@ -230,7 +230,7 @@ export function newPlanItem(
   extraArgs: string,
   label: string,
   workload: PlanWorkload = {},
-  controlKind: "vanilla" | null = null,
+  controlKind: PlanItem["control_kind"] = null,
 ): PlanItem {
   const sanitizedModel = `${meta.model}_${meta.variant}`.replace(/[^\w]/g, "_").slice(0, 40);
   const workloadKind = workload.kind ?? "baseline";
@@ -257,6 +257,28 @@ export function newPlanItem(
     label: `${meta.model} ${meta.variant} @ ${identityLabel}`,
     extra_args: extraArgs,
   };
+}
+
+function vanillaAdjacentSpeedProbes(
+  meta: PlanMeta,
+  sweep: PlanItem["sweep"],
+  level: string | null,
+  ctx: number,
+  cacheType = "q8_0",
+): PlanItem[] {
+  return [
+    newPlanItem(meta, sweep, level, `--ctx-size ${ctx}`, `llama_cpp_ctx=${ctx}_default`, {}, "vanilla-adjacent"),
+    newPlanItem(meta, sweep, level, `--ctx-size ${ctx} --parallel 1`, `llama_cpp_ctx=${ctx}_parallel1`, {}, "vanilla-adjacent"),
+    newPlanItem(
+      meta,
+      sweep,
+      level,
+      `--ctx-size ${ctx} --parallel 1 --cache-type-k ${cacheType} --cache-type-v ${cacheType}`,
+      `llama_cpp_ctx=${ctx}_parallel1_kv=${cacheType}`,
+      {},
+      "vanilla-adjacent",
+    ),
+  ];
 }
 
 export function invokePlan(
@@ -340,6 +362,9 @@ export function invokePlan(
       const anchor = validCandidates.at(-1);
       if (anchor) {
         const kv = contextCandidateKv(anchor);
+        for (const probe of vanillaAdjacentSpeedProbes(meta, sweep, level, anchor.ctx, kv.k)) {
+          plan.push(probe);
+        }
         const args = `--ctx-size ${anchor.ctx} --gpu-layers 99 --cache-type-k ${kv.k} --cache-type-v ${kv.v}${suffix}`;
         for (const workload of workloadProfilesForContext(anchor.ctx, cfg, opts.workloadSweep ?? "baseline")) {
           const target = workload.kind === "prefill" ? workload.prefillTokens : workload.kvFillTokens;

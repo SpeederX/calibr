@@ -76,6 +76,7 @@ const presets = {
 test("invokePlan matches the PowerShell-equivalent mixed-sweep fixture", () => {
   const plan = invokePlan(catalog, cfg, modelsCatalog, presets);
   assert.equal(plan.filter((p) => p.control_kind === "vanilla").length, 3);
+  assert.equal(plan.filter((p) => p.control_kind === "vanilla-adjacent").length, 3);
   assert.deepEqual(plan.filter((p) => !p.control_kind).map((p) => ({
     id: p.id,
     model: p.model,
@@ -219,6 +220,28 @@ test("vanilla control carries no tuning arguments and is excluded from workload 
   assert.equal(controls[0].extra_args, "");
   assert.equal(controls[0].workload_kind, "baseline");
   assert.match(controls[0].id, /vanilla_llama_cpp/);
+  const adjacent = plan.filter((item) => item.control_kind === "vanilla-adjacent");
+  assert.deepEqual(adjacent.map((item) => ({
+    label: item.label,
+    extra_args: item.extra_args,
+    workload_kind: item.workload_kind,
+  })), [
+    {
+      label: "Qwen3.5-4B Q4_K_M @ llama_cpp_ctx=131072_default",
+      extra_args: "--ctx-size 131072",
+      workload_kind: "baseline",
+    },
+    {
+      label: "Qwen3.5-4B Q4_K_M @ llama_cpp_ctx=131072_parallel1",
+      extra_args: "--ctx-size 131072 --parallel 1",
+      workload_kind: "baseline",
+    },
+    {
+      label: "Qwen3.5-4B Q4_K_M @ llama_cpp_ctx=131072_parallel1_kv=q8_0",
+      extra_args: "--ctx-size 131072 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0",
+      workload_kind: "baseline",
+    },
+  ]);
 });
 
 test("plan item identity includes non-baseline workload targets", () => {

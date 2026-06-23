@@ -46,6 +46,10 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
 4. **Expand run configs**
    - add one untuned llama.cpp control per model, excluded from winner
      selection;
+   - for context-primary models, add vanilla-adjacent diagnostic controls at
+     the largest valid context: ctx-only, ctx+parallel=1, and
+     ctx+parallel=1+KV cache type. These isolate why llama.cpp defaults may be
+     faster or slower than calibr's fully controlled profile;
    - quality-first context/KV sweep for models expected to fit: every primary
      context target uses `q8_0/q8_0`; `q4_0/q4_0` is a conditional fallback at
      the same context after direct capacity evidence;
@@ -96,6 +100,12 @@ therefore shows both configurations and labels the claim accordingly. Result
 rows also carry a launch profile: requested context/cache/offload flags plus
 effective slot context, parallelism, offloaded layers, buffer sizes, and Flash
 Attention state parsed from llama-server logs when available.
+
+Vanilla-adjacent speed probes sit between pure vanilla and calibrated configs.
+They remain controls and never become launchers. Their sequence deliberately
+adds one constraint at a time so a report can explain gaps like "vanilla is
+faster because default KV/cache or auto-parallelism is better for this model",
+instead of presenting vanilla and calibr as if they were identical profiles.
 
 Adaptive offload probes reuse the TypeScript llama-server lifecycle and
 hardware sampler. They force `--fit off`, disable warmup and prompt-cache

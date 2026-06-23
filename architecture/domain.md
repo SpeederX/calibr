@@ -81,6 +81,14 @@ slot context, `n_parallel`, slots, offloaded layers, buffers, and Flash
 Attention state. Vanilla controls use llama.cpp defaults, so their throughput is
 not directly comparable to calibrated configs until the launch profile is shown.
 
+### Control run
+
+A non-winner diagnostic run used for comparison. `vanilla` is the pure
+llama.cpp-default control. `vanilla-adjacent` controls add one launch constraint
+at a time near the calibrated context target so calibr can attribute a speed gap
+to context, parallelism, KV-cache precision, or the remaining runtime flags.
+Controls are never launcher winners.
+
 ### Winner
 
 The run config selected for a model under the active policy. Balanced policy
