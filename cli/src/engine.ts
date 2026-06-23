@@ -538,6 +538,8 @@ export interface Result {
   level?: "low" | "middle" | "high" | "ultra" | string | null;
   sweep?: "context" | "moe-cpu" | "offload" | string | null;
   control_kind?: "vanilla" | null;
+  conditional_kind?: "kv_rescue" | null;
+  conditional_source_id?: string | null;
   model: string;
   variant: string;
   series?: string;

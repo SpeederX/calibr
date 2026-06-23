@@ -32,6 +32,12 @@ export interface PlanConfig {
     overhead_mib?: number | null;
     moecpu_sweep?: number[] | null;
     offload_sweep?: number[] | null;
+    kv_rescue?: {
+      enabled?: boolean | null;
+      min_context_tokens?: number | null;
+      kv_k?: string | null;
+      kv_v?: string | null;
+    } | null;
     workload_sweeps?: {
       prefill_tokens?: number[] | null;
       kv_fill_ratios?: number[] | null;
@@ -87,6 +93,8 @@ export interface PlanItem {
   gguf_architecture: string | null | undefined;
   workload_kind: "baseline" | "prefill" | "kv-fill";
   control_kind?: "vanilla" | null;
+  conditional_kind?: "kv_rescue" | null;
+  conditional_source_id?: string | null;
   prefill_target_tokens: number;
   kv_fill_target_tokens: number;
   label: string;
@@ -293,7 +301,22 @@ export function invokePlan(
         const kv = contextCandidateKv(candidate);
         const label = `ctx=${candidate.ctx}_${kv.label}`;
         const args = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${kv.k} --cache-type-v ${kv.v}${suffix}`;
-        plan.push(newPlanItem(meta, sweep, level, args, label));
+        const primary = newPlanItem(meta, sweep, level, args, label);
+        plan.push(primary);
+        const rescue = cfg.planning?.kv_rescue;
+        const rescueK = rescue?.kv_k ?? "q4_0";
+        const rescueV = rescue?.kv_v ?? "q4_0";
+        const rescueMinCtx = asInt(rescue?.min_context_tokens, 65536);
+        if (rescue?.enabled !== false && candidate.ctx >= rescueMinCtx
+          && (kv.k !== rescueK || kv.v !== rescueV)) {
+          const rescueKv = contextCandidateKv({ kv_k: rescueK, kv_v: rescueV });
+          const rescueLabel = `ctx=${candidate.ctx}_${rescueKv.label}_rescue`;
+          const rescueArgs = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${rescueK} --cache-type-v ${rescueV}${suffix}`;
+          const rescueItem = newPlanItem(meta, sweep, level, rescueArgs, rescueLabel);
+          rescueItem.conditional_kind = "kv_rescue";
+          rescueItem.conditional_source_id = primary.id;
+          plan.push(rescueItem);
+        }
       }
       const anchor = validCandidates.at(-1);
       if (anchor) {

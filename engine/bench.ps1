@@ -131,6 +131,13 @@ function Update-AdaptiveSpeedSweepState {
     }
 }
 
+function Test-KvRescueEligibility {
+    param($Result)
+    if ($null -eq $Result -or $Result.ok) { return $false }
+    $failure = Get-RuntimeFailureFromResult -result $Result
+    return ($failure -and $failure.cause -eq 'load_oom')
+}
+
 function Resolve-TsResultCoreScript {
     if ($env:CALIBR_TS_RESULT_CORE -eq '0') { return "" }
     if ($env:CALIBR_TS_RESULT_CORE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_RESULT_CORE_SCRIPT)) {
@@ -2117,6 +2124,7 @@ function Invoke-Bench {
     $skipCount  = 0
     $unresolvedFailures = New-Object System.Collections.ArrayList
     $speedSweepStates = @{}
+    $conditionalEligibility = @{}
     $i = 0
     # Shared-allocation threshold used by run metrics. Failure classification
     # intentionally does not infer OOM or spill from this value alone.
@@ -2181,6 +2189,20 @@ function Invoke-Bench {
         $sweepAbandonmentKey = & $getAbandonmentKey $item
         $profileAbandonmentKey = & $getProfileKey $item
         $workloadAbandonmentKey = & $getWorkloadKey $item
+
+        if ($item.conditional_kind -eq 'kv_rescue') {
+            $sourceId = [string]$item.conditional_source_id
+            $eligible = $sourceId -and $conditionalEligibility.ContainsKey($sourceId) -and $conditionalEligibility[$sourceId]
+            if (-not $eligible) {
+                Write-Host ("[SKIP] {0,-55} (same-context KV rescue not needed)" -f $item.label) -ForegroundColor DarkGray
+                $skipCount++
+                $modelStatus[$mp].skip++
+                $modelStatus[$mp].done++
+                Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
+                continue
+            }
+            Write-Host ("[rescue] primary {0} failed for capacity; trying lower KV quality at the same context" -f $sourceId) -ForegroundColor DarkYellow
+        }
 
         $activeAbandonmentKey = if ($abandoned.ContainsKey($allAbandonmentKey)) {
             $allAbandonmentKey
@@ -2292,6 +2314,11 @@ function Invoke-Bench {
             }
         }
         $modelStatus[$mp].done++
+
+        if (-not $item.conditional_kind -and $item.sweep -eq 'context' -and
+            (-not $item.workload_kind -or $item.workload_kind -eq 'baseline')) {
+            $conditionalEligibility[[string]$item.id] = (Test-KvRescueEligibility -Result $r)
+        }
 
         if (-not $r.ok) {
             $failure = Get-RuntimeFailureFromResult -result $r

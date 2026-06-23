@@ -4,7 +4,12 @@ import { contextCandidateKv, invokePlan, newPlanItem, workloadProfilesForContext
 
 const cfg = {
   hardware: { vram_safety_budget_mib: 8000, cpu_cores_physical: 6, cpu_threads_logical: 12 },
-  planning: { overhead_mib: 1200, moecpu_sweep: [28, 30], offload_sweep: [20, 24] },
+  planning: {
+    overhead_mib: 1200,
+    moecpu_sweep: [28, 30],
+    offload_sweep: [20, 24],
+    kv_rescue: { enabled: false },
+  },
   base_args: "--flash-attn auto --parallel 1 --batch-size 2048 --ubatch-size 512 --no-mmap --prio 2",
   context_candidates: [
     { ctx: 16384, kv: "q8_0" },
@@ -157,7 +162,7 @@ test("invokePlan applies preset context caps and explicit context overrides", ()
   ]);
 });
 
-test("context candidates preserve K quality before using the final q4 rescue profile", () => {
+test("context candidates preserve primary quality and generate same-context q4 rescue", () => {
   assert.deepEqual(contextCandidateKv({ kv: "q8_0" }), {
     k: "q8_0", v: "q8_0", label: "kv=q8_0",
   });
@@ -167,22 +172,39 @@ test("context candidates preserve K quality before using the final q4 rescue pro
 
   const qualityCfg = {
     ...cfg,
+    planning: {
+      ...cfg.planning,
+      kv_rescue: {
+        enabled: true,
+        min_context_tokens: 131072,
+        kv_k: "q4_0",
+        kv_v: "q4_0",
+      },
+    },
     context_candidates: [
       { ctx: 65536, kv: "q8_0" },
       { ctx: 131072, kv_k: "q8_0", kv_v: "q5_1" },
-      { ctx: 262144, kv_k: "q4_0", kv_v: "q4_0", rescue: true },
+      { ctx: 262144, kv_k: "q8_0", kv_v: "q5_1" },
     ],
   };
-  const [standard, compromise, rescue] = invokePlan(
+  const planned = invokePlan(
     [{ ...catalog[0], gguf_context_length: 262144 }],
     qualityCfg,
     [],
     {},
   ).filter((item) => !item.control_kind);
+  const standard = planned.find((item) => item.label.includes("ctx=65536"));
+  const compromise = planned.find((item) =>
+    item.label.includes("ctx=131072") && !item.conditional_kind);
+  const rescue = planned.find((item) =>
+    item.label.includes("ctx=131072") && item.conditional_kind === "kv_rescue");
   assert.match(standard.extra_args, /--cache-type-k q8_0 --cache-type-v q8_0/);
   assert.match(compromise.extra_args, /--cache-type-k q8_0 --cache-type-v q5_1/);
   assert.match(compromise.label, /kvk=q8_0_kvv=q5_1/);
   assert.match(rescue.extra_args, /--cache-type-k q4_0 --cache-type-v q4_0/);
+  assert.equal(rescue.conditional_source_id, compromise.id);
+  assert.ok(planned.some((item) =>
+    item.label.includes("ctx=262144") && item.conditional_kind === "kv_rescue"));
 });
 
 test("vanilla control carries no tuning arguments and is excluded from workload sweeps", () => {
