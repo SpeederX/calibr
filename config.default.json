@@ -102,10 +102,11 @@
       "_comment": "Dense models are load-probed with their real run arguments. The verified highest non-spilling GPU-layer count anchors the benchmark offsets. runtime_reserve_mib is used only for the first structural estimate."
     },
     "workload_sweeps": {
-      "prefill_tokens": [512, 2048, 8192, 32768],
+      "prefill_micro_tokens": [2048],
+      "prefill_ratios": [0.25, 0.5, 0.75, 0.9],
       "kv_fill_ratios": [0.25, 0.5, 0.75, 0.9],
       "context_reserve_tokens": 512,
-      "_comment": "Opt-in diagnostic loads use the largest valid context config for dense/context sweeps. For MoE, the baseline allocation sweep completes first and diagnostics run only on its empirical speed winner. Reserve leaves room for chat-template overhead, the measured suffix, and generated tokens."
+      "_comment": "Opt-in diagnostic loads use the largest valid context config for dense/context sweeps. Prefill uses one small micro-load plus adaptive context ratios; KV-fill uses the same ratios, so the report can show a real load curve instead of unrelated tiny targets. For MoE, the baseline allocation sweep completes first and diagnostics run only on its empirical speed winner. Reserve leaves room for chat-template overhead, the measured suffix, and generated tokens."
     }
   },
 

@@ -260,18 +260,20 @@ Describe "Workload profile expansion" {
             bench = @{ n_predict = 128 }
             planning = @{
                 workload_sweeps = @{
-                    prefill_tokens = @(512, 8192, 131072)
+                    prefill_micro_tokens = @(512)
+                    prefill_ratios = @(0.25, 0.9, 0.99)
                     kv_fill_ratios = @(0.25, 0.9, 0.99)
                     context_reserve_tokens = 512
                 }
             }
         }
         $profiles = @(Get-WorkloadProfilesForContext -ContextSize 16384 -Config $cfg -Mode "all")
-        Assert-Equal 4 $profiles.Count
+        Assert-Equal 5 $profiles.Count
         Assert-Equal 512 $profiles[0].prefill_tokens
-        Assert-Equal 8192 $profiles[1].prefill_tokens
-        Assert-Equal 4096 $profiles[2].kv_fill_tokens
-        Assert-Equal 14745 $profiles[3].kv_fill_tokens
+        Assert-Equal 4096 $profiles[1].prefill_tokens
+        Assert-Equal 14745 $profiles[2].prefill_tokens
+        Assert-Equal 4096 $profiles[3].kv_fill_tokens
+        Assert-Equal 14745 $profiles[4].kv_fill_tokens
     }
 }
 

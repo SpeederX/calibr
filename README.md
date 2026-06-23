@@ -157,7 +157,9 @@ inference can create heavy WDDM shared-memory traffic that is invisible at
 load time. The benchmark therefore covers the anchor neighborhood, proportional
 CPU-offload points, and the CPU-heavy tail. With prefill/KV diagnostics enabled,
 the baseline sweep completes first and those heavier workloads run only on its
-empirical speed winner. Measured throughput decides the winner; shared memory
+empirical speed winner. Diagnostic prefill/KV curves are context-relative:
+one small micro target plus 25/50/75/90% targets, so high-context models show
+real load progression instead of a cluster of tiny prompts. Measured throughput decides the winner; shared memory
 remains diagnostic because CPU expert mapping can legitimately appear there.
 
 There is not one universal winner. The report exposes profiles:
@@ -175,7 +177,10 @@ policy stay identical. Controls never become winners or launchers; the report
 uses them to show the selected config's absolute and percentage throughput
 uplift. If the vanilla control cannot load or complete while a calibrated
 config does, the report records that calibr made the model usable instead of
-inventing a percentage from a zero baseline.
+inventing a percentage from a zero baseline. The report also shows the launch
+profile for controls and calibrated configs: requested context/cache/offload
+flags plus effective slot context, parallelism, offloaded layers, buffer sizes,
+and Flash Attention state parsed from llama-server logs when available.
 
 "Safe" currently means no confirmed shared-memory spill. On Windows, that is a
 delta above `wddm_detection.shared_delta_confirm_mib` (default `500 MiB`) in

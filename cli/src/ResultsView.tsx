@@ -60,6 +60,19 @@ function kvFromArgs(args?: string): string {
   return m ? m[1] : "—";
 }
 
+function valueOrDefault(value: unknown): string {
+  return value === undefined || value === null || value === "" ? "default" : String(value);
+}
+
+function launchProfileFromResult(result: Result): string {
+  const cacheK = valueOrDefault(result.requested_cache_type_k);
+  const cacheV = valueOrDefault(result.requested_cache_type_v);
+  const cache = cacheK === cacheV ? cacheK : `${cacheK}/${cacheV}`;
+  const layers = result.layers_offloaded ?? (result.requested_gpu_layers != null ? `req ${result.requested_gpu_layers}` : "default");
+  const slots = result.effective_parallel_slots != null ? ` Â· slots ${result.effective_parallel_slots}` : "";
+  return `requested ctx ${valueOrDefault(result.requested_context_size)} → effective ctx ${valueOrDefault(result.effective_context_size)} Â· cache ${cache} Â· ${layers}${slots}`;
+}
+
 function workloadFromResult(result: Result): string {
   if (result.control_kind === "vanilla") return "vanilla llama.cpp control";
   if (result.workload_kind === "prefill") return `prefill ${result.workload_prompt_tokens ?? result.prefill_target_tokens ?? "?"} tok`;
@@ -224,6 +237,7 @@ function DetailView({
         <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
           <Text bold>{sel.label}</Text>
           <Text dimColor>workload: {workloadFromResult(sel)}</Text>
+          <Text dimColor>launch profile: {launchProfileFromResult(sel)}</Text>
           {sel.workload_kind !== "baseline" && (
             <Text dimColor>
               preparation: {sel.workload_prepare_ms ?? "—"} ms · target error: {sel.workload_target_error_tokens ?? "—"} tok

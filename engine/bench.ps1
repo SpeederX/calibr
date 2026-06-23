@@ -76,6 +76,26 @@ function Resolve-FitStatus {
     return "success"
 }
 
+function Get-BenchArgValue {
+    param([string]$Args, [string[]]$Names)
+    if (-not $Args) { return $null }
+    foreach ($name in $Names) {
+        $escaped = [regex]::Escape($name)
+        $m = [regex]::Match($Args, "(?:^|\s)$escaped\s+([^\s]+)")
+        if ($m.Success) { return [string]$m.Groups[1].Value }
+    }
+    return $null
+}
+
+function Get-BenchArgInt {
+    param([string]$Args, [string[]]$Names)
+    $value = Get-BenchArgValue -Args $Args -Names $Names
+    if (-not $value) { return $null }
+    $parsed = 0
+    if ([int]::TryParse($value, [ref]$parsed)) { return $parsed }
+    return $null
+}
+
 function Update-AdaptiveSpeedSweepState {
     # Ordered offload/MoE sweeps normally rise toward a throughput peak and
     # then decline. Keep enough post-peak evidence to confirm the direction,
@@ -319,6 +339,12 @@ function New-AggregatedBenchResult {
         model_path      = $item.model_path
         mmproj_path     = $item.mmproj_path
         extra_args      = $item.extra_args
+        requested_context_size = Get-BenchArgInt -Args $item.extra_args -Names @('--ctx-size', '-c')
+        requested_cache_type_k = Get-BenchArgValue -Args $item.extra_args -Names @('--cache-type-k', '-ctk')
+        requested_cache_type_v = Get-BenchArgValue -Args $item.extra_args -Names @('--cache-type-v', '-ctv')
+        requested_gpu_layers = Get-BenchArgInt -Args $item.extra_args -Names @('--gpu-layers', '-ngl')
+        requested_n_cpu_moe = Get-BenchArgInt -Args $item.extra_args -Names @('--n-cpu-moe', '-ncmoe')
+        requested_parallel = Get-BenchArgInt -Args $item.extra_args -Names @('--parallel', '-np')
 
         # Deterministic / first-run fields
         vram_before_mib  = $first.vram_before_mib
@@ -334,6 +360,10 @@ function New-AggregatedBenchResult {
         compute_cuda_mib = $first.compute_cuda_mib
         compute_host_mib = $first.compute_host_mib
         layers_offloaded = $first.layers_offloaded
+        effective_context_size = $first.effective_context_size
+        effective_parallel_slots = $first.effective_parallel_slots
+        effective_n_parallel = $first.effective_n_parallel
+        flash_attention_state = $first.flash_attention_state
         fit_status       = Resolve-FitStatus -Status $first.fit_status -Ok $true -SharedPeakMib $sharedPeakMed -SharedConfirmMib $confirmThresh
 
         # Median over runs for varying metrics
@@ -1428,14 +1458,21 @@ function Invoke-OneBenchRun {
             compute_cuda_mib = 'CUDA0 compute buffer size\s*=\s*([\d\.]+)'
             compute_host_mib = 'CUDA_Host compute buffer size\s*=\s*([\d\.]+)'
             layers_offloaded = 'offloaded (\d+)/(\d+) layers'
+            effective_context_size = 'new slot, n_ctx\s*=\s*(\d+)'
+            effective_parallel_slots = 'initializing slots, n_slots\s*=\s*(\d+)'
+            effective_n_parallel = 'n_parallel\s*(?:is set to auto,\s*using\s*)?n_parallel\s*=\s*(\d+)'
         }
         foreach ($k in $patterns.Keys) {
             $m = [regex]::Match($err, $patterns[$k])
             if ($m.Success) {
                 if ($k -eq 'layers_offloaded') { $run[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
+                elseif ($k -match '^effective_') { $run[$k] = [int]$m.Groups[1].Value }
                 else { $run[$k] = [double]$m.Groups[1].Value }
             }
         }
+        if ($err -match 'Flash Attention was auto, set to disabled') { $run.flash_attention_state = 'auto-disabled' }
+        elseif ($err -match '(?i)flash attention.*disabled') { $run.flash_attention_state = 'disabled' }
+        elseif ($err -match '(?i)flash attention.*enabled') { $run.flash_attention_state = 'enabled' }
         # Trap llama.cpp builds that don't recognize a model's architecture.
         $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
         if ($mArch.Success) { $run.unsupported_architecture = $mArch.Groups[1].Value }

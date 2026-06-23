@@ -874,6 +874,7 @@ function renderModelsList() {
               '<td><code>' + escapeHtml(c.label) + '</code></td>' +
               '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
               '<td title="' + escapeHtml(workloadTitle(c)) + '">' + workloadLabel(c) + '</td>' +
+              '<td title="' + escapeHtml(launchProfileTitle(c)) + '">' + launchProfileLabel(c) + '</td>' +
               '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
               '<td class="num" title="' + vramCellTitle(c) + '">' + benchmarkVramUsedMib(c) + '</td>' +
@@ -897,6 +898,7 @@ function renderModelsList() {
           '<table>' +
             '<thead><tr>' +
               '<th>Config</th><th>Level</th><th>Workload</th>' +
+              '<th>Launch profile</th>' +
               '<th class="num">Prompt t/s</th>' +
               '<th class="num">Eval t/s</th>' +
               '<th class="num">VRAM run</th><th class="num">Shared spill</th>' +
@@ -1605,6 +1607,38 @@ function workloadTitle(d) {
   ];
   if (kind === 'kv-fill') parts.push('KV fill ' + (d.kv_fill_ms ?? '?') + ' ms');
   return parts.join(' · ');
+}
+
+function requestedOrDefault(v) {
+  return v == null || v === '' ? 'default' : String(v);
+}
+
+function launchProfileLabel(d) {
+  const reqCtx = requestedOrDefault(d.requested_context_size);
+  const effCtx = d.effective_context_size != null ? String(d.effective_context_size) : '?';
+  const k = requestedOrDefault(d.requested_cache_type_k);
+  const v = requestedOrDefault(d.requested_cache_type_v);
+  const cache = k === v ? k : k + '/' + v;
+  const layers = d.layers_offloaded || (d.requested_gpu_layers != null ? 'req ' + d.requested_gpu_layers : 'default');
+  const slots = d.effective_parallel_slots != null ? ' Â· slots ' + d.effective_parallel_slots : '';
+  return 'ctx ' + reqCtx + '→' + effCtx + ' Â· cache ' + cache + ' Â· ' + layers + slots;
+}
+
+function launchProfileTitle(d) {
+  const parts = [
+    'requested ctx: ' + requestedOrDefault(d.requested_context_size),
+    'effective ctx per slot: ' + requestedOrDefault(d.effective_context_size),
+    'requested cache K/V: ' + requestedOrDefault(d.requested_cache_type_k) + '/' + requestedOrDefault(d.requested_cache_type_v),
+    'requested GPU layers: ' + requestedOrDefault(d.requested_gpu_layers),
+    'llama.cpp offloaded layers: ' + requestedOrDefault(d.layers_offloaded),
+    'effective slots: ' + requestedOrDefault(d.effective_parallel_slots),
+    'effective n_parallel: ' + requestedOrDefault(d.effective_n_parallel),
+    'flash attention: ' + requestedOrDefault(d.flash_attention_state)
+  ];
+  if (d.control_kind === 'vanilla') {
+    parts.push('vanilla uses llama.cpp defaults; compare throughput with calibrated configs only after checking this profile');
+  }
+  return parts.join(' Â· ');
 }
 
 function calibrationSummary(configs) {

@@ -79,6 +79,10 @@ export interface BenchRun {
   compute_cuda_mib?: number | null;
   compute_host_mib?: number | null;
   layers_offloaded?: string | null;
+  effective_context_size?: number | null;
+  effective_parallel_slots?: number | null;
+  effective_n_parallel?: number | null;
+  flash_attention_state?: "enabled" | "disabled" | "auto-disabled" | "unknown" | null;
   fit_status?: string | null;
   fit_status_source?: "llama.cpp" | "inferred" | null;
   unsupported_architecture?: string | null;
@@ -189,6 +193,10 @@ export interface ParsedLlamaServerStderr {
   compute_cuda_mib?: number;
   compute_host_mib?: number;
   layers_offloaded?: string;
+  effective_context_size?: number;
+  effective_parallel_slots?: number;
+  effective_n_parallel?: number;
+  flash_attention_state?: "enabled" | "disabled" | "auto-disabled" | "unknown";
   unsupported_architecture?: string;
   fit_status: "success" | "failed_but_running" | "unknown";
 }
@@ -251,11 +259,37 @@ export function parseLlamaServerStderr(stderr: string): ParsedLlamaServerStderr 
   }
   const layers = stderr.match(/offloaded (\d+)\/(\d+) layers/);
   if (layers) out.layers_offloaded = `${layers[1]}/${layers[2]}`;
+  const slotContext = stderr.match(/new slot, n_ctx\s*=\s*(\d+)/);
+  if (slotContext) out.effective_context_size = Number.parseInt(slotContext[1], 10);
+  const slots = stderr.match(/initializing slots, n_slots\s*=\s*(\d+)/);
+  if (slots) out.effective_parallel_slots = Number.parseInt(slots[1], 10);
+  const nParallel = stderr.match(/n_parallel\s*(?:is set to auto,\s*using\s*)?n_parallel\s*=\s*(\d+)/);
+  if (nParallel) out.effective_n_parallel = Number.parseInt(nParallel[1], 10);
+  if (/Flash Attention was auto, set to disabled/i.test(stderr)) out.flash_attention_state = "auto-disabled";
+  else if (/flash attention.*disabled/i.test(stderr)) out.flash_attention_state = "disabled";
+  else if (/flash attention.*enabled/i.test(stderr)) out.flash_attention_state = "enabled";
   const architecture = stderr.match(/unknown model architecture: '([^']+)'/);
   if (architecture) out.unsupported_architecture = architecture[1];
   if (/successfully fit params/.test(stderr)) out.fit_status = "success";
   else if (/failed to fit params/.test(stderr)) out.fit_status = "failed_but_running";
   return out;
+}
+
+function argValue(args: string | null | undefined, names: string[]): string | null {
+  if (!args) return null;
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = args.match(new RegExp(`(?:^|\\s)${escaped}\\s+([^\\s]+)`));
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function argInt(args: string | null | undefined, names: string[]): number | null {
+  const value = argValue(args, names);
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function finalizeBenchRun(payload: {
@@ -462,6 +496,7 @@ export function aggregateBenchResult(payload: {
   const gpuEnergyWh = runs.reduce((sum, run) => sum + (num(run.gpu_energy_wh) ?? 0), 0);
   const gpuEnergyJ = runs.reduce((sum, run) => sum + (num(run.gpu_energy_j) ?? 0), 0);
   const satRatio = vramTotal > 0 ? round(vramPeakMed / vramTotal, 3) : 0;
+  const extraArgs = item.extra_args ?? "";
 
   return {
     metric_schema_version: METRIC_SCHEMA_VERSION,
@@ -502,6 +537,12 @@ export function aggregateBenchResult(payload: {
     model_path: item.model_path,
     mmproj_path: item.mmproj_path,
     extra_args: item.extra_args,
+    requested_context_size: argInt(extraArgs, ["--ctx-size", "-c"]),
+    requested_cache_type_k: argValue(extraArgs, ["--cache-type-k", "-ctk"]),
+    requested_cache_type_v: argValue(extraArgs, ["--cache-type-v", "-ctv"]),
+    requested_gpu_layers: argInt(extraArgs, ["--gpu-layers", "-ngl"]),
+    requested_n_cpu_moe: argInt(extraArgs, ["--n-cpu-moe", "-ncmoe"]),
+    requested_parallel: argInt(extraArgs, ["--parallel", "-np"]),
     vram_before_mib: first.vram_before_mib,
     vram_baseline_mib: roundOrNull(vramBaselineMed, 0),
     vram_baseline_pct: roundOrNull(vramBaselinePctMed, 4),
@@ -516,6 +557,10 @@ export function aggregateBenchResult(payload: {
     compute_cuda_mib: first.compute_cuda_mib,
     compute_host_mib: first.compute_host_mib,
     layers_offloaded: first.layers_offloaded,
+    effective_context_size: first.effective_context_size,
+    effective_parallel_slots: first.effective_parallel_slots,
+    effective_n_parallel: first.effective_n_parallel,
+    flash_attention_state: first.flash_attention_state,
     fit_status: item.sweep === "moe-cpu" && first.fit_status_source !== "llama.cpp"
       ? "success"
       : inferFitStatus(first.fit_status, true, sharedPeakMed, confirm),

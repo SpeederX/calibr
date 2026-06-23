@@ -39,6 +39,8 @@ export interface PlanConfig {
       kv_v?: string | null;
     } | null;
     workload_sweeps?: {
+      prefill_micro_tokens?: number[] | null;
+      prefill_ratios?: number[] | null;
       prefill_tokens?: number[] | null;
       kv_fill_ratios?: number[] | null;
       context_reserve_tokens?: number | null;
@@ -185,11 +187,28 @@ export function workloadProfilesForContext(
   const nPredict = asInt(cfg.bench?.n_predict, 128);
   const maxTarget = Math.max(0, contextSize - reserve - nPredict);
   const out: PlanWorkload[] = [];
+  const seen = new Set<string>();
+  const add = (workload: PlanWorkload): void => {
+    const target = workload.kind === "prefill" ? workload.prefillTokens : workload.kvFillTokens;
+    const key = `${workload.kind}:${asInt(target)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(workload);
+  };
 
   if (mode === "prefill" || mode === "all") {
-    for (const value of settings?.prefill_tokens ?? [512, 2048, 8192, 32768]) {
+    const microTargets = settings?.prefill_micro_tokens
+      ?? (settings?.prefill_ratios ? [2048] : settings?.prefill_tokens ?? [2048]);
+    for (const value of microTargets) {
       const tokens = asInt(value);
-      if (tokens > 0 && tokens <= maxTarget) out.push({ kind: "prefill", prefillTokens: tokens });
+      if (tokens > 0 && tokens <= maxTarget) add({ kind: "prefill", prefillTokens: tokens });
+    }
+    for (const value of settings?.prefill_ratios ?? []) {
+      const ratio = typeof value === "number" && Number.isFinite(value) ? value : 0;
+      const tokens = Math.floor(contextSize * ratio);
+      if (ratio > 0 && ratio < 1 && tokens > 0 && tokens <= maxTarget) {
+        add({ kind: "prefill", prefillTokens: tokens });
+      }
     }
   }
   if (mode === "kv-fill" || mode === "all") {
@@ -197,7 +216,7 @@ export function workloadProfilesForContext(
       const ratio = typeof value === "number" && Number.isFinite(value) ? value : 0;
       const tokens = Math.floor(contextSize * ratio);
       if (ratio > 0 && ratio < 1 && tokens > 0 && tokens <= maxTarget) {
-        out.push({ kind: "kv-fill", kvFillTokens: tokens });
+        add({ kind: "kv-fill", kvFillTokens: tokens });
       }
     }
   }

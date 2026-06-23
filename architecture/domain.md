@@ -35,6 +35,22 @@ The dimension varied for a model:
 - **moe-cpu** — number of MoE expert/FFN layers assigned to CPU;
 - **offload** — number of model layers offloaded to the GPU.
 
+#### Sweep aliases and internal routing
+
+Use these names for new user-facing/domain text:
+
+- **context-only** — context size and KV-cache precision on a model expected
+  to fit with full GPU offload;
+- **context-only-partial-offload** — a context-primary model that still needs
+  a small empirical offload check because vanilla/default behavior or measured
+  memory pressure suggests full GPU offload may not be the fastest usable point;
+- **moe-cpu** — number of MoE expert/FFN layers assigned to CPU;
+- **offload-dense** — number of dense model layers offloaded to the GPU when
+  full offload is not expected to fit.
+
+Legacy result JSONs and some code paths may still store `context` and
+`offload`; treat them as aliases for `context-only` and `offload-dense`.
+
 ### Level
 
 Curated model scope: `low`, `middle`, `high`, or `ultra`. Level chooses which
@@ -51,6 +67,19 @@ The input load applied to a run config: `baseline`, `prefill`, or `kv-fill`.
 Prefill and KV-fill profiles carry explicit token targets. The profile and its
 targets are part of config identity so cache/resume never mixes different
 loads. Diagnostic profiles are not winner-eligible.
+
+Diagnostic load curves are adaptive to the anchor context: one small micro
+prefill target establishes the short-prompt baseline, then prefill and KV-fill
+use context ratios such as 25/50/75/90%. Tiny fixed targets must not be
+presented as evidence for high-context behavior.
+
+### Launch profile
+
+The pair of requested runtime flags and effective values observed from
+llama-server logs. Examples: requested context/cache/GPU layers versus effective
+slot context, `n_parallel`, slots, offloaded layers, buffers, and Flash
+Attention state. Vanilla controls use llama.cpp defaults, so their throughput is
+not directly comparable to calibrated configs until the launch profile is shown.
 
 ### Winner
 

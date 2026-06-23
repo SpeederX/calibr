@@ -227,7 +227,10 @@ network read.
 
 Baseline configs remain the only winner-eligible results. Prefill and KV-fill
 profiles are diagnostic curves attached to the largest valid context config for
-the model.
+the model. Default targets are context-relative: one small prefill micro target
+plus 25/50/75/90% of the selected context for prefill, and the same ratios for
+KV-fill. Targets that collide with the context reserve or generated-token
+budget are dropped.
 
 ### Prefill workload
 
@@ -266,6 +269,21 @@ target <= context size - context reserve - generated tokens
 ```
 
 The reserve covers chat-template overhead and the measured suffix.
+
+## Launch profile fields
+
+These fields explain what was requested and what llama-server actually loaded.
+They are provenance, not ranking metrics.
+
+| Field | Formula/source | Use |
+|---|---|---|
+| `requested_context_size` | `--ctx-size` from the planned args | Shows calibr's requested context; null/default for vanilla controls. |
+| `effective_context_size` | first `new slot, n_ctx = N` log line | Shows actual context per slot chosen by llama-server. |
+| `requested_cache_type_k`, `requested_cache_type_v` | `--cache-type-k/v` from the planned args | Shows requested KV precision; null/default for vanilla controls. |
+| `requested_gpu_layers` | `--gpu-layers` / `-ngl` from planned args | Shows requested GPU offload. |
+| `layers_offloaded` | `offloaded X/Y layers` from llama-server logs | Shows actual offload reported by llama.cpp. |
+| `effective_parallel_slots`, `effective_n_parallel` | `n_slots` / `n_parallel` log lines | Explains vanilla/default runs that auto-parallelize differently from calibr's measured profile. |
+| `flash_attention_state` | Flash Attention scheduler log line, when present | Explains cache profiles that are syntactically accepted but fail because the backend disables Flash Attention. |
 
 ## Timeline phases
 
