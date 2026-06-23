@@ -126,11 +126,11 @@ the current run.
 quant/variant, context/KV-cache choice, offload flags, memory behavior, and a
 ready launcher.
 
-The default context sweep is quality-first. It uses `q8_0` for both K and V
-through ordinary contexts, then preserves K at `q8_0` while using `q5_1` for V
-as the moderate long-context compromise. Symmetric `q4_0` is reserved for the
-final rescue context, where its purpose is to test whether an otherwise
-unusable configuration can run. calibr inspects the active
+The default context sweep is quality-first. Every primary context target uses
+`q8_0` for both K and V, including 131K and 262K. Cache quality is not reduced
+merely because context increases. Symmetric `q4_0` is generated only as a
+conditional fallback at the same context after the q8 primary fails with
+direct capacity evidence. calibr inspects the active
 `llama-server --help`: unsupported cache requests fall back to `q8_0`, then
 `f16`, while unsupported required sweep arguments fail before model loading
 with a compatibility message.
