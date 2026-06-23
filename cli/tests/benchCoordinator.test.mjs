@@ -130,7 +130,7 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
   }
 });
 
-test("runBenchCoordinator stops after the first failed run", async () => {
+test("runBenchCoordinator retries a failed measured run without aggregating failed attempts", async () => {
   const root = mkdtempSync(join(tmpdir(), "calibr-coordinator-fail-"));
   let httpCalls = 0;
   try {
@@ -178,8 +178,11 @@ test("runBenchCoordinator stops after the first failed run", async () => {
       sleep: async () => {},
     });
     assert.equal(out.ok, false);
-    assert.equal(out.runs.length, 1);
-    assert.equal(httpCalls, 1);
+    assert.equal(out.runs.length, 0);
+    assert.equal(out.attempts.length, 3);
+    assert.equal(httpCalls, 3);
+    assert.equal(out.failure?.cause, "unknown");
+    assert.equal(out.failure?.retry_exhausted, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -215,7 +218,7 @@ test("runBenchCoordinator rejects unsupported sweep arguments before spawning ll
     });
     assert.equal(out.ok, false);
     assert.equal(spawned, false);
-    assert.equal(out.result.failure_reason, "unsupported_llama_args");
+    assert.equal(out.result.failure_reason, "unsupported_argument");
     assert.match(out.error, /--n-cpu-moe/);
   } finally {
     rmSync(root, { recursive: true, force: true });

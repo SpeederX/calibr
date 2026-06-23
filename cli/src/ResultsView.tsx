@@ -233,14 +233,19 @@ function DetailView({
           {calibrationFromResult(sel) && <Text color="magenta">{calibrationFromResult(sel)}</Text>}
           <Text dimColor>{sel.extra_args ?? ""}</Text>
           {sel.error && <Text color="red">error: {sel.error}</Text>}
+          {sel.failure && (
+            <Text color="yellow">
+              {sel.failure.cause} during {sel.failure.phase} — {sel.failure.evidence} (next: {sel.failure.action})
+            </Text>
+          )}
           {sel.unsupported_architecture && (
             <Text color="gray">
               n/a — llama.cpp build doesn't support architecture: {sel.unsupported_architecture}
             </Text>
           )}
-          {!sel.ok && !sel.unsupported_architecture && sel.ready === false && (
+          {!sel.ok && !sel.failure && !sel.unsupported_architecture && sel.ready === false && (
             <Text color="yellow">
-              no-load — server never answered /v1/models within wait_sec_ready. likely OOM during model load.
+              no-load — llama-server did not answer /v1/models; inspect the benchmark log for the load failure.
             </Text>
           )}
           <Text>

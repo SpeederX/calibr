@@ -1453,6 +1453,12 @@ function Invoke-OneBench {
             error = "model file(s) not found on disk: " + ($missingFiles -join ', ')
             fit_status = $null; unsupported_architecture = $null
             failure_reason = 'model_missing'
+            failure = [ordered]@{
+                phase = 'preflight'; cause = 'model_missing'
+                evidence = "model file(s) not found on disk: " + ($missingFiles -join ', ')
+                action = 'skip_config_continue'; retryable = $false
+                attempts = 1; retry_exhausted = $false
+            }
             bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
             bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
             llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
@@ -1519,7 +1525,18 @@ function Invoke-OneBench {
         if ($N -gt 1) {
             Write-Host ("  run {0}/{1}" -f ($i + 1), $N) -ForegroundColor DarkGray
         }
-        $r = Invoke-OneBenchRun -item $item -cfg $cfg -runIndex $i -logFile $logFile
+        $maxAttempts = 3
+        $attempt = 0
+        do {
+            $attempt++
+            if ($attempt -gt 1) {
+                Write-Host ("  retry {0}/{1}" -f $attempt, $maxAttempts) -ForegroundColor DarkYellow
+            }
+            $r = Invoke-OneBenchRun -item $item -cfg $cfg -runIndex $i -logFile $logFile
+            if ($r.ok) { break }
+            $attemptFailure = Get-RuntimeFailureFromResult `
+                -result $r -item $item -attempt $attempt -maxAttempts $maxAttempts
+        } while ($attemptFailure.retryable -and -not $attemptFailure.retry_exhausted)
 
         if (-not $r.ok) {
             # Single-record failure shape (no `runs` array): definitive
@@ -1605,6 +1622,9 @@ function Invoke-OneBench {
                 llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
                 llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
             }
+            $fallbackFailure = Get-RuntimeFailureFromResult `
+                -result $failResult -item $item -attempt $attempt -maxAttempts $maxAttempts
+            $failResult | Add-Member -NotePropertyName failure -NotePropertyValue $fallbackFailure -Force
             $failResult | Add-Member -NotePropertyName failure_reason -NotePropertyValue (Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal) -Force
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
             Write-BenchStatusLine -item $item -result $failResult
@@ -1635,45 +1655,84 @@ function Write-BenchStatusLine {
         $detail = "prompt={0,6}t/s   eval={1,5}t/s   peak={2} MiB" -f $result.prompt_tps, $result.eval_tps, $result.vram_peak_mib
         if ($result.wddm_flag_shared_pos)    { $detail += "   [WDDM: shared=+$($result.shared_peak_mib)MiB]" }
         elseif ($result.wddm_flag_high_vram) { $detail += "   [WDDM: VRAM $([int]($result.wddm_vram_saturation*100))%]" }
-    } elseif ($result.failure_reason -eq 'model_missing') {
-        $detail = "(model file missing - re-download with get-models, or run discover to drop it)"
-    } elseif ($result.unsupported_architecture) {
-        $detail = "(unsupported architecture: $($result.unsupported_architecture))"
-    } elseif (-not $result.ready) {
-        $detail = "(server didn't become ready)"
     } else {
-        $detail = "(completion failed)"
+        $failure = Get-RuntimeFailureFromResult -result $result
+        if ($failure) {
+            $detail = "({0} during {1}: {2}; action={3})" -f `
+                $failure.cause, $failure.phase, $failure.evidence, $failure.action
+        } else {
+            $detail = "($($result.error))"
+        }
     }
     Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
 }
 
-function Get-FailureReason {
-    # Classify why a bench result is not ok into one of four buckets so
-    # downstream code (rotation, abandonment, reports) can act on it
-    # without re-parsing scattered signals. Returns one of:
-    #   vram_overflow      - WDDM paged into shared memory; the model
-    #                        couldn't fit in real VRAM. fit_status said
-    #                        'failed_but_running' OR shared_peak crossed
-    #                        the confirm threshold.
-    #   server_timeout     - llama-server never became ready in time, but
-    #                        no VRAM-pressure signal fired. Build/CUDA bug,
-    #                        broken model file, port conflict, etc.
-    #   unsupported_arch   - the v1.0 short-circuit: llama.cpp doesn't
-    #                        know this architecture yet (update llama.cpp).
-    #   other              - catch-all for $result.ok=false without any
-    #                        of the above signals.
-    # Returns $null when $result.ok is true (no failure to classify).
-    param($result, [int]$sharedConfirmMib = 500)
-    if ($null -eq $result) { return $null }
-    if ($result.ok) { return $null }
-    if ([string]$result.error -like 'llama.cpp compatibility check failed:*') { return "unsupported_llama_args" }
-    if ($result.unsupported_architecture) { return "unsupported_arch" }
-    $shared = if ($null -ne $result.shared_peak_mib) { [int]$result.shared_peak_mib } else { 0 }
-    if ($result.fit_status -eq "failed_but_running" -or $shared -gt $sharedConfirmMib) {
-        return "vram_overflow"
+function Get-RuntimeFailureFromResult {
+    # The TypeScript coordinator is authoritative. This fallback keeps the
+    # portable/non-CUDA adapter informative until that path also moves to Node.
+    param(
+        $result,
+        $item = $null,
+        [int]$attempt = 1,
+        [int]$maxAttempts = 3
+    )
+    if ($null -eq $result -or $result.ok) { return $null }
+    if ($result.failure -and $result.failure.cause) { return $result.failure }
+
+    $errorText = [string]$result.error
+    $cause = 'unknown'; $phase = 'completion'; $action = 'retry_same_config'; $retryable = $true
+    $exhaustedAction = 'skip_config_continue'
+    $workloadKind = if ($item -and $item.workload_kind) {
+        [string]$item.workload_kind
+    } elseif ($result.workload_kind) {
+        [string]$result.workload_kind
+    } else { 'baseline' }
+    if ($result.failure_reason -eq 'model_missing' -or $errorText -match 'model file\(s\) not found') {
+        $cause = 'model_missing'; $phase = 'preflight'; $action = 'skip_config_continue'; $retryable = $false
+    } elseif ($result.unsupported_architecture) {
+        $cause = 'unsupported_architecture'; $phase = 'compatibility'; $action = 'abandon_model'; $retryable = $false
+    } elseif ($errorText -like 'llama.cpp compatibility check failed:*') {
+        $cause = 'unsupported_argument'; $phase = 'compatibility'; $action = 'abandon_profile'; $retryable = $false
+    } elseif ($errorText -match 'quantized V cache.*requires Flash Attention|cache type.*not supported') {
+        $cause = 'incompatible_cache_profile'; $phase = 'load'; $action = 'abandon_profile'; $retryable = $false
+    } elseif ($result.fit_status -eq 'failed_but_running' -or $errorText -match 'out of memory|failed to allocate|not enough memory') {
+        $cause = 'load_oom'; $phase = 'load'; $action = 'abandon_heavier'; $retryable = $false
+    } elseif ($errorText -match 'timed? ?out|operation was aborted|AbortError') {
+        $cause = 'request_timeout'; $phase = 'completion'
+        $exhaustedAction = if ($workloadKind -eq 'prefill' -or $workloadKind -eq 'kv-fill') { 'skip_larger_targets' } else { 'skip_config_continue' }
+    } elseif ($errorText -match 'fetch failed|ECONNRESET|ECONNREFUSED|socket|network') {
+        $cause = 'transport_error'; $phase = 'completion'
+    } elseif ($result.ready -eq $false) {
+        $cause = 'load_process_exit'; $phase = 'load'
+    } elseif ($errorText -match 'invalid completion|too few tokens|no readable stream') {
+        $cause = 'invalid_completion'; $phase = 'completion'
     }
-    if ($result.ready -eq $false) { return "server_timeout" }
-    return "other"
+    $retryExhausted = $retryable -and $attempt -ge $maxAttempts
+    if ($retryExhausted) { $action = $exhaustedAction }
+    return [pscustomobject]@{
+        phase = $phase; cause = $cause; evidence = $(if ($errorText) { $errorText } else { $cause })
+        action = $action; retryable = $retryable; attempts = $attempt; retry_exhausted = $retryExhausted
+    }
+}
+
+function Get-FailureReason {
+    param($result, [int]$sharedConfirmMib = 500)
+    $failure = Get-RuntimeFailureFromResult -result $result
+    if ($failure) { return [string]$failure.cause }
+    return $null
+}
+
+function Resolve-RetryExhaustedChoice {
+    param($item, $failure)
+    if ($NonInteractive -or -not $failure.retry_exhausted) { return 'skip' }
+    Write-Host ""
+    Write-Host ("Retries exhausted for {0}: {1}" -f $item.label, $failure.evidence) -ForegroundColor Yellow
+    while ($true) {
+        $choice = (Read-Host "[s] skip and continue  [r] retry three more times  [a] abort benchmark").Trim().ToLowerInvariant()
+        if (-not $choice -or $choice -eq 's' -or $choice -eq 'skip') { return 'skip' }
+        if ($choice -eq 'r' -or $choice -eq 'retry') { return 'retry' }
+        if ($choice -eq 'a' -or $choice -eq 'abort') { return 'abort' }
+    }
 }
 
 function Select-PlanForBench {
@@ -2001,9 +2060,10 @@ function Invoke-Bench {
     $okCount    = 0
     $failCount  = 0
     $skipCount  = 0
+    $unresolvedFailures = New-Object System.Collections.ArrayList
     $i = 0
-    # Threshold used by Get-FailureReason to decide vram_overflow vs other.
-    # Mirrors the value used in Invoke-OneBenchRun / New-AggregatedBenchResult
+    # Shared-allocation threshold used by run metrics. Failure classification
+    # intentionally does not infer OOM or spill from this value alone.
     # for the WDDM flag so all three views agree.
     $confirmThresh = if ($cfg.wddm_detection -and $null -ne $cfg.wddm_detection.shared_delta_confirm_mib) {
         [int]$cfg.wddm_detection.shared_delta_confirm_mib
@@ -2044,15 +2104,34 @@ function Invoke-Bench {
         }
         return "$pathKey|$($planItem.sweep)"
     }
+    $getProfileKey = {
+        param($planItem)
+        $args = [string]$planItem.extra_args
+        $kvK = if ($args -match '--cache-type-k\s+(\S+)') { $Matches[1] } else { 'default' }
+        $kvV = if ($args -match '--cache-type-v\s+(\S+)') { $Matches[1] } else { 'default' }
+        return "$([string]$planItem.model_path)|profile|$kvK|$kvV"
+    }
+    $getWorkloadKey = {
+        param($planItem)
+        $kind = if ($planItem.workload_kind) { [string]$planItem.workload_kind } else { 'baseline' }
+        $source = if ($planItem.diagnostic_source_id) { [string]$planItem.diagnostic_source_id } else { [string]$planItem.extra_args }
+        return "$([string]$planItem.model_path)|workload|$kind|$source"
+    }
 
     foreach ($item in $filtered) {
         $i++
         $mp = $item.model_path
         $allAbandonmentKey = "$mp|all"
         $sweepAbandonmentKey = & $getAbandonmentKey $item
+        $profileAbandonmentKey = & $getProfileKey $item
+        $workloadAbandonmentKey = & $getWorkloadKey $item
 
         $activeAbandonmentKey = if ($abandoned.ContainsKey($allAbandonmentKey)) {
             $allAbandonmentKey
+        } elseif ($abandoned.ContainsKey($profileAbandonmentKey)) {
+            $profileAbandonmentKey
+        } elseif ($abandoned.ContainsKey($workloadAbandonmentKey)) {
+            $workloadAbandonmentKey
         } elseif ($abandoned.ContainsKey($sweepAbandonmentKey)) {
             $sweepAbandonmentKey
         } else { $null }
@@ -2080,37 +2159,74 @@ function Invoke-Bench {
                        -PercentComplete $pct
 
         Write-Host ("`n[$i/$total] $($item.label)") -ForegroundColor Cyan
-        $r = Invoke-OneBench -item $item -cfg $cfg
+        $manualRetry = $false
+        do {
+            if ($manualRetry) {
+                $savedForce = $script:Force
+                $script:Force = $true
+                try {
+                    $r = Invoke-OneBench -item $item -cfg $cfg
+                } finally {
+                    $script:Force = $savedForce
+                }
+            } else {
+                $r = Invoke-OneBench -item $item -cfg $cfg
+            }
+            $failure = Get-RuntimeFailureFromResult -result $r
+            $choice = if ($failure) { Resolve-RetryExhaustedChoice -item $item -failure $failure } else { 'skip' }
+            if ($choice -eq 'abort') {
+                throw ("Benchmark aborted after retries were exhausted for '{0}': {1}" -f $item.label, $failure.evidence)
+            }
+            if ($choice -eq 'retry') {
+                $manualRetry = $true
+                continue
+            }
+            break
+        } while ($true)
         if ($r.ok) {
             $okCount++
             $modelStatus[$mp].ok++
         } else {
             $failCount++
             $modelStatus[$mp].fail++
+            $failure = Get-RuntimeFailureFromResult -result $r
+            if ($failure) {
+                [void]$unresolvedFailures.Add([pscustomobject]@{
+                    id = $item.id; label = $item.label; cause = [string]$failure.cause
+                    phase = [string]$failure.phase; action = [string]$failure.action
+                    evidence = [string]$failure.evidence
+                    log = (Join-Path $CALIBR_LOGS_DIR "$($item.id).log")
+                })
+            }
         }
         $modelStatus[$mp].done++
 
-        if (-not $r.ok -and $r.unsupported_architecture) {
-            $abandoned[$allAbandonmentKey] = "unsupported architecture '$($r.unsupported_architecture)'"
-            Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
-        }
-
-        # Sweep-aware abandonment on VRAM overflow. The context sweep raises
-        # ctx ascending: if the smallest ctx already pages, larger ctxs make
-        # it worse. The offload sweep raises gpu-layers ascending: if 20
-        # already pages, 24..36 push even more onto the GPU. The moe-cpu sweep
-        # raises n-cpu-moe ascending = MORE on CPU = LESS GPU pressure, so a
-        # failure on 28 (most-on-GPU) does NOT predict failure on 36;
-        # do not abandon a moe-cpu sweep on vram_overflow.
-        $isBaselineCandidate = (-not $item.control_kind) -and
-            ((-not $item.workload_kind) -or $item.workload_kind -eq 'baseline')
-        if (-not $r.ok -and $isBaselineCandidate -and
-            -not $abandoned.ContainsKey($allAbandonmentKey) -and
-            -not $abandoned.ContainsKey($sweepAbandonmentKey)) {
-            $reason = Get-FailureReason -result $r -sharedConfirmMib $confirmThresh
-            if ($reason -eq "vram_overflow" -and ($item.sweep -eq "context" -or $item.sweep -eq "offload")) {
-                $abandoned[$sweepAbandonmentKey] = "vram overflow in this monotonic $($item.sweep) profile; larger configs with the same cache profile will be worse"
-                Write-Host ("  -> abandoning remaining {0}-sweep tests for model '{1}' (vram overflow detected; bigger ctx/ngl can only worsen it)" -f $item.sweep, $item.model) -ForegroundColor DarkYellow
+        if (-not $r.ok) {
+            $failure = Get-RuntimeFailureFromResult -result $r
+            if ($failure) {
+                $message = "{0}: {1}" -f $failure.cause, $failure.evidence
+                switch ([string]$failure.action) {
+                    'abort_benchmark' {
+                        throw ("Benchmark cannot continue: {0}" -f $message)
+                    }
+                    'abandon_model' {
+                        $abandoned[$allAbandonmentKey] = $message
+                    }
+                    'abandon_profile' {
+                        $abandoned[$profileAbandonmentKey] = $message
+                    }
+                    'abandon_heavier' {
+                        if ($item.sweep -eq 'context' -or $item.sweep -eq 'offload') {
+                            $abandoned[$sweepAbandonmentKey] = $message
+                        }
+                    }
+                    'skip_larger_targets' {
+                        $abandoned[$workloadAbandonmentKey] = $message
+                    }
+                }
+                if ($failure.action -ne 'skip_config_continue' -and $failure.action -ne 'retry_same_config') {
+                    Write-Host ("  -> {0}: {1}" -f $failure.action, $message) -ForegroundColor DarkYellow
+                }
             }
         }
 
@@ -2140,6 +2256,15 @@ function Invoke-Bench {
         Write-Host ("   abandoned monotonic profiles: {0}" -f $abandoned.Count) -ForegroundColor DarkYellow
         $reasons = @($abandoned.Values | Sort-Object -Unique)
         Write-Host ("   reason: {0}" -f ($reasons -join '; ')) -ForegroundColor DarkYellow
+    }
+    if ($unresolvedFailures.Count -gt 0) {
+        Write-Host ("   unresolved failures: {0}" -f $unresolvedFailures.Count) -ForegroundColor DarkYellow
+        foreach ($group in @($unresolvedFailures | Group-Object cause | Sort-Object Count -Descending)) {
+            Write-Host ("     {0}: {1}" -f $group.Name, $group.Count) -ForegroundColor DarkYellow
+        }
+        foreach ($entry in @($unresolvedFailures)) {
+            Write-Host ("     - {0}: {1} [{2}] log={3}" -f $entry.label, $entry.evidence, $entry.action, $entry.log) -ForegroundColor DarkGray
+        }
     }
     if ($rotatedCount -gt 0 -or $keptCount -gt 0) {
         Write-Host ("   files: {0} downloaded and deleted - {1} kept" -f $rotatedCount, $keptCount) -ForegroundColor DarkCyan

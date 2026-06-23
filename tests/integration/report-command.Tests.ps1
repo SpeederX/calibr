@@ -63,7 +63,8 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function fitLabel')                "fitLabel helper missing"
         Assert-True ($tpl -match 'function failureLabel')            "failureLabel helper missing"
         Assert-True ($tpl -match 'function noWinnerSummary')         "noWinnerSummary helper missing"
-        Assert-True ($tpl -match 'unsupported_arch')                 "unsupported_arch case missing from fitLabel"
+        Assert-True ($tpl -match 'unsupported_architecture')         "structured unsupported architecture case missing from fitLabel"
+        Assert-True ($tpl -match 'request_timeout')                  "structured request timeout case missing from fitLabel"
         Assert-True ($tpl -match 'unsupported_architecture')         "unsupported_architecture detail missing"
         Assert-True ($tpl -match 'is-failed')                        "is-failed model row modifier missing"
     }
