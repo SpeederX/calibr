@@ -58,6 +58,12 @@
   "_comment_base": "Flags applied to every benchmark. --flash-attn auto is safer than 'on' (falls back on builds that don't support it). Thread counts are injected dynamically from hardware.cpu_cores_*.",
 
   "planning": {
+    "speed_sweep": {
+      "full_curve": false,
+      "decline_tolerance_pct": 0.02,
+      "descending_points_to_stop": 2,
+      "_comment": "Adaptive speed sweeps stop after two consecutive measured configs fall more than 2% below the best median eval throughput seen in the ordered sweep. Set full_curve=true to retain every planned point for research/visualization."
+    },
     "moe_planning": {
       "context_size": 16384,
       "kv_type": "q8_0",

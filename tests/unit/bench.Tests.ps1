@@ -33,6 +33,37 @@ Describe "Get-Median" {
     }
 }
 
+Describe "Update-AdaptiveSpeedSweepState" {
+    It "tracks a new peak and stops after two meaningful descending points" {
+        $state = $null
+        $a = Update-AdaptiveSpeedSweepState -State $state -EvalTps 10 -ConfigId "a"
+        $state = $a.state
+        $b = Update-AdaptiveSpeedSweepState -State $state -EvalTps 15 -ConfigId "b"
+        $state = $b.state
+        $c = Update-AdaptiveSpeedSweepState -State $state -EvalTps 13 -ConfigId "c"
+        $state = $c.state
+        $d = Update-AdaptiveSpeedSweepState -State $state -EvalTps 11 -ConfigId "d"
+
+        Assert-False $a.should_stop
+        Assert-Equal "new_peak" $b.relation
+        Assert-False $c.should_stop
+        Assert-True $d.should_stop
+        Assert-Equal 15 $d.state.best_eval_tps
+        Assert-Equal "b" $d.state.best_config_id
+    }
+
+    It "treats a near tie as noise and resets the descending sequence" {
+        $state = (Update-AdaptiveSpeedSweepState -State $null -EvalTps 100 -ConfigId "peak").state
+        $state = (Update-AdaptiveSpeedSweepState -State $state -EvalTps 95 -ConfigId "down").state
+        $near = Update-AdaptiveSpeedSweepState -State $state -EvalTps 99 -ConfigId "near"
+
+        Assert-Equal "near_peak" $near.relation
+        Assert-Equal 0 $near.state.below_peak_count
+        $after = Update-AdaptiveSpeedSweepState -State $near.state -EvalTps 94 -ConfigId "down2"
+        Assert-False $after.should_stop
+    }
+}
+
 Describe "Resolve-TsBenchRunnerScript" {
     It "finds the local cli/dist runner for standalone repo runs" {
         $oldRoot = $script:CALIBR_ROOT
