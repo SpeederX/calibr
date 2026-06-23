@@ -537,7 +537,7 @@ export interface Result {
   label: string;
   level?: "low" | "middle" | "high" | "ultra" | string | null;
   sweep?: "context" | "moe-cpu" | "offload" | string | null;
-  control_kind?: "vanilla" | null;
+  control_kind?: "vanilla" | "vanilla-adjacent" | null;
   conditional_kind?: "kv_rescue" | null;
   conditional_source_id?: string | null;
   model: string;

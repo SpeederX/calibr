@@ -24,6 +24,12 @@ instead of calibr's launch tuning. It uses the same measured request and repeat
 policy as the optimized configs, but context and allocation may differ because
 that difference is part of the product comparison.
 
+Context-primary models may also have `control_kind = vanilla-adjacent` speed
+probes. They progressively add a requested context, `--parallel 1`, and the
+primary KV cache type while leaving the remaining runtime defaults alone. These
+probes are used to explain performance deltas; they are not used as the vanilla
+uplift baseline and never participate in winner selection.
+
 When both runs complete:
 
 `uplift_tps = winner_eval_tps - vanilla_eval_tps`

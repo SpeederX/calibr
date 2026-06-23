@@ -9,7 +9,7 @@ export interface BenchItem {
   level?: string;
   sweep?: string;
   workload_kind?: "baseline" | "prefill" | "kv-fill";
-  control_kind?: "vanilla" | null;
+  control_kind?: "vanilla" | "vanilla-adjacent" | null;
   prefill_target_tokens?: number;
   kv_fill_target_tokens?: number;
   reasoning_mode?: string | null;

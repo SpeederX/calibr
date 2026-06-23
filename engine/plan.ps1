@@ -211,7 +211,7 @@ function New-PlanItem {
         [string]$WorkloadKind = "baseline",
         [int]$PrefillTokens = 0,
         [int]$KvFillTokens = 0,
-        [ValidateSet("", "vanilla")]
+        [ValidateSet("", "vanilla", "vanilla-adjacent")]
         [string]$ControlKind = "",
         $Calibration = $null,
         [string]$CalibrationId = "",
@@ -520,6 +520,26 @@ function Invoke-Plan {
                 if ($anchor.Count -gt 0) {
                     $anchorCtx = [int]$anchor[0].ctx
                     $anchorKv = Get-CompatibleContextCandidateKv -Candidate $anchor[0] -Capabilities $llamaCapabilities
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level `
+                        -extraArgs "--ctx-size $anchorCtx" `
+                        -label "llama_cpp_ctx=${anchorCtx}_default" -idx $idx `
+                        -ControlKind "vanilla-adjacent")
+                    $idx++
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level `
+                        -extraArgs "--ctx-size $anchorCtx --parallel 1" `
+                        -label "llama_cpp_ctx=${anchorCtx}_parallel1" -idx $idx `
+                        -ControlKind "vanilla-adjacent")
+                    $idx++
+                    if ($supportsCacheK -and $supportsCacheV) {
+                        $plan += (New-PlanItem `
+                            -meta $m -sweep $sweep -level $level `
+                            -extraArgs "--ctx-size $anchorCtx --parallel 1 --cache-type-k $($anchorKv.k) --cache-type-v $($anchorKv.k)" `
+                            -label "llama_cpp_ctx=${anchorCtx}_parallel1_kv=$($anchorKv.k)" -idx $idx `
+                            -ControlKind "vanilla-adjacent")
+                        $idx++
+                    }
                     $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
                     $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $($anchorKv.k) --cache-type-v $($anchorKv.v)" } else { "" }
                     $argStr = "--ctx-size $anchorCtx --gpu-layers 99$cacheArgs $base$fitArg"
