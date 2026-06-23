@@ -28,7 +28,7 @@ test("benchmark log browser lists entries and previews their tail", async () => 
   await tick();
   assert.match(lastFrame(), /benchmark run logs \(1\)/);
   assert.match(lastFrame(), /model__ctx_16384/);
-  stdin.write("\r");
+  stdin.write("l");
   await tick();
   assert.match(lastFrame(), /===== RUN 2 =====/);
   assert.match(lastFrame(), /server complete/);

@@ -5,7 +5,6 @@ import { render } from "ink-testing-library";
 import { ResultsMenuView } from "../dist/ResultsMenuView.js";
 
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
-const DOWN = "\u001b[B";
 
 test("results submenu exposes benchmark results and benchmark run logs", async () => {
   let selected = "";
@@ -17,9 +16,9 @@ test("results submenu exposes benchmark results and benchmark run logs", async (
   await tick();
   assert.match(lastFrame(), /benchmark results/);
   assert.match(lastFrame(), /benchmark run logs/);
-  stdin.write(DOWN);
+  stdin.write("j");
   await tick();
-  stdin.write("\r");
+  stdin.write(" ");
   await tick();
   assert.equal(selected, "logs");
   unmount();
