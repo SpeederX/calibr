@@ -92,6 +92,12 @@ winners according to the selected winner rule. Switch the scope to `middle`,
 The menu marks setup items with a green check when ready, or a red `*` when
 they need attention.
 
+`benchmark scope` controls how deep the campaign goes. `baseline` runs the
+fast calibration path and winner-eligible baseline configs. `baseline + load
+curves` adds prefill and KV-fill diagnostics at the largest valid context.
+`exhaustive` keeps those diagnostics and also disables adaptive early-stop for
+the speed curve, so it can take much longer but preserves the full curve.
+
 On a fresh machine, `guided run` asks how to set up llama.cpp if
 `llama_server_exe` is missing: download an official release (latest by default,
 or type a `bNNNN` build tag), or scan for existing local `llama-server`

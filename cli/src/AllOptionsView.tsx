@@ -51,6 +51,8 @@ const DOWNLOAD_RETENTION_VALUES = ["cleanup", "keep-all", "keep-top-3", "keep-to
 export type DownloadRetention = (typeof DOWNLOAD_RETENTION_VALUES)[number];
 const WORKLOAD_SWEEP_VALUES = ["baseline", "prefill", "kv-fill", "all"] as const;
 export type WorkloadSweep = (typeof WORKLOAD_SWEEP_VALUES)[number];
+const BENCHMARK_SCOPE_VALUES = ["baseline", "load-curves", "exhaustive"] as const;
+export type BenchmarkScope = (typeof BENCHMARK_SCOPE_VALUES)[number];
 const DEFAULT_VRAM_WARNING_PCT = 10;
 const VRAM_WARNING_STEP = 5;
 
@@ -74,6 +76,22 @@ function workloadSweepLabel(mode: WorkloadSweep): string {
     case "kv-fill": return "baseline + KV-fill curve";
     case "all": return "baseline + prefill + KV-fill (heavy)";
     default: return "baseline only";
+  }
+}
+
+function benchmarkScopeLabel(scope: BenchmarkScope): string {
+  switch (scope) {
+    case "load-curves": return "baseline + prefill/KV load curves";
+    case "exhaustive": return "exhaustive (load curves + full speed curve)";
+    default: return "baseline (fast calibration only)";
+  }
+}
+
+export function policyForBenchmarkScope(scope: BenchmarkScope): { workloadSweep: WorkloadSweep; fullSpeedCurve: boolean } {
+  switch (scope) {
+    case "load-curves": return { workloadSweep: "all", fullSpeedCurve: false };
+    case "exhaustive": return { workloadSweep: "all", fullSpeedCurve: true };
+    default: return { workloadSweep: "baseline", fullSpeedCurve: false };
   }
 }
 
@@ -204,6 +222,7 @@ export interface AllArgsOpts {
   rerunAll: boolean;
   contextSizes?: number[] | null;
   workloadSweep: WorkloadSweep;
+  fullSpeedCurve?: boolean;
 }
 
 // Pure arg builder for `all` (exported for tests). A fixed model overrides the
@@ -241,6 +260,7 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
     args.push("-WorkloadSweep", o.workloadSweep);
     parts.push(`-WorkloadSweep ${o.workloadSweep}`);
   }
+  if (o.fullSpeedCurve) { args.push("-FullSpeedCurve"); parts.push("-FullSpeedCurve"); }
   if (o.runs > 0)        { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
   if (o.downloadRetention !== "cleanup") {
     args.push("-DownloadRetention", o.downloadRetention);
@@ -294,6 +314,7 @@ export interface GuidedRunSession {
   customIds?: string;
   customCtxSizes?: number[] | null;
   workloadSweep?: WorkloadSweep;
+  benchmarkScope?: BenchmarkScope;
   runs?: number;
   downloadRetention?: DownloadRetention;
   preferSpeed?: boolean;
@@ -329,7 +350,10 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   });
   const [model, setModel] = useState<string | null>(session?.model ?? null);
   const [runs, setRuns] = useState<number>(session?.runs ?? 0);
-  const [workloadSweep, setWorkloadSweep] = useState<WorkloadSweep>(session?.workloadSweep ?? "baseline");
+  const [benchmarkScope, setBenchmarkScope] = useState<BenchmarkScope>(
+    session?.benchmarkScope ?? (session?.workloadSweep && session.workloadSweep !== "baseline" ? "load-curves" : "baseline"),
+  );
+  const scopePolicy = policyForBenchmarkScope(benchmarkScope);
   const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(session?.llamaDecision ?? null);
   const [llamaVersionInput, setLlamaVersionInput] = useState<string>("");
   const [llamaCandidates, setLlamaCandidates] = useState<LlamaServerCandidate[]>([]);
@@ -404,7 +428,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     { kind: "fetch"    as const, label: `source:          ${fetchCatalog ? "catalog downloads" : "local folder"}` },
     { kind: "preset"   as const, label: `scope:           ${presetLabel}`, disabled: !fetchCatalog },
     { kind: "model"    as const, label: `model:           ${model === null ? (fetchCatalog ? "all in scope" : "all local models") : model}` },
-    { kind: "workload" as const, label: `load sweep:      ${workloadSweepLabel(workloadSweep)}` },
+    { kind: "scope"    as const, label: `benchmark scope: ${benchmarkScopeLabel(benchmarkScope)}` },
     { kind: "runs"     as const, label: `runs per config: ${runs === 0 ? `default (${runsDefault} from config)` : String(runs)}` },
     { kind: "rotate"   as const, label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
@@ -423,7 +447,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes, workloadSweep });
+    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes, workloadSweep: scopePolicy.workloadSweep, fullSpeedCurve: scopePolicy.fullSpeedCurve });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -451,7 +475,9 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         model,
         customIds,
         contextSizes: customCtxSizes,
-        workloadSweep,
+        benchmarkScope,
+        workloadSweep: scopePolicy.workloadSweep,
+        fullSpeedCurve: scopePolicy.fullSpeedCurve,
         runs,
         downloadRetention,
         preferSpeed,
@@ -634,10 +660,11 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         onSessionChange?.({ model: nextModel });
         break;
       }
-      case "workload": {
-        const nextWorkload = next(WORKLOAD_SWEEP_VALUES, workloadSweep);
-        setWorkloadSweep(nextWorkload);
-        onSessionChange?.({ workloadSweep: nextWorkload });
+      case "scope": {
+        const nextScope = next(BENCHMARK_SCOPE_VALUES, benchmarkScope);
+        const nextPolicy = policyForBenchmarkScope(nextScope);
+        setBenchmarkScope(nextScope);
+        onSessionChange?.({ benchmarkScope: nextScope, workloadSweep: nextPolicy.workloadSweep });
         break;
       }
       case "runs": {

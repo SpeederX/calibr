@@ -213,6 +213,11 @@ first cache that long prefix in the same slot, then measure a streaming request
 that extends it. The final response's `cache_n` confirms the actual reused
 prefix. Diagnostic workloads are never launcher winners.
 
+Guided run exposes this as `benchmark scope`. `baseline` keeps the fast path.
+`baseline + load curves` maps to the prefill/KV diagnostic workload sweep.
+`exhaustive` also passes `-FullSpeedCurve`, preserving complete offload/MoE
+curves instead of stopping after the measured speed peak starts descending.
+
 On llama-server builds that cannot erase slots for multimodal servers, calibr
 skips the optional warm-up so the measured request still starts cold.
 
