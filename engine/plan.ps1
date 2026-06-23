@@ -192,7 +192,10 @@ function New-PlanItem {
         [string]$ControlKind = "",
         $Calibration = $null,
         [string]$CalibrationId = "",
-        $FitOffset = $null
+        $FitOffset = $null,
+        [ValidateSet("", "kv_rescue")]
+        [string]$ConditionalKind = "",
+        [string]$ConditionalSourceId = ""
     )
     # IDs used to be 'T{idx:D3}_{model_variant}_{label}'. The idx prefix made
     # them NON-deterministic across plan regenerations: re-running discover
@@ -230,6 +233,8 @@ function New-PlanItem {
         gguf_architecture = $meta.gguf_architecture
         workload_kind = $WorkloadKind
         control_kind = $(if ($ControlKind) { $ControlKind } else { $null })
+        conditional_kind = $(if ($ConditionalKind) { $ConditionalKind } else { $null })
+        conditional_source_id = $(if ($ConditionalSourceId) { $ConditionalSourceId } else { $null })
         prefill_target_tokens = $PrefillTokens
         kv_fill_target_tokens = $KvFillTokens
         label       = "$($meta.model) $($meta.variant) @ $identityLabel"
@@ -460,11 +465,33 @@ function Invoke-Plan {
                     $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
                     $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $($kv.k) --cache-type-v $($kv.v)" } else { "" }
                     $argStr = "--ctx-size $($c.ctx) --gpu-layers 99$cacheArgs $base$fitArg"
-                    $plan += (New-PlanItem `
+                    $primary = New-PlanItem `
                         -meta $m -sweep $sweep -level $level -extraArgs $argStr `
                         -label "ctx=$($c.ctx)_$($kv.label)" -idx $idx `
-                        -Calibration $calibration -CalibrationId $calibrationId)
+                        -Calibration $calibration -CalibrationId $calibrationId
+                    $plan += $primary
                     $idx++
+                    $rescueSettings = $cfg.planning.kv_rescue
+                    $rescueEnabled = (-not $rescueSettings -or $rescueSettings.enabled -ne $false)
+                    $rescueMinCtx = if ($rescueSettings -and $rescueSettings.min_context_tokens) {
+                        [int]$rescueSettings.min_context_tokens
+                    } else { 65536 }
+                    $requestedRescueK = if ($rescueSettings -and $rescueSettings.kv_k) { [string]$rescueSettings.kv_k } else { 'q4_0' }
+                    $requestedRescueV = if ($rescueSettings -and $rescueSettings.kv_v) { [string]$rescueSettings.kv_v } else { 'q4_0' }
+                    $rescueK = Resolve-CompatibleKvType -Requested $requestedRescueK -Allowed $llamaCapabilities.cacheTypesK
+                    $rescueV = Resolve-CompatibleKvType -Requested $requestedRescueV -Allowed $llamaCapabilities.cacheTypesV
+                    if ($rescueEnabled -and [int]$c.ctx -ge $rescueMinCtx -and
+                        ($kv.k -ne $rescueK -or $kv.v -ne $rescueV)) {
+                        $rescueCacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $rescueK --cache-type-v $rescueV" } else { "" }
+                        $rescueArgs = "--ctx-size $($c.ctx) --gpu-layers 99$rescueCacheArgs $base$fitArg"
+                        $rescueLabel = if ($rescueK -eq $rescueV) { "kv=$rescueK" } else { "kvk=${rescueK}_kvv=${rescueV}" }
+                        $plan += (New-PlanItem `
+                            -meta $m -sweep $sweep -level $level -extraArgs $rescueArgs `
+                            -label "ctx=$($c.ctx)_${rescueLabel}_rescue" -idx $idx `
+                            -Calibration $calibration -CalibrationId $calibrationId `
+                            -ConditionalKind "kv_rescue" -ConditionalSourceId $primary.id)
+                        $idx++
+                    }
                 }
                 $anchor = @($validCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
                 if ($anchor.Count -gt 0) {

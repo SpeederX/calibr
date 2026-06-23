@@ -64,6 +64,20 @@ Describe "Update-AdaptiveSpeedSweepState" {
     }
 }
 
+Describe "Test-KvRescueEligibility" {
+    It "enables rescue only for direct capacity failures" {
+        Assert-True (Test-KvRescueEligibility -Result @{
+            ok = $false
+            failure = @{ cause = "load_oom"; phase = "load"; evidence = "OOM"; action = "abandon_heavier" }
+        })
+        Assert-False (Test-KvRescueEligibility -Result @{
+            ok = $false
+            failure = @{ cause = "request_timeout"; phase = "completion"; evidence = "timeout"; action = "skip_larger_targets" }
+        })
+        Assert-False (Test-KvRescueEligibility -Result @{ ok = $true })
+    }
+}
+
 Describe "Resolve-TsBenchRunnerScript" {
     It "finds the local cli/dist runner for standalone repo runs" {
         $oldRoot = $script:CALIBR_ROOT

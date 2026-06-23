@@ -10,6 +10,8 @@ operating rules live in [`../../AGENTS.md`](../../AGENTS.md).
   execution.
 - `runtime-failure-policy.md` — structured failure causes, retries, and safe
   pruning boundaries.
+- `same-context-kv-rescue.md` — conditional low-quality KV fallback without
+  changing the requested context target.
 - `vram-safety-budget.md` — planning headroom heuristic.
 - `wddm-paging-detection.md` — Windows shared-memory spill detection.
 

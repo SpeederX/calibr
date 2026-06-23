@@ -174,6 +174,24 @@ Describe "Plan workload identity" {
         Assert-Equal "vanilla" $item.control_kind
         Assert-Equal "" $item.extra_args
     }
+    It "links a conditional KV rescue to its same-context primary config" {
+        $meta = @{
+            path = "C:\models\x.gguf"; model = "X"; variant = "Q4_K_M"; series = "x"
+            reasoning_mode = "off"; template_note = $null
+            gguf_context_length = 131072; gguf_architecture = "x"
+        }
+        $primary = New-PlanItem -meta $meta -sweep "context" -level "middle" `
+            -extraArgs "--ctx-size 131072 --cache-type-k q8_0 --cache-type-v q5_1" `
+            -label "ctx=131072_kvk=q8_0_kvv=q5_1" -idx 1
+        $rescue = New-PlanItem -meta $meta -sweep "context" -level "middle" `
+            -extraArgs "--ctx-size 131072 --cache-type-k q4_0 --cache-type-v q4_0" `
+            -label "ctx=131072_kv=q4_0_rescue" -idx 2 `
+            -ConditionalKind "kv_rescue" -ConditionalSourceId $primary.id
+
+        Assert-Equal "kv_rescue" $rescue.conditional_kind
+        Assert-Equal $primary.id $rescue.conditional_source_id
+        Assert-True ($rescue.extra_args -match '--ctx-size 131072')
+    }
 
     It "makes prefill and KV-fill targets part of config identity" {
         $prefill = New-PlanItem -meta (_meta) -sweep "context" -level "middle" `
