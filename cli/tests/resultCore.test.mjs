@@ -88,6 +88,10 @@ function run(i, vramPeak, sharedPeak, promptTps, evalTps) {
     compute_cuda_mib: 360,
     compute_host_mib: 80,
     layers_offloaded: "33/33",
+    effective_context_size: 4096,
+    effective_parallel_slots: 4,
+    effective_n_parallel: 4,
+    flash_attention_state: "auto-disabled",
     fit_status: "success",
     ttft_sec: 0.2 + i / 10,
     prompt_ms: 200 + i * 100,
@@ -150,6 +154,13 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   assert.equal(result.calibration_cache_hit, true);
   assert.equal(result.calibration_cache_age_hours, 2.5);
   assert.equal(result.verified_n_cpu_moe, 25);
+  assert.equal(result.requested_context_size, 16384);
+  assert.equal(result.requested_cache_type_k, "q8_0");
+  assert.equal(result.requested_cache_type_v, null);
+  assert.equal(result.requested_gpu_layers, 99);
+  assert.equal(result.effective_context_size, 4096);
+  assert.equal(result.effective_parallel_slots, 4);
+  assert.equal(result.flash_attention_state, "auto-disabled");
   assert.equal(result.gpu_power_peak_w, 180);
   assert.equal(result.gpu_temp_peak_c, 72);
   assert.equal(result.ram_used_peak_mib, 900);
@@ -221,6 +232,10 @@ test("parseLlamaServerStderr extracts buffers, offload, architecture, and fit", 
     "CUDA0 compute buffer size = 360.75 MiB",
     "CUDA_Host compute buffer size = 80.00 MiB",
     "offloaded 33/33 layers to GPU",
+    "srv  llama_server: n_parallel is set to auto, using n_parallel = 4 and kv_unified = true",
+    "srv    load_model: initializing slots, n_slots = 4",
+    "slot   load_model: id  0 | task -1 | new slot, n_ctx = 4096",
+    "sched_reserve: Flash Attention was auto, set to disabled",
     "successfully fit params",
   ].join("\n"));
   assert.deepEqual(parsed, {
@@ -230,6 +245,10 @@ test("parseLlamaServerStderr extracts buffers, offload, architecture, and fit", 
     compute_cuda_mib: 360.75,
     compute_host_mib: 80,
     layers_offloaded: "33/33",
+    effective_context_size: 4096,
+    effective_parallel_slots: 4,
+    effective_n_parallel: 4,
+    flash_attention_state: "auto-disabled",
     fit_status: "success",
   });
 

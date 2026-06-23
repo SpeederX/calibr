@@ -58,6 +58,8 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'calibration_cache_hit')             "cache source detail missing"
         Assert-True ($tpl -match 'adaptive MoE')                       "adaptive MoE summary missing"
         Assert-True ($tpl -match 'function workloadTitle')            "diagnostic workload tooltip missing"
+        Assert-True ($tpl -match 'function launchProfileLabel')       "launch profile label helper missing"
+        Assert-True ($tpl -match 'Launch profile')                    "launch profile column missing"
     }
     It "surfaces failure_reason for failed configs and 'no winner' models" {
         Assert-True ($tpl -match 'function fitLabel')                "fitLabel helper missing"
@@ -95,6 +97,7 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match "function vanillaClaim") "vanilla uplift helper missing"
         Assert-True ($tpl -match "calibr made it usable") "loadability claim missing"
         Assert-True ($tpl -match "vanilla control") "control row label missing"
+        Assert-True ($tpl -match "vanilla uses llama.cpp defaults") "vanilla launch-profile caveat missing"
         Assert-True ($tpl -match "!c\.control_kind") "controls must not expose launcher downloads"
     }
     It "marks winners visually in scatter, bars, and tables" {

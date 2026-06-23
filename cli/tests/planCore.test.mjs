@@ -247,7 +247,8 @@ test("workload profiles respect context reserve and expand only the largest cont
     planning: {
       ...cfg.planning,
       workload_sweeps: {
-        prefill_tokens: [512, 8192, 131072],
+        prefill_micro_tokens: [512],
+        prefill_ratios: [0.25, 0.9, 0.99],
         kv_fill_ratios: [0.25, 0.9, 0.99],
         context_reserve_tokens: 512,
       },
@@ -256,7 +257,8 @@ test("workload profiles respect context reserve and expand only the largest cont
   const profiles = workloadProfilesForContext(16384, workloadCfg, "all");
   assert.deepEqual(profiles, [
     { kind: "prefill", prefillTokens: 512 },
-    { kind: "prefill", prefillTokens: 8192 },
+    { kind: "prefill", prefillTokens: 4096 },
+    { kind: "prefill", prefillTokens: 14745 },
     { kind: "kv-fill", kvFillTokens: 4096 },
     { kind: "kv-fill", kvFillTokens: 14745 },
   ]);

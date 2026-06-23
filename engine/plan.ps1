@@ -154,13 +154,36 @@ function Get-WorkloadProfilesForContext {
         [int]$Config.bench.n_predict
     } else { 128 }
     $maxTarget = [math]::Max(0, $ContextSize - $reserve - $nPredict)
-    $profiles = @()
+    $profiles = [System.Collections.ArrayList]::new()
+    $seen = @{}
+    function Add-WorkloadProfile {
+        param([hashtable]$Profile)
+        $target = if ($Profile.kind -eq "prefill") { [int]$Profile.prefill_tokens } else { [int]$Profile.kv_fill_tokens }
+        $key = "$($Profile.kind):$target"
+        if ($seen.ContainsKey($key)) { return }
+        [void]$profiles.Add($Profile)
+        $seen[$key] = $true
+    }
 
     if ($Mode -eq "prefill" -or $Mode -eq "all") {
-        foreach ($target in @($settings.prefill_tokens)) {
+        $microTargets = if ($settings.prefill_micro_tokens) {
+            @($settings.prefill_micro_tokens)
+        } elseif ($settings.prefill_ratios) {
+            @(2048)
+        } elseif ($settings.prefill_tokens) {
+            @($settings.prefill_tokens)
+        } else { @(2048) }
+        foreach ($target in @($microTargets)) {
             $tokens = [int]$target
             if ($tokens -gt 0 -and $tokens -le $maxTarget) {
-                $profiles += @{ kind = "prefill"; prefill_tokens = $tokens; kv_fill_tokens = 0 }
+                Add-WorkloadProfile @{ kind = "prefill"; prefill_tokens = $tokens; kv_fill_tokens = 0 }
+            }
+        }
+        foreach ($ratioValue in @($settings.prefill_ratios)) {
+            $ratio = [double]$ratioValue
+            $tokens = [int][math]::Floor($ContextSize * $ratio)
+            if ($ratio -gt 0 -and $ratio -lt 1 -and $tokens -gt 0 -and $tokens -le $maxTarget) {
+                Add-WorkloadProfile @{ kind = "prefill"; prefill_tokens = $tokens; kv_fill_tokens = 0 }
             }
         }
     }
@@ -169,7 +192,7 @@ function Get-WorkloadProfilesForContext {
             $ratio = [double]$ratioValue
             $tokens = [int][math]::Floor($ContextSize * $ratio)
             if ($ratio -gt 0 -and $ratio -lt 1 -and $tokens -gt 0 -and $tokens -le $maxTarget) {
-                $profiles += @{ kind = "kv-fill"; prefill_tokens = 0; kv_fill_tokens = $tokens }
+                Add-WorkloadProfile @{ kind = "kv-fill"; prefill_tokens = 0; kv_fill_tokens = $tokens }
             }
         }
     }

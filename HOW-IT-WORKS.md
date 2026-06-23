@@ -92,7 +92,10 @@ count, MoE placement, batch/thread tuning, or `--fit off`. It uses the same
 prompt, generation length, request policy, warmup policy, and repeat count as
 the optimized configs. This is a product-value comparison against real
 llama.cpp defaults, not an isolated single-flag microbenchmark; the report
-therefore shows both configurations and labels the claim accordingly.
+therefore shows both configurations and labels the claim accordingly. Result
+rows also carry a launch profile: requested context/cache/offload flags plus
+effective slot context, parallelism, offloaded layers, buffer sizes, and Flash
+Attention state parsed from llama-server logs when available.
 
 Adaptive offload probes reuse the TypeScript llama-server lifecycle and
 hardware sampler. They force `--fit off`, disable warmup and prompt-cache
@@ -193,9 +196,12 @@ HTTP/SSE delivery and perceived latency. See [METRICS.md](METRICS.md).
 
 Opt-in workload sweeps use the largest valid context config for each model.
 Prefill profiles send a tokenizer-sized long prompt from an empty slot.
-KV-fill profiles first cache that long prefix in the same slot, then measure a
-streaming request that extends it. The final response's `cache_n` confirms the
-actual reused prefix. Diagnostic workloads are never launcher winners.
+They use one small micro target plus context-relative targets such as
+25/50/75/90%, so a 131K context produces a real high-context load curve instead
+of several unrelated tiny prompts. KV-fill profiles use the same ratios: they
+first cache that long prefix in the same slot, then measure a streaming request
+that extends it. The final response's `cache_n` confirms the actual reused
+prefix. Diagnostic workloads are never launcher winners.
 
 On llama-server builds that cannot erase slots for multimodal servers, calibr
 skips the optional warm-up so the measured request still starts cold.
