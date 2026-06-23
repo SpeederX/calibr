@@ -1463,7 +1463,7 @@ function renderWddmWatchlist() {
 // All-results table (winner-aware)
 // ===========================================================================
 // Friendly label for the Fit column. Takes the FULL config object (not just
-// fit_status) because failed runs need failure_reason / unsupported_arch
+// fit_status) because failed runs need failure_reason / unsupported architecture
 // info to be informative — without that, every failure shows the engine's
 // fallback fit_status='unknown', which the user reads as "wasn't executed".
 function fitLabel(c) {
@@ -1476,16 +1476,30 @@ function fitLabel(c) {
       default:                   return c.fit_status || '-';
     }
   }
-  // Failed run: surface failure_reason. The engine writes the architecture
-  // name on unsupported_arch failures so we can suggest exactly what's missing.
+  // Failed run: surface the structured cause. Legacy aliases remain readable
+  // so reports generated from older result JSONs do not lose meaning.
   switch (c.failure_reason) {
+    case 'unsupported_architecture':
     case 'unsupported_arch':
       return c.unsupported_architecture
         ? 'unsupported arch: ' + c.unsupported_architecture
         : 'unsupported architecture';
+    case 'unsupported_argument':
     case 'unsupported_llama_args': return 'unsupported llama.cpp arguments';
+    case 'incompatible_cache_profile': return 'incompatible cache profile';
+    case 'load_oom':
     case 'vram_overflow':  return 'vram overflow on load';
+    case 'load_process_exit': return 'llama-server exited during load';
+    case 'readiness_timeout':
     case 'server_timeout': return 'llama-server timeout';
+    case 'request_timeout': return 'request timed out';
+    case 'transport_error': return 'transport error';
+    case 'invalid_completion': return 'invalid completion';
+    case 'model_missing': return 'model file missing';
+    case 'engine_unavailable': return 'llama.cpp backend unavailable';
+    case 'persistence_error': return 'could not persist benchmark data';
+    case 'user_cancelled': return 'cancelled by user';
+    case 'unknown':
     case 'other':          return 'load failed';
     default:
       // Legacy result JSONs (pre-failure_reason) — best-effort guess.
@@ -1507,10 +1521,24 @@ function fitClass(c) {
 // summary so the user sees WHY before expanding.
 function failureLabel(reason) {
   switch (reason) {
+    case 'unsupported_architecture':
     case 'unsupported_arch': return 'unsupported architecture (needs newer llama.cpp build)';
+    case 'unsupported_argument':
     case 'unsupported_llama_args': return 'selected llama.cpp build does not support required arguments';
+    case 'incompatible_cache_profile': return 'selected cache profile is incompatible with this llama.cpp build';
+    case 'load_oom':
     case 'vram_overflow':    return 'ran out of VRAM on load';
+    case 'load_process_exit': return 'llama-server exited while loading';
+    case 'readiness_timeout':
     case 'server_timeout':   return 'llama-server never became ready';
+    case 'request_timeout':   return 'benchmark request timed out';
+    case 'transport_error':   return 'connection to llama-server failed';
+    case 'invalid_completion': return 'llama-server returned an invalid completion';
+    case 'model_missing':     return 'model file is missing';
+    case 'engine_unavailable': return 'llama.cpp backend is unavailable';
+    case 'persistence_error': return 'benchmark data could not be saved';
+    case 'user_cancelled':    return 'benchmark was cancelled';
+    case 'unknown':
     case 'other':            return 'load failed';
     default:                 return reason || 'unknown';
   }
@@ -1518,7 +1546,7 @@ function failureLabel(reason) {
 
 // Summarize the failure(s) across a model's configs for the collapsed row.
 // If every failure shares a single reason, name it; if mixed, list them.
-// Surfaces the architecture name on unsupported_arch so the user knows
+// Surfaces the architecture name on unsupported-architecture failures
 // which one to look up.
 function noWinnerSummary(configs) {
   const reasons = new Set();
@@ -1532,7 +1560,7 @@ function noWinnerSummary(configs) {
   if (reasons.size === 1) {
     const reason = [...reasons][0];
     let txt = failureLabel(reason);
-    if (reason === 'unsupported_arch' && archs.size > 0) {
+    if ((reason === 'unsupported_architecture' || reason === 'unsupported_arch') && archs.size > 0) {
       txt = 'unsupported architecture <span class="fail-arch">[' + [...archs].join(', ') + ']</span> — update llama.cpp';
     }
     return txt;

@@ -16,6 +16,10 @@ import {
 import { waitForServerReady } from "./serverLifecycle.js";
 import type { StreamTelemetryEvent } from "./benchClient.js";
 import {
+  classifyRuntimeFailure,
+  type RuntimeFailure,
+} from "./failurePolicy.js";
+import {
   inspectLlamaServer,
   supportsOption,
   validateLlamaArgs,
@@ -44,7 +48,9 @@ export interface BenchCoordinatorOutput {
   ok: boolean;
   result: Record<string, unknown>;
   runs: BenchRun[];
+  attempts?: BenchRun[];
   error?: string;
+  failure?: RuntimeFailure | null;
 }
 
 export interface CoordinatorDeps {
@@ -248,6 +254,8 @@ async function runOne(
   runIndex: number,
   capabilities: LlamaCapabilities,
   deps: CoordinatorDeps,
+  attemptIndex = 1,
+  maxAttempts = 3,
 ): Promise<BenchRun> {
   const now = deps.now ?? (() => new Date());
   const clockMs = deps.clockMs ?? (() => Date.now());
@@ -289,6 +297,7 @@ async function runOne(
 
   const run: BenchRun = {
     run_index: runIndex,
+    attempt_index: attemptIndex,
     timestamp: runStartedDate.toISOString().slice(0, 19),
     run_started_at: runStartedDate.toISOString(),
     vram_before_mib: baseline.gpu_mem_mib,
@@ -515,7 +524,20 @@ async function runOne(
   mkdirSync(dirname(payload.logFile), { recursive: true });
   appendFileSync(payload.logFile, `===== RUN ${runIndex} =====\n[CMD] ${executable} ${args.join(" ")}\n\n===== STDERR (run ${runIndex}) =====\n${stderr}\n`, "utf8");
   emit(payload.eventFile, "[phase] run_complete");
-  return finalizeBenchRun({ run, stderr, cfg: payload.cfg });
+  const finalized = finalizeBenchRun({ run, stderr, cfg: payload.cfg });
+  finalized.failure = classifyRuntimeFailure({
+    ok: finalized.ok,
+    ready: finalized.ready,
+    readinessReason: readiness.reason,
+    error: finalized.error,
+    stderr,
+    fitStatus: finalized.fit_status,
+    unsupportedArchitecture: finalized.unsupported_architecture,
+    workloadKind: payload.item.workload_kind,
+    attempt: attemptIndex,
+    maxAttempts,
+  });
+  return finalized;
 }
 
 export async function runBenchCoordinator(
@@ -526,6 +548,7 @@ export async function runBenchCoordinator(
   writeFileSync(payload.eventFile, "", "utf8");
   writeFileSync(payload.logFile, "", "utf8");
   const runs: BenchRun[] = [];
+  const attempts: BenchRun[] = [];
   try {
     const executable = String(payload.cfg.llama_server_exe ?? "");
     const capabilities = (deps.inspectLlama ?? inspectLlamaServer)(executable);
@@ -547,24 +570,57 @@ export async function runBenchCoordinator(
         ok: false,
         error: `llama.cpp compatibility check failed: ${compatibilityIssues.join("; ")}`,
       };
+      run.failure = classifyRuntimeFailure({
+        ok: false,
+        ready: false,
+        error: run.error,
+        workloadKind: payload.item.workload_kind,
+        attempt: 1,
+        maxAttempts: 1,
+      });
       return {
         ok: false,
         runs: [run],
+        attempts: [run],
         result: failureResult(payload.item, payload.cfg, run, payload.session),
         error: String(run.error),
+        failure: run.failure,
       };
     }
     const count = Math.max(1, Math.trunc(payload.runs));
+    const maxAttempts = 3;
     for (let i = 0; i < count; i++) {
       if (count > 1) emit(payload.eventFile, `  run ${i + 1}/${count}`);
-      const run = await runOne(payload, i, capabilities, deps);
-      runs.push(run);
-      if (run.ok !== true) {
+      let completed = false;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (attempt > 1) emit(payload.eventFile, `  retry ${attempt}/${maxAttempts}`);
+        const run = await runOne(payload, i, capabilities, deps, attempt, maxAttempts);
+        attempts.push(run);
+        if (run.ok === true) {
+          runs.push(run);
+          completed = true;
+          break;
+        }
+        if (!run.failure?.retryable || run.failure.retry_exhausted) {
+          return {
+            ok: false,
+            runs,
+            attempts,
+            result: failureResult(payload.item, payload.cfg, run, payload.session),
+            error: typeof run.error === "string" ? run.error : "benchmark run failed",
+            failure: run.failure,
+          };
+        }
+      }
+      if (!completed) {
+        const lastAttempt = attempts.at(-1) as BenchRun;
         return {
           ok: false,
           runs,
-          result: failureResult(payload.item, payload.cfg, run, payload.session),
-          error: typeof run.error === "string" ? run.error : "benchmark run failed",
+          attempts,
+          result: failureResult(payload.item, payload.cfg, lastAttempt, payload.session),
+          error: typeof lastAttempt.error === "string" ? lastAttempt.error : "benchmark run failed",
+          failure: lastAttempt.failure ?? null,
         };
       }
     }
@@ -575,7 +631,7 @@ export async function runBenchCoordinator(
       session: payload.session,
     });
     result.failure_reason = null;
-    return { ok: true, result, runs };
+    return { ok: true, result, runs, attempts };
   } finally {
     stopActiveBenchServers();
   }

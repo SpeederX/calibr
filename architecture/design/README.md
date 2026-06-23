@@ -6,6 +6,8 @@ operating rules live in [`../../AGENTS.md`](../../AGENTS.md).
 ## Current references
 
 - `override-only-config.md` — default-plus-local configuration model.
+- `runtime-failure-policy.md` — structured failure causes, retries, and safe
+  pruning boundaries.
 - `vram-safety-budget.md` — planning headroom heuristic.
 - `wddm-paging-detection.md` — Windows shared-memory spill detection.
 

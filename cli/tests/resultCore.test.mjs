@@ -202,15 +202,15 @@ test("fit and failure classification match the transitional engine rules", () =>
   assert.equal(inferFitStatus("unknown", true, 40, 500), "success");
   assert.equal(inferFitStatus("unknown", true, 800, 500), "failed_but_running");
   assert.equal(getFailureReason({ ok: true }), null);
-  assert.equal(getFailureReason({ ok: false, unsupported_architecture: "qwen-new" }), "unsupported_arch");
+  assert.equal(getFailureReason({ ok: false, unsupported_architecture: "qwen-new" }), "unsupported_architecture");
   assert.equal(getFailureReason({
     ok: false,
     error: "llama.cpp compatibility check failed: unsupported option --fit",
-  }), "unsupported_llama_args");
-  assert.equal(getFailureReason({ ok: false, fit_status: "failed_but_running" }), "vram_overflow");
-  assert.equal(getFailureReason({ ok: false, shared_peak_mib: 900 }), "vram_overflow");
-  assert.equal(getFailureReason({ ok: false, ready: false, shared_peak_mib: 0 }), "server_timeout");
-  assert.equal(getFailureReason({ ok: false, ready: true, shared_peak_mib: 0 }), "other");
+  }), "unsupported_argument");
+  assert.equal(getFailureReason({ ok: false, fit_status: "failed_but_running" }), "load_oom");
+  assert.equal(getFailureReason({ ok: false, shared_peak_mib: 900 }), "unknown");
+  assert.equal(getFailureReason({ ok: false, ready: false, shared_peak_mib: 0 }), "load_process_exit");
+  assert.equal(getFailureReason({ ok: false, ready: true, shared_peak_mib: 0 }), "unknown");
 });
 
 test("parseLlamaServerStderr extracts buffers, offload, architecture, and fit", () => {

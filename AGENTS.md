@@ -38,6 +38,37 @@ for maintainers, diagnostics, CI, and resumable/headless work.
 - Breaking changes are acceptable during this phase; explain them in commits.
 - Do not create migration shims for hypothetical users.
 
+## Measurement and methodology decisions
+
+Benchmark methodology is product behavior, not an implementation detail.
+Before implementing a change that can alter what a metric means, how a
+workload is constructed, or how results are compared, stop and obtain explicit
+maintainer approval.
+
+This includes:
+
+- prompt, prefill, KV-fill, warm-up, cache reuse, and token-count construction;
+- measurement clocks, sampling, aggregation, thresholds, and failure
+  classification;
+- sweep progression, pruning, rescue behavior, and winner eligibility;
+- defaults that trade accuracy, quality, runtime, memory, or reproducibility.
+
+Present a compact decision brief containing:
+
+1. what is being measured and why;
+2. the viable implementation choices;
+3. the recommended choice and rationale;
+4. how each choice changes metric meaning, comparability, or limitations;
+5. assumptions and values that will be recorded in results.
+
+Do not hide methodological choices to reduce interaction or cognitive load.
+Keep the explanation concise, but ensure the maintainer understands the
+mechanism before approving it.
+
+A decision is methodological when two technically valid implementations could
+produce numbers with different meanings. Refactors that preserve workload,
+formulas, provenance, and interpretation remain routine.
+
 ## Architecture direction
 
 Current phase: ship and harden the TypeScript CLI.
@@ -71,6 +102,10 @@ A/B/C tier terminology.
 - schema/public-interface breaks with lasting consequences;
 - language/framework changes or a new engine adapter;
 - a phase transition;
+- benchmark or telemetry methodology changes, including implicit workload
+  construction;
+- changes to metric semantics, comparability, aggregation, thresholds,
+  pruning, rescue, or winner policy;
 - work likely to exceed half a day.
 
 Routine implementation and consistency decisions do not need a check-in.

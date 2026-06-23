@@ -114,6 +114,7 @@ export interface BenchRun {
   ram_used_peak_mib?: number | null;
   disk_read_peak_mb_s?: number | null;
   telemetry?: BenchTelemetryPoint[];
+  failure?: import("./failurePolicy.js").RuntimeFailure | null;
 }
 
 export interface BenchTelemetryPoint {
@@ -279,14 +280,15 @@ export function finalizeBenchRun(payload: {
   };
 }
 
-export function getFailureReason(result: Record<string, unknown>, sharedConfirmMib = 500): string | null {
+export function getFailureReason(result: Record<string, unknown>, _sharedConfirmMib = 500): string | null {
   if (result.ok === true) return null;
-  if (String(result.error ?? "").startsWith("llama.cpp compatibility check failed:")) return "unsupported_llama_args";
-  if (result.unsupported_architecture) return "unsupported_arch";
-  if (result.fit_status === "failed_but_running") return "vram_overflow";
-  if (int(result.shared_peak_mib) > sharedConfirmMib) return "vram_overflow";
-  if (result.ready === false) return "server_timeout";
-  return "other";
+  const structured = result.failure as { cause?: unknown } | null | undefined;
+  if (typeof structured?.cause === "string") return structured.cause;
+  if (String(result.error ?? "").startsWith("llama.cpp compatibility check failed:")) return "unsupported_argument";
+  if (result.unsupported_architecture) return "unsupported_architecture";
+  if (result.fit_status === "failed_but_running") return "load_oom";
+  if (result.ready === false) return "load_process_exit";
+  return "unknown";
 }
 
 export function contextSizeFromArgs(extraArgs: string | null | undefined): number | null {
