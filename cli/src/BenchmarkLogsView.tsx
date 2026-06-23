@@ -16,6 +16,7 @@ interface Props {
   folderOpener?: () => boolean;
   tailReader?: (path: string, maxLines?: number) => string[];
   resultLabels?: Map<string, string>;
+  initialSelectedIndex?: number;
 }
 
 function sizeLabel(bytes: number): string {
@@ -35,6 +36,7 @@ export function BenchmarkLogsView({
   folderOpener = openBenchmarkLogsFolder,
   tailReader = readBenchmarkLogTail,
   resultLabels: injectedResultLabels,
+  initialSelectedIndex,
 }: Props) {
   const entries = useMemo(() => logs ?? listBenchmarkLogs(), [logs]);
   const resultLabels = useMemo(
@@ -42,7 +44,11 @@ export function BenchmarkLogsView({
     [injectedResultLabels],
   );
   const [cursor, setCursor] = useState(0);
-  const [selected, setSelected] = useState<BenchmarkLog | null>(null);
+  const [selected, setSelected] = useState<BenchmarkLog | null>(() => {
+    if (initialSelectedIndex === undefined || entries.length === 0) return null;
+    const index = Math.max(0, Math.min(entries.length - 1, initialSelectedIndex));
+    return entries[index] ?? null;
+  });
   const [notice, setNotice] = useState<string | null>(null);
 
   useInput((input, key) => {

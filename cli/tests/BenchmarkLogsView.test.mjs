@@ -17,7 +17,7 @@ const logs = [{
 }];
 
 test("benchmark log browser lists entries and previews their tail", async () => {
-  const { lastFrame, stdin, unmount } = render(React.createElement(BenchmarkLogsView, {
+  const listView = render(React.createElement(BenchmarkLogsView, {
     onExit: () => {},
     logs,
     tailReader: () => ["===== RUN 2 =====", "[CMD] llama-server ...", "server complete"],
@@ -26,12 +26,22 @@ test("benchmark log browser lists entries and previews their tail", async () => 
     resultLabels: new Map(),
   }));
   await tick();
-  assert.match(lastFrame(), /benchmark run logs \(1\)/);
-  assert.match(lastFrame(), /model__ctx_16384/);
-  stdin.write("l");
+  assert.match(listView.lastFrame(), /benchmark run logs \(1\)/);
+  assert.match(listView.lastFrame(), /model__ctx_16384/);
+  listView.unmount();
+
+  const previewView = render(React.createElement(BenchmarkLogsView, {
+    onExit: () => {},
+    logs,
+    tailReader: () => ["===== RUN 2 =====", "[CMD] llama-server ...", "server complete"],
+    opener: () => true,
+    folderOpener: () => true,
+    resultLabels: new Map(),
+    initialSelectedIndex: 0,
+  }));
   await tick();
-  assert.match(lastFrame(), /===== RUN 2 =====/);
-  assert.match(lastFrame(), /server complete/);
-  assert.match(lastFrame(), /open full log/);
-  unmount();
+  assert.match(previewView.lastFrame(), /===== RUN 2 =====/);
+  assert.match(previewView.lastFrame(), /server complete/);
+  assert.match(previewView.lastFrame(), /open full log/);
+  previewView.unmount();
 });
