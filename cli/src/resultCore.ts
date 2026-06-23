@@ -1,3 +1,5 @@
+import { deriveMemoryPolicies } from "./memoryPolicy.js";
+
 export interface BenchItem {
   id?: string;
   label?: string;
@@ -366,6 +368,7 @@ export function buildReportRows(
     if (!current || disk > current.disk) coldByModel.set(model, { disk, loadMs });
   }
 
+  const memoryPolicies = deriveMemoryPolicies(results, vramTotalMib);
   return results.map((result) => {
     const cold = coldByModel.get(String(result.model ?? ""));
     return {
@@ -416,6 +419,7 @@ export function buildReportRows(
       model_cold_disk_read_peak_mb_s: cold?.disk ?? null,
       ...deriveResultFields(result, vramTotalMib),
       ...runStats(result),
+      ...(memoryPolicies.get(String(result.id ?? "")) ?? {}),
     };
   });
 }
