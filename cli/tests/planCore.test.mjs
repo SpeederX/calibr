@@ -162,7 +162,7 @@ test("invokePlan applies preset context caps and explicit context overrides", ()
   ]);
 });
 
-test("context candidates preserve primary quality and generate same-context q4 rescue", () => {
+test("long-context candidates keep q8 primary and generate same-context q4 rescue", () => {
   assert.deepEqual(contextCandidateKv({ kv: "q8_0" }), {
     k: "q8_0", v: "q8_0", label: "kv=q8_0",
   });
@@ -183,8 +183,8 @@ test("context candidates preserve primary quality and generate same-context q4 r
     },
     context_candidates: [
       { ctx: 65536, kv: "q8_0" },
-      { ctx: 131072, kv_k: "q8_0", kv_v: "q5_1" },
-      { ctx: 262144, kv_k: "q8_0", kv_v: "q5_1" },
+      { ctx: 131072, kv: "q8_0" },
+      { ctx: 262144, kv: "q8_0" },
     ],
   };
   const planned = invokePlan(
@@ -194,15 +194,18 @@ test("context candidates preserve primary quality and generate same-context q4 r
     {},
   ).filter((item) => !item.control_kind);
   const standard = planned.find((item) => item.label.includes("ctx=65536"));
-  const compromise = planned.find((item) =>
+  const longContextPrimary = planned.find((item) =>
     item.label.includes("ctx=131072") && !item.conditional_kind);
   const rescue = planned.find((item) =>
     item.label.includes("ctx=131072") && item.conditional_kind === "kv_rescue");
   assert.match(standard.extra_args, /--cache-type-k q8_0 --cache-type-v q8_0/);
-  assert.match(compromise.extra_args, /--cache-type-k q8_0 --cache-type-v q5_1/);
-  assert.match(compromise.label, /kvk=q8_0_kvv=q5_1/);
+  assert.match(longContextPrimary.extra_args, /--cache-type-k q8_0 --cache-type-v q8_0/);
+  assert.match(longContextPrimary.label, /kv=q8_0/);
   assert.match(rescue.extra_args, /--cache-type-k q4_0 --cache-type-v q4_0/);
-  assert.equal(rescue.conditional_source_id, compromise.id);
+  assert.equal(rescue.conditional_source_id, longContextPrimary.id);
+  const maxContextPrimary = planned.find((item) =>
+    item.label.includes("ctx=262144") && !item.conditional_kind);
+  assert.match(maxContextPrimary.extra_args, /--cache-type-k q8_0 --cache-type-v q8_0/);
   assert.ok(planned.some((item) =>
     item.label.includes("ctx=262144") && item.conditional_kind === "kv_rescue"));
 });

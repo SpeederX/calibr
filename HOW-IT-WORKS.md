@@ -46,9 +46,9 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
 4. **Expand run configs**
    - add one untuned llama.cpp control per model, excluded from winner
      selection;
-   - quality-first context/KV sweep for models expected to fit: `q8_0/q8_0`
-     normally, `q8_0/q5_1` as a moderate long-context compromise, and
-     `q4_0/q4_0` only for the final rescue candidate;
+   - quality-first context/KV sweep for models expected to fit: every primary
+     context target uses `q8_0/q8_0`; `q4_0/q4_0` is a conditional fallback at
+     the same context after direct capacity evidence;
    - for MoE models, estimate expert tensor placement from GGUF metadata and
      load-probe an initial `--n-cpu-moe` allocation anchor;
    - for dense models, estimate an initial GPU-layer position from GGUF tensor

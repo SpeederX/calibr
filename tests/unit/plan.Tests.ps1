@@ -50,6 +50,16 @@ Describe "Planning policy" {
         Assert-Equal "q5_1" $compromise.v
         Assert-Equal "kvk=q8_0_kvv=q5_1" $compromise.label
     }
+    It "keeps every default primary context candidate at q8/q8" {
+        $default = Get-Content (Join-Path $PSScriptRoot "..\..\config.default.json") -Raw | ConvertFrom-Json
+        foreach ($candidate in @($default.context_candidates)) {
+            $kv = Get-ContextCandidateKv -Candidate (ConvertTo-Hashtable -obj $candidate)
+            Assert-Equal "q8_0" $kv.k
+            Assert-Equal "q8_0" $kv.v
+        }
+        Assert-Equal "q4_0" $default.planning.kv_rescue.kv_k
+        Assert-Equal "q4_0" $default.planning.kv_rescue.kv_v
+    }
 }
 
 Describe "Adaptive offload adapter" {

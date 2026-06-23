@@ -28,3 +28,8 @@ This keeps the comparison interpretable:
 
 q4 is therefore a fallback capability probe, never the default primary cache
 profile.
+
+Primary context profiles stay at `q8_0/q8_0` even at 131K or 262K. Lowering
+V cache pre-emptively is not portable: a cache value can be accepted by
+llama-server's argument parser while still requiring a Flash Attention path
+that the selected model/backend cannot construct.
