@@ -1469,6 +1469,10 @@ function renderWddmWatchlist() {
 function fitLabel(c) {
   if (!c) return '-';
   if (c.ok) {
+    if (c.memory_state === 'spill_correlated_degradation') return 'spill + degradation';
+    if (c.memory_state === 'spill_risk') return 'might spill at high context';
+    if (c.memory_state === 'moe_shared_ambiguous') return 'MoE shared: ambiguous';
+    if (c.memory_state === 'saturated') return 'fits · VRAM saturated';
     switch (c.fit_status) {
       case 'success':            return 'fits OK';
       case 'failed_but_running': return 'vram overflow';

@@ -65,6 +65,8 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function noWinnerSummary')         "noWinnerSummary helper missing"
         Assert-True ($tpl -match 'unsupported_architecture')         "structured unsupported architecture case missing from fitLabel"
         Assert-True ($tpl -match 'request_timeout')                  "structured request timeout case missing from fitLabel"
+        Assert-True ($tpl -match 'spill_correlated_degradation')     "correlated spill state missing from fitLabel"
+        Assert-True ($tpl -match 'might spill at high context')      "spill-risk warning missing from fitLabel"
         Assert-True ($tpl -match 'unsupported_architecture')         "unsupported_architecture detail missing"
         Assert-True ($tpl -match 'is-failed')                        "is-failed model row modifier missing"
     }

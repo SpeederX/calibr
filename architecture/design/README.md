@@ -8,6 +8,8 @@ operating rules live in [`../../AGENTS.md`](../../AGENTS.md).
 - `override-only-config.md` — default-plus-local configuration model.
 - `adaptive-speed-sweep.md` — measured peak detection and optional full-curve
   execution.
+- `memory-cliff-policy.md` — shared-memory states, context-boundary estimation,
+  and correlated degradation.
 - `runtime-failure-policy.md` — structured failure causes, retries, and safe
   pruning boundaries.
 - `same-context-kv-rescue.md` — conditional low-quality KV fallback without
