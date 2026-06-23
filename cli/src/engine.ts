@@ -693,10 +693,13 @@ export function groupByModel(results: Result[], cfg?: Config): ModelGroup[] {
     const oks = configs.filter(c => c.ok);
     if (oks.length === 0) continue;
     const winnerMap = groupWinners(oks, "safety", { confirmMib: threshold });
-    const winner = winnerMap[model] as WinnerWithMeta<Result>;
+    const winner = (winnerMap[model] ?? oks
+      .slice()
+      .sort((a, b) => (b.eval_tps ?? -1) - (a.eval_tps ?? -1))[0]) as WinnerWithMeta<Result>;
+    if (!winnerMap[model]) winner._fallback = true;
     out.push({
       model,
-      series: winner.series,
+      series: winner.series ?? configs.find(c => c.series)?.series,
       winner,
       configs: configs.sort((a, b) => (b.eval_tps ?? -1) - (a.eval_tps ?? -1)),
       successCount: oks.length,
