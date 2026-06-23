@@ -528,13 +528,14 @@ function Invoke-Help {
             Examples = @( "calibr plan", "calibr plan -Model Qwen3.5 -DryRun" )
         }
         "bench" = @{
-            Usage    = "calibr bench [-Model <regex>] [-Level {low,middle,high,ultra}] [-Id <wildcard>] [-Force] [-DryRun] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
+            Usage    = "calibr bench [-Model <regex>] [-Level {low,middle,high,ultra}] [-Id <wildcard>] [-Force] [-DryRun] [-FullSpeedCurve] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
             Flags    = @(
                 "-Model <regex>    Only run configs whose model name matches"
                 "-Level <level>    Only run configs for that hardware level (low|middle|high|ultra)"
                 "-Id <wildcard>    Only run configs whose test ID matches (e.g. 'T023*')"
                 "-Force            Re-run tests whose JSON results already exist"
                 "-DryRun           List configs that would run, don't execute"
+                "-FullSpeedCurve   Keep every offload/MoE point instead of stopping after the peak"
                 "-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1"
                 "                  cleanup deletes calibr-downloaded models after their bench;"
                 "                  keep-all keeps downloads in the model folder; keep-top-1/3"
@@ -560,7 +561,7 @@ function Invoke-Help {
             Examples = @( "calibr report", "calibr report -GroupBy model+variant", "calibr report -PreferSpeed" )
         }
         "all" = @{
-            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-WorkloadSweep baseline|prefill|kv-fill|all] [-Force] [-PreferSpeed] [-VramUsageWarningPct N] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
+            Usage    = "calibr all [-AutoFetchLlama [-LlamaCppBuild bNNNN]] [-FetchCatalog [-CatalogId <id>] [-Model <regex>]] [-WorkloadSweep baseline|prefill|kv-fill|all] [-Force] [-FullSpeedCurve] [-PreferSpeed] [-VramUsageWarningPct N] [-DownloadRetention cleanup|keep-all|keep-top-3|keep-top-1]"
             Flags    = @(
                 "Runs setup, model acquisition, benchmark policy, and report"
                 "generation as one workflow. Internal artifacts remain resumable."
@@ -577,6 +578,7 @@ function Invoke-Help {
                 "                         the largest valid context config. Baseline"
                 "                         remains the only winner-eligible workload."
                 "-Force                   Re-run all benchmarks (skip cache)"
+                "-FullSpeedCurve          Keep the complete offload/MoE performance curve."
                 "-PreferSpeed             Pick fastest config per model, ignore WDDM safety"
                 "-VramUsageWarningPct N   Session-only report warning threshold for baseline VRAM."
                 "-DownloadRetention       cleanup (default), keep-all, keep-top-3, or keep-top-1."

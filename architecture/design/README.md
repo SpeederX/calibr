@@ -6,6 +6,8 @@ operating rules live in [`../../AGENTS.md`](../../AGENTS.md).
 ## Current references
 
 - `override-only-config.md` — default-plus-local configuration model.
+- `adaptive-speed-sweep.md` — measured peak detection and optional full-curve
+  execution.
 - `runtime-failure-policy.md` — structured failure causes, retries, and safe
   pruning boundaries.
 - `vram-safety-budget.md` — planning headroom heuristic.

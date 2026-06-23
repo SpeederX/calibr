@@ -76,6 +76,61 @@ function Resolve-FitStatus {
     return "success"
 }
 
+function Update-AdaptiveSpeedSweepState {
+    # Ordered offload/MoE sweeps normally rise toward a throughput peak and
+    # then decline. Keep enough post-peak evidence to confirm the direction,
+    # but avoid spending hours tracing a tail the default product does not
+    # need. The optional full-curve policy bypasses the caller's pruning.
+    param(
+        [hashtable]$State,
+        [double]$EvalTps,
+        [string]$ConfigId,
+        [double]$DeclineTolerancePct = 0.02,
+        [int]$DescendingPointsToStop = 2
+    )
+
+    if ($null -eq $State) {
+        $State = @{
+            best_eval_tps = $null
+            best_config_id = $null
+            below_peak_count = 0
+            observations = @()
+        }
+    }
+    $tolerance = [math]::Max([double]0.0, [math]::Min([double]0.5, $DeclineTolerancePct))
+    $required = [math]::Max(1, $DescendingPointsToStop)
+    $previousBest = if ($null -ne $State.best_eval_tps) { [double]$State.best_eval_tps } else { $null }
+    $relation = 'first'
+
+    if ($null -eq $previousBest -or $EvalTps -gt $previousBest) {
+        $State.best_eval_tps = $EvalTps
+        $State.best_config_id = $ConfigId
+        $State.below_peak_count = 0
+        $relation = if ($null -eq $previousBest) { 'first' } else { 'new_peak' }
+    } else {
+        $declineBoundary = $previousBest * (1.0 - $tolerance)
+        if ($EvalTps -lt $declineBoundary) {
+            $State.below_peak_count = [int]$State.below_peak_count + 1
+            $relation = 'below_peak'
+        } else {
+            # A near tie is inside the noise band and breaks a descending
+            # sequence; it must not consume one of the two confirmation points.
+            $State.below_peak_count = 0
+            $relation = 'near_peak'
+        }
+    }
+    $State.observations += [ordered]@{
+        config_id = $ConfigId
+        eval_tps = $EvalTps
+        relation = $relation
+    }
+    return [pscustomobject]@{
+        state = $State
+        should_stop = ([int]$State.below_peak_count -ge $required)
+        relation = $relation
+    }
+}
+
 function Resolve-TsResultCoreScript {
     if ($env:CALIBR_TS_RESULT_CORE -eq '0') { return "" }
     if ($env:CALIBR_TS_RESULT_CORE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_RESULT_CORE_SCRIPT)) {
@@ -2061,6 +2116,7 @@ function Invoke-Bench {
     $failCount  = 0
     $skipCount  = 0
     $unresolvedFailures = New-Object System.Collections.ArrayList
+    $speedSweepStates = @{}
     $i = 0
     # Shared-allocation threshold used by run metrics. Failure classification
     # intentionally does not infer OOM or spill from this value alone.
@@ -2186,6 +2242,42 @@ function Invoke-Bench {
         if ($r.ok) {
             $okCount++
             $modelStatus[$mp].ok++
+            $workloadKind = if ($item.workload_kind) { [string]$item.workload_kind } else { 'baseline' }
+            $isAdaptiveSpeedSweep = (
+                $workloadKind -eq 'baseline' -and
+                -not $item.control_kind -and
+                ($item.sweep -eq 'offload' -or $item.sweep -eq 'moe-cpu')
+            )
+            if ($isAdaptiveSpeedSweep -and $null -ne $r.eval_tps) {
+                $speedSettings = $cfg.planning.speed_sweep
+                $declineTolerance = if ($speedSettings -and $null -ne $speedSettings.decline_tolerance_pct) {
+                    [double]$speedSettings.decline_tolerance_pct
+                } else { 0.02 }
+                $descendingPoints = if ($speedSettings -and $speedSettings.descending_points_to_stop) {
+                    [int]$speedSettings.descending_points_to_stop
+                } else { 2 }
+                $fullCurve = ($FullSpeedCurve -or ($speedSettings -and $speedSettings.full_curve -eq $true))
+                $speedKey = "$mp|speed|$($item.sweep)"
+                $currentState = if ($speedSweepStates.ContainsKey($speedKey)) { $speedSweepStates[$speedKey] } else { $null }
+                $decision = Update-AdaptiveSpeedSweepState `
+                    -State $currentState -EvalTps ([double]$r.eval_tps) -ConfigId ([string]$item.id) `
+                    -DeclineTolerancePct $declineTolerance -DescendingPointsToStop $descendingPoints
+                $speedSweepStates[$speedKey] = $decision.state
+
+                $r | Add-Member -NotePropertyName speed_sweep_relation -NotePropertyValue $decision.relation -Force
+                $r | Add-Member -NotePropertyName speed_sweep_best_eval_tps -NotePropertyValue $decision.state.best_eval_tps -Force
+                $r | Add-Member -NotePropertyName speed_sweep_below_peak_count -NotePropertyValue $decision.state.below_peak_count -Force
+                $r | Add-Member -NotePropertyName speed_sweep_stop_triggered -NotePropertyValue ($decision.should_stop -and -not $fullCurve) -Force
+                $resultFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
+                $r | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $resultFile
+
+                if ($decision.should_stop -and -not $fullCurve) {
+                    $bestEval = [math]::Round([double]$decision.state.best_eval_tps, 2)
+                    $abandoned[$sweepAbandonmentKey] = "adaptive speed sweep passed its peak ($bestEval t/s); $descendingPoints descending points confirmed"
+                    Write-Host ("  -> adaptive stop: peak {0} t/s at {1}; later {2} configs in this sweep will be skipped" -f `
+                        $bestEval, $decision.state.best_config_id, $descendingPoints) -ForegroundColor DarkCyan
+                }
+            }
         } else {
             $failCount++
             $modelStatus[$mp].fail++

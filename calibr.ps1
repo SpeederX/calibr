@@ -96,6 +96,10 @@ param(
     # ignoring WDDM-paging safety. Default off - safety wins ties.
     [switch]$PreferSpeed,
 
+    # Run the complete ordered offload/MoE performance curve instead of
+    # stopping after the measured peak has two confirmed descending points.
+    [switch]$FullSpeedCurve,
+
     # Used by report (and `all`): warn when baseline VRAM already used by
     # OS/apps before each config run is at or above this percentage. -1 means
     # use preferences.vram_usage_warning_pct from config (default 10).
