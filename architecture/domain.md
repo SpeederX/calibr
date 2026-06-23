@@ -56,6 +56,13 @@ Legacy result JSONs and some code paths may still store `context` and
 Curated model scope: `low`, `middle`, `high`, or `ultra`. Level chooses which
 models to consider; sweep chooses how each model is measured.
 
+### Benchmark scope
+
+Guided-run depth policy. `baseline` measures winner-eligible baseline configs.
+`load-curves` adds prefill/KV-fill diagnostic profiles. `exhaustive` also keeps
+the full speed curve instead of adaptive early-stop. This is separate from
+catalog level: level chooses models, benchmark scope chooses campaign depth.
+
 ### Run
 
 One measured execution of one run config. In metric schema v5, a run uses one

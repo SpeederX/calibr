@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, scanLocalModelNames } from "../dist/AllOptionsView.js";
+import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, policyForBenchmarkScope, scanLocalModelNames } from "../dist/AllOptionsView.js";
 
 const base = {
   decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",
@@ -68,6 +68,14 @@ test("context sizes pass through as -ContextSizes csv", () => {
 test("diagnostic workload sweep passes through explicitly", () => {
   assert.deepEqual(buildAllArgs({ ...base, workloadSweep: "all" }).args,
     ["all", "-FetchCatalog", "-Preset", "low", "-WorkloadSweep", "all"]);
+});
+
+test("benchmark scope maps to workload and speed-curve policy", () => {
+  assert.deepEqual(policyForBenchmarkScope("baseline"), { workloadSweep: "baseline", fullSpeedCurve: false });
+  assert.deepEqual(policyForBenchmarkScope("load-curves"), { workloadSweep: "all", fullSpeedCurve: false });
+  assert.deepEqual(policyForBenchmarkScope("exhaustive"), { workloadSweep: "all", fullSpeedCurve: true });
+  assert.deepEqual(buildAllArgs({ ...base, workloadSweep: "all", fullSpeedCurve: true }).args,
+    ["all", "-FetchCatalog", "-Preset", "low", "-WorkloadSweep", "all", "-FullSpeedCurve"]);
 });
 
 test("download retention passes through as -DownloadRetention", () => {
