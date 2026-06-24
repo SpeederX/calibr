@@ -208,6 +208,9 @@
   .diag-details > summary::-webkit-details-marker { display:none; }
   .diag-details > summary::before { content:'\25B8 '; color:var(--c-muted); }
   .diag-details[open] > summary::before { content:'\25BE '; }
+  .diag-bars { margin:8px 0 10px; }
+  .diag-bars .bar-model-group { margin:6px 0 10px; }
+  .diag-bars .bar-model-heading { font-size:11px; color:var(--c-accent); }
   /* Click a config row to re-target the comparison radar (vanilla vs that config). */
   .model-row .config-list tr.cfg-row { cursor:pointer; }
   .model-row .config-list tr.cfg-row:hover { background:rgba(255,255,255,0.05); }
@@ -351,12 +354,8 @@
     </table>
   </details>
 
-  <h2>Models (winners per current filter)</h2>
-  <p class="meta">Each row shows the model's winning config for the selected filter. Expand a row to see all configs benched for that model. Per-config <code>.bat</code> downloads are generated on the fly; the default <code>bats/</code> directory still holds the engine's safety-first picks.</p>
-  <div class="models-list" id="models-list"></div>
-
   <div class="section-title">
-    <h2>Throughput &amp; memory</h2>
+    <h2>Models (winners per current filter)</h2>
     <span class="info-tip" tabindex="0" aria-label="VRAM and WDDM explanation">?
       <span class="tip-panel" role="tooltip">
         <p><b>A. Fully in VRAM:</b> model weights, KV cache and compute buffers fit in GPU memory. This is the clean case; eval tokens/s usually stays stable.</p>
@@ -370,15 +369,8 @@
       </span>
     </span>
   </div>
-  <div class="tabs" id="bars-tabs">
-    <div class="tab active" data-bars="eval">Eval tokens/s</div>
-    <div class="tab" data-bars="prompt">Prompt tokens/s</div>
-    <div class="tab" data-bars="throughput">Prompt + eval</div>
-    <div class="tab" data-bars="vram">VRAM peak</div>
-    <div class="tab" data-bars="memory">VRAM + RAM</div>
-    <div class="tab" data-bars="latency">Latency</div>
-  </div>
-  <div class="tab-content"><div id="bars"></div></div>
+  <p class="meta">Each row shows the model's winning config for the selected filter. Expand a row to see all configs benched for that model; open <b>diagnostics</b> inside a row for the per-config throughput &amp; memory bars. Per-config <code>.bat</code> downloads are generated on the fly; the default <code>bats/</code> directory still holds the engine's safety-first picks.</p>
+  <div class="models-list" id="models-list"></div>
 
   <h2>WDDM paging watchlist</h2>
   <p class="meta">Rows where shared GPU memory grew during the run (confirmed paging) or VRAM peak exceeded the saturation threshold (suspected).</p>
@@ -771,7 +763,6 @@ function rerender() {
   renderScatter();
   renderTimeline();
   renderModelsList();
-  renderBars();
   renderWddmWatchlist();
   renderLevelTabs();
   renderAllTable();
@@ -1257,15 +1248,20 @@ function renderModelsList() {
               '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
               '</tr>';
     }
-    const diagHtml = diagConfigs.length
-      ? '<details class="diag-details"><summary>diagnostics · ' + diagConfigs.length +
-          ' vanilla-adjacent / load-curve row' + (diagConfigs.length === 1 ? '' : 's') +
-          ' (excluded from winner selection)</summary>' +
-          '<table><thead><tr>' +
-            '<th>Config</th><th>Workload</th><th>Launch profile</th>' +
-            '<th class="num">Prompt t/s</th><th class="num">Eval t/s</th>' +
-            '<th class="num">VRAM run</th><th class="num">Shared spill</th><th>Fit</th>' +
-          '</tr></thead><tbody>' + diagRows + '</tbody></table></details>'
+    const auditTable = diagConfigs.length
+      ? '<table><thead><tr>' +
+          '<th>Config</th><th>Workload</th><th>Launch profile</th>' +
+          '<th class="num">Prompt t/s</th><th class="num">Eval t/s</th>' +
+          '<th class="num">VRAM run</th><th class="num">Shared spill</th><th>Fit</th>' +
+        '</tr></thead><tbody>' + diagRows + '</tbody></table>'
+      : '';
+    // Per-config throughput & memory bars (folded in from the old global
+    // section), plus the vanilla-adjacent / load-curve audit rows.
+    const diagBars = modelDiagnosticBars(tableConfigs);
+    const diagHtml = (diagBars || auditTable)
+      ? '<details class="diag-details"><summary>diagnostics · per-config throughput &amp; memory bars' +
+          (diagConfigs.length ? ' · ' + diagConfigs.length + ' vanilla-adjacent / load-curve row' + (diagConfigs.length === 1 ? '' : 's') + ' (excluded from winner selection)' : '') +
+          '</summary>' + diagBars + auditTable + '</details>'
       : '';
 
     el.insertAdjacentHTML('beforeend',
@@ -1446,119 +1442,51 @@ function speedGradient(value, mode) {
   return 'linear-gradient(90deg,#ef4444 0%,#ef4444 ' + p1 + '%,#f97316 ' + p2 + '%,#22c55e ' + p3 + '%,#14532d 100%)';
 }
 
-function renderBars() {
-  const el = document.getElementById('bars');
-  el.innerHTML = '';
-  const okData = VIEW.filter(d => d.ok);
-  if (okData.length === 0) {
-    el.innerHTML = '<p class="meta">No ok runs to display.</p>';
-    return;
-  }
+// Per-config bar metrics, folded into each model's diagnostics drilldown
+// (the old global "Throughput & memory" tabs). `dir:'asc'` sorts smaller-is-
+// better (memory/latency); 'desc' sorts faster-is-better (throughput).
+const BAR_METRICS = [
+  { key:'eval',    label:'Eval tokens/s', unit:'t/s', dir:'desc', fillClass:'',       grad:'eval',   valueOf:d => +d.eval_tps || 0,    annotate:evalRunNote },
+  { key:'prompt',  label:'Prompt tokens/s', unit:'t/s', dir:'desc', fillClass:'',     grad:'prompt', valueOf:d => +d.prompt_tps || 0,  annotate:d => metricChip('eval', fmt1(d.eval_tps) + 't/s') },
+  { key:'memory',  label:'VRAM + RAM', unit:'MiB', dir:'asc', fillClass:'memory',     grad:null,     valueOf:totalMemoryUsedMib,        annotate:memoryUsageNote },
+  { key:'latency', label:'Latency', unit:'ms', dir:'asc', fillClass:'memory',         grad:null,     valueOf:latencyMs,                 annotate:latencyNote },
+  { key:'vram',    label:'VRAM peak', unit:'MiB', dir:'asc', fillClass:'memory',      grad:null,     valueOf:benchmarkVramUsedMib,      annotate:vramUsageNote, capToVram:true },
+];
 
-  let sorted, field, maxv, unit, annotate, valueOf, pctOf, fillClass, fillStyleOf;
-  if (STATE.bars === 'eval') {
-    field = 'eval_tps'; unit = 't/s'; annotate = evalRunNote; fillClass = '';
-    valueOf = d => +d.eval_tps || 0;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = d => 'background:' + speedGradient(valueOf(d), 'eval') + ';';
-    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
-  } else if (STATE.bars === 'prompt') {
-    field = 'prompt_tps'; unit = 't/s'; annotate = d => metricChip('eval', fmt1(d.eval_tps) + 't/s'); fillClass = '';
-    valueOf = d => +d.prompt_tps || 0;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = d => 'background:' + speedGradient(valueOf(d), 'prompt') + ';';
-    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
-  } else if (STATE.bars === 'throughput') {
-    field = 'throughput_total_tps'; unit = 't/s'; annotate = throughputNote; fillClass = '';
-    valueOf = totalThroughput;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = d => 'background:' + speedGradient(valueOf(d), 'prompt') + ';';
-    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
-  } else if (STATE.bars === 'memory') {
-    field = 'memory_total_mib'; unit = 'MiB'; annotate = memoryUsageNote; fillClass = 'memory';
-    valueOf = totalMemoryUsedMib;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = () => '';
-    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
-  } else if (STATE.bars === 'latency') {
-    field = 'server_ttft_ms'; unit = 'ms'; annotate = latencyNote; fillClass = 'memory';
-    valueOf = latencyMs;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = () => '';
-    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
-  } else { // vram
-    field = 'vram_peak_mib'; unit = 'MiB'; annotate = vramUsageNote; fillClass = 'memory';
-    valueOf = benchmarkVramUsedMib;
-    maxv = (CFG.hardware && CFG.hardware.vram_total_mib) || 8192;
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = () => '';
-    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
-  }
-
-  const rowHtml = (d) => {
-    const value = valueOf(d);
-    const pctVal = pctOf(d);
-    const fillClasses = fillClass;
-    const fillStyle = 'width:' + pctVal + '%;' + fillStyleOf(d);
-    const modeCls = ' mode-' + STATE.bars;
+function metricBars(configs, m) {
+  const ok = configs.filter(d => d.ok);
+  const vals = ok.map(m.valueOf).filter(v => v > 0);
+  if (!vals.length) return '';
+  const maxv = m.capToVram
+    ? ((CFG.hardware && CFG.hardware.vram_total_mib) || Math.max(1, ...vals))
+    : Math.max(1, Math.ceil(Math.max(...vals) * 1.05));
+  const sorted = ok.slice().sort((a, b) => m.dir === 'asc'
+    ? m.valueOf(a) - m.valueOf(b)
+    : m.valueOf(b) - m.valueOf(a));
+  const rows = sorted.map(d => {
+    const value = m.valueOf(d);
+    const pct = Math.min(100, (value / maxv) * 100);
+    const fillStyle = 'width:' + pct + '%;' + (m.grad ? 'background:' + speedGradient(value, m.grad) + ';' : '');
     const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM +' + d.shared_peak_mib + 'MiB]</span>' :
-                  d.wddm_flag_high_vram  ? ' <span class="wddm">[VRAM ' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
-    const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
+                  d.wddm_flag_high_vram  ? ' <span class="wddm">[VRAM ' + Math.round(d.wddm_vram_saturation * 100) + '%]</span>' : '';
+    const annHtml = m.annotate ? '<div class="ann">' + m.annotate(d) + '</div>' : '';
     const winCls = isWinnerId(d.id) ? ' is-winner' : '';
-    return (
-      '<div class="bar-row' + modeCls + (annotate ? ' bar-row-ann' : '') + winCls + '">' +
+    return '<div class="bar-row mode-' + m.key + (m.annotate ? ' bar-row-ann' : '') + winCls + '">' +
         '<div class="name"><span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.label) + badge + '</div>' +
-        '<div class="track"><div class="fill ' + fillClasses + '" style="' + fillStyle + '"></div></div>' +
-        '<div class="val">' + value.toFixed(1) + ' ' + unit + '</div>' +
+        '<div class="track"><div class="fill ' + m.fillClass + '" style="' + fillStyle + '"></div></div>' +
+        '<div class="val">' + value.toFixed(1) + ' ' + m.unit + '</div>' +
         annHtml +
-      '</div>'
-    );
-  };
-
-  if (STATE.bars === 'disk') {
-    const byModel = {};
-    for (const d of sorted) (byModel[d.model] = byModel[d.model] || []).push(d);
-    const groups = Object.entries(byModel).sort((a, b) => {
-      const aMax = Math.max(...a[1].map(valueOf));
-      const bMax = Math.max(...b[1].map(valueOf));
-      return aMax - bMax || a[0].localeCompare(b[0]);
-    });
-    for (const [model, rows] of groups) {
-      const maxDisk = Math.max(...rows.map(valueOf));
-      const bestEval = Math.max(...rows.map(d => +d.eval_tps || 0));
-      el.insertAdjacentHTML('beforeend',
-        '<div class="bar-model-group">' +
-          '<div class="bar-model-heading">' +
-            '<span>' + escapeHtml(model) + '</span>' +
-            '<span class="meta">' + rows.length + ' config' + (rows.length === 1 ? '' : 's') +
-              ' · peak disk ' + fmt1(maxDisk) + ' MB/s' +
-              ' · best eval ' + fmt1(bestEval) + ' t/s</span>' +
-          '</div>' +
-          rows.map(rowHtml).join('') +
-        '</div>'
-      );
-    }
-    return;
-  }
-
-  for (const d of sorted) {
-    el.insertAdjacentHTML('beforeend', rowHtml(d));
-  }
+      '</div>';
+  }).join('');
+  return '<div class="bar-model-group"><div class="bar-model-heading"><span>' + m.label + '</span></div>' + rows + '</div>';
 }
 
-document.getElementById('bars-tabs').querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.getElementById('bars-tabs').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    STATE.bars = tab.dataset.bars;
-    renderBars();
-  });
-});
+// The full per-config throughput & memory drilldown for one model, stacked
+// vertically inside diagnostics.
+function modelDiagnosticBars(configs) {
+  const groups = BAR_METRICS.map(m => metricBars(configs, m)).filter(Boolean).join('');
+  return groups ? '<div class="diag-bars">' + groups + '</div>' : '';
+}
 
 // ===========================================================================
 // Scatter (now the first chart). Winner dots get a thicker outline so the

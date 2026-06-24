@@ -72,13 +72,14 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'unsupported_architecture')         "unsupported_architecture detail missing"
         Assert-True ($tpl -match 'is-failed')                        "is-failed model row modifier missing"
     }
-    It "exposes the eval/vram tabbed widget that replaces the old separate bar sections" {
-        Assert-True ($tpl -match 'id="bars-tabs"')           "bars-tabs container missing"
-        Assert-True ($tpl -match 'data-bars="eval"')         "eval bars tab missing"
-        Assert-True ($tpl -match 'data-bars="vram"')         "vram bars tab missing"
-        Assert-True ($tpl -match 'function renderBars')      "renderBars function missing"
-        Assert-True ($tpl -match 'function vramHeadroom')    "vramHeadroom annotation function missing"
+    It "folds per-config throughput & memory bars into each model's diagnostics" {
+        Assert-True ($tpl -match 'function modelDiagnosticBars') "per-model bar renderer missing"
+        Assert-True ($tpl -match 'function metricBars')       "metric bar helper missing"
+        Assert-True ($tpl -match 'const BAR_METRICS')         "bar metric registry missing"
+        Assert-True ($tpl -match 'class="diag-bars"')         "diagnostics bars container missing"
         Assert-True ($tpl -match '\.bar-row-ann')            "bar-row-ann CSS class missing"
+        Assert-False ($tpl -match 'id="bars-tabs"')           "global throughput section should be removed"
+        Assert-False ($tpl -match 'function renderBars\b')    "global renderBars should be removed"
     }
     It "supports client-side .bat generation for any config" {
         Assert-True ($tpl -match 'function generateBatText')  "generateBatText function missing"
