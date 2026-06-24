@@ -172,7 +172,7 @@
   .compare-panel { display:grid; gap:12px; align-items:start; margin:2px 0 12px; }
   .compare-panel.cols-1 { grid-template-columns:minmax(0,1fr); }
   .compare-panel.cols-2 { grid-template-columns:minmax(0,1fr) minmax(280px,360px); }
-  .compare-panel.cols-3 { grid-template-columns:minmax(0,1fr) minmax(250px,330px) minmax(250px,330px); }
+  .compare-panel.cols-3 { grid-template-columns:minmax(0,1fr) minmax(250px,330px) minmax(250px,330px); align-items:stretch;}
   @media (max-width: 920px) { .compare-panel { grid-template-columns:1fr !important; } }
   .compare-card { background:#242424; border:1px solid var(--c-border); border-radius:6px;
                   padding:8px 10px 6px; min-width:0; display:flex; flex-direction:column; }
@@ -209,8 +209,9 @@
   .diag-details > summary::before { content:'\25B8 '; color:var(--c-muted); }
   .diag-details[open] > summary::before { content:'\25BE '; }
   .diag-bars { margin:8px 0 10px; }
-  .diag-bars .bar-model-group { margin:6px 0 10px; }
-  .diag-bars .bar-model-heading { font-size:11px; color:var(--c-accent); }
+  .diag-bars .tabs { margin:0; }
+  .diag-bars .tab { padding:4px 9px; font-size:11px; }
+  .diag-bars .tab-content { padding:10px; max-height:360px; overflow:auto; }
   /* Click a config row to re-target the comparison radar (vanilla vs that config). */
   .model-row .config-list tr.cfg-row { cursor:pointer; }
   .model-row .config-list tr.cfg-row:hover { background:rgba(255,255,255,0.05); }
@@ -371,6 +372,19 @@
   </div>
   <p class="meta">Each row shows the model's winning config for the selected filter. Expand a row to see all configs benched for that model; open <b>diagnostics</b> inside a row for the per-config throughput &amp; memory bars. Per-config <code>.bat</code> downloads are generated on the fly; the default <code>bats/</code> directory still holds the engine's safety-first picks.</p>
   <div class="models-list" id="models-list"></div>
+
+  <details class="card" id="leaderboard">
+    <summary><b>Complete session leaderboard</b> <span class="meta" id="leaderboard-count"></span></summary>
+    <p class="meta">The winning config for each model under the current filter, compared head to head. Switch the metric with the tabs.</p>
+    <div class="tabs" id="leaderboard-tabs">
+      <div class="tab active" data-metric="eval">Eval tokens/s</div>
+      <div class="tab" data-metric="prompt">Prompt tokens/s</div>
+      <div class="tab" data-metric="memory">VRAM + RAM</div>
+      <div class="tab" data-metric="latency">Latency</div>
+      <div class="tab" data-metric="vram">VRAM peak</div>
+    </div>
+    <div class="tab-content"><div id="leaderboard-bars"></div></div>
+  </details>
 
   <h2>WDDM paging watchlist</h2>
   <p class="meta">Rows where shared GPU memory grew during the run (confirmed paging) or VRAM peak exceeded the saturation threshold (suspected).</p>
@@ -763,6 +777,7 @@ function rerender() {
   renderScatter();
   renderTimeline();
   renderModelsList();
+  renderLeaderboard();
   renderWddmWatchlist();
   renderLevelTabs();
   renderAllTable();
@@ -1257,7 +1272,7 @@ function renderModelsList() {
       : '';
     // Per-config throughput & memory bars (folded in from the old global
     // section), plus the vanilla-adjacent / load-curve audit rows.
-    const diagBars = modelDiagnosticBars(tableConfigs);
+    const diagBars = modelDiagnosticBars(model, tableConfigs);
     const diagHtml = (diagBars || auditTable)
       ? '<details class="diag-details"><summary>diagnostics · per-config throughput &amp; memory bars' +
           (diagConfigs.length ? ' · ' + diagConfigs.length + ' vanilla-adjacent / load-curve row' + (diagConfigs.length === 1 ? '' : 's') + ' (excluded from winner selection)' : '') +
@@ -1453,17 +1468,18 @@ const BAR_METRICS = [
   { key:'vram',    label:'VRAM peak', unit:'MiB', dir:'asc', fillClass:'memory',      grad:null,     valueOf:benchmarkVramUsedMib,      annotate:vramUsageNote, capToVram:true },
 ];
 
-function metricBars(configs, m) {
+function metricBars(configs, m, labelFn) {
   const ok = configs.filter(d => d.ok);
   const vals = ok.map(m.valueOf).filter(v => v > 0);
-  if (!vals.length) return '';
+  if (!vals.length) return '<p class="meta">No data for this metric.</p>';
   const maxv = m.capToVram
     ? ((CFG.hardware && CFG.hardware.vram_total_mib) || Math.max(1, ...vals))
     : Math.max(1, Math.ceil(Math.max(...vals) * 1.05));
   const sorted = ok.slice().sort((a, b) => m.dir === 'asc'
     ? m.valueOf(a) - m.valueOf(b)
     : m.valueOf(b) - m.valueOf(a));
-  const rows = sorted.map(d => {
+  const name = labelFn || (d => '<span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.label));
+  return sorted.map(d => {
     const value = m.valueOf(d);
     const pct = Math.min(100, (value / maxv) * 100);
     const fillStyle = 'width:' + pct + '%;' + (m.grad ? 'background:' + speedGradient(value, m.grad) + ';' : '');
@@ -1472,20 +1488,46 @@ function metricBars(configs, m) {
     const annHtml = m.annotate ? '<div class="ann">' + m.annotate(d) + '</div>' : '';
     const winCls = isWinnerId(d.id) ? ' is-winner' : '';
     return '<div class="bar-row mode-' + m.key + (m.annotate ? ' bar-row-ann' : '') + winCls + '">' +
-        '<div class="name"><span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.label) + badge + '</div>' +
+        '<div class="name">' + name(d) + badge + '</div>' +
         '<div class="track"><div class="fill ' + m.fillClass + '" style="' + fillStyle + '"></div></div>' +
         '<div class="val">' + value.toFixed(1) + ' ' + m.unit + '</div>' +
         annHtml +
       '</div>';
   }).join('');
-  return '<div class="bar-model-group"><div class="bar-model-heading"><span>' + m.label + '</span></div>' + rows + '</div>';
 }
 
-// The full per-config throughput & memory drilldown for one model, stacked
-// vertically inside diagnostics.
-function modelDiagnosticBars(configs) {
-  const groups = BAR_METRICS.map(m => metricBars(configs, m)).filter(Boolean).join('');
-  return groups ? '<div class="diag-bars">' + groups + '</div>' : '';
+// Metric tab strip shared by the per-model diagnostics and the leaderboard.
+function barMetricTabs(activeKey, cls, attrs) {
+  return '<div class="tabs ' + cls + '"' + (attrs || '') + '>' +
+    BAR_METRICS.map(m => '<div class="tab' + (m.key === activeKey ? ' active' : '') +
+      '" data-metric="' + m.key + '">' + escapeHtml(m.label) + '</div>').join('') +
+    '</div>';
+}
+function diagBarsId(model) { return 'diag-bars-' + String(model).replace(/[^\w]/g, '_'); }
+
+// Per-config throughput & memory bars for one model, as a tabbed widget inside
+// diagnostics (one metric shown at a time; tabs switch the metric).
+function modelDiagnosticBars(model, configs) {
+  if (!configs.some(d => d.ok)) return '';
+  const def = BAR_METRICS[0];
+  return '<div class="diag-bars">' +
+    barMetricTabs(def.key, 'diag-bars-tabs', ' data-model="' + escapeHtml(model) + '"') +
+    '<div class="tab-content"><div id="' + diagBarsId(model) + '">' + metricBars(configs, def) + '</div></div>' +
+    '</div>';
+}
+
+// Global "Complete session leaderboard": one bar per model (its winner under
+// the current filter), compared head to head. Same metric tabs as diagnostics.
+function renderLeaderboard() {
+  const el = document.getElementById('leaderboard-bars');
+  if (!el) return;
+  const winners = Object.values(currentWinners).filter(Boolean);
+  const m = BAR_METRICS.find(x => x.key === STATE.bars) || BAR_METRICS[0];
+  el.innerHTML = winners.length
+    ? metricBars(winners, m, d => '<span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.model))
+    : '<p class="meta">No winners for the current filter.</p>';
+  const count = document.getElementById('leaderboard-count');
+  if (count) count.textContent = winners.length + ' models · winner each';
 }
 
 // ===========================================================================
@@ -2035,6 +2077,32 @@ const allColsBtn = document.getElementById('all-columns-toggle');
 if (allColsBtn) allColsBtn.addEventListener('click', () => {
   const lean = document.getElementById('all').classList.toggle('all-lean');
   allColsBtn.textContent = lean ? '+ all columns' : '− fewer columns';
+});
+
+// Leaderboard metric tabs (static element, bound once).
+const lbTabs = document.getElementById('leaderboard-tabs');
+if (lbTabs) lbTabs.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    lbTabs.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    STATE.bars = tab.dataset.metric;
+    renderLeaderboard();
+  });
+});
+
+// Per-model diagnostics metric tabs (delegated; the rows render dynamically
+// inside each model row, so one document-level handler covers them all).
+document.addEventListener('click', e => {
+  const tab = e.target.closest('.diag-bars-tabs .tab[data-metric]');
+  if (!tab) return;
+  const tabsEl = tab.closest('.diag-bars-tabs');
+  tabsEl.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  const model = tabsEl.dataset.model;
+  const m = BAR_METRICS.find(x => x.key === tab.dataset.metric) || BAR_METRICS[0];
+  const configs = VIEW.filter(c => c.model === model && !isVanillaAdjacent(c) && !isWorkloadRow(c));
+  const content = document.getElementById(diagBarsId(model));
+  if (content) content.innerHTML = metricBars(configs, m);
 });
 
 // Data-scope buttons (latest session / all sessions).

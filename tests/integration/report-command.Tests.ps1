@@ -72,14 +72,21 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'unsupported_architecture')         "unsupported_architecture detail missing"
         Assert-True ($tpl -match 'is-failed')                        "is-failed model row modifier missing"
     }
-    It "folds per-config throughput & memory bars into each model's diagnostics" {
+    It "folds per-config throughput & memory bars into each model's diagnostics as a tabbed widget" {
         Assert-True ($tpl -match 'function modelDiagnosticBars') "per-model bar renderer missing"
         Assert-True ($tpl -match 'function metricBars')       "metric bar helper missing"
         Assert-True ($tpl -match 'const BAR_METRICS')         "bar metric registry missing"
-        Assert-True ($tpl -match 'class="diag-bars"')         "diagnostics bars container missing"
+        Assert-True ($tpl -match 'function barMetricTabs')    "shared metric tab strip missing"
+        Assert-True ($tpl -match 'diag-bars-tabs')            "per-model metric tabs missing"
         Assert-True ($tpl -match '\.bar-row-ann')            "bar-row-ann CSS class missing"
-        Assert-False ($tpl -match 'id="bars-tabs"')           "global throughput section should be removed"
         Assert-False ($tpl -match 'function renderBars\b')    "global renderBars should be removed"
+    }
+    It "shows a collapsed Complete session leaderboard of winners per model" {
+        Assert-True ($tpl -match 'details class="card" id="leaderboard"') "leaderboard should be a collapsed card"
+        Assert-True ($tpl -match 'Complete session leaderboard')          "leaderboard title missing"
+        Assert-True ($tpl -match 'id="leaderboard-tabs"')                 "leaderboard metric tabs missing"
+        Assert-True ($tpl -match 'function renderLeaderboard')            "leaderboard renderer missing"
+        Assert-True ($tpl -match 'Object\.values\(currentWinners\)')      "leaderboard should plot winners per model"
     }
     It "supports client-side .bat generation for any config" {
         Assert-True ($tpl -match 'function generateBatText')  "generateBatText function missing"

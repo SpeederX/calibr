@@ -169,7 +169,7 @@ try {
 // Best-effort assertion that the main containers got written. Stubbed
 // element identity means writes share a single key per id; existence > 0
 // per known container is enough to know rerender() walked them.
-const expected = ["hw", "overall-pct", "models-list", "scatter", "wddm-list"];
+const expected = ["hw", "overall-pct", "models-list", "scatter", "leaderboard-bars", "wddm-list"];
 const missing  = expected.filter(id => !writes[id]);
 if (missing.length) {
   console.error("FAIL: these containers received no writes:", missing);
