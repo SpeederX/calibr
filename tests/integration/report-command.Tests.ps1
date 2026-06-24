@@ -113,13 +113,22 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'function comparisonPanel')     "comparison panel helper missing"
         Assert-True ($tpl -match 'function renderRadar')         "radar renderer missing"
         Assert-True ($tpl -match 'function vanillaControlFor')   "vanilla reference selector missing"
-        Assert-True ($tpl -match 'class="compare-panel"')        "comparison panel container missing"
+        Assert-True ($tpl -match 'compare-panel')                "comparison panel container missing"
         Assert-True ($tpl -match 'radar-poly-vanilla')           "vanilla reference polygon missing"
         Assert-True ($tpl -match 'radar-poly-config')            "config polygon missing"
         Assert-True ($tpl -match 'const RADAR_AXES')             "radar axis registry missing"
         Assert-True ($tpl -match 'gpu_temp_peak_c')              "temperature axis missing from radar"
+        Assert-True ($tpl -match "key:'ctx'")                    "context-size axis missing from radar"
+        Assert-True ($tpl -match 'radar-dot-vanilla')            "hoverable vanilla vertices missing"
         Assert-True ($tpl -match 'outward = better')             "radar direction legend missing"
         Assert-True ($tpl -match 'selected config')              "radar legend should name the selected config"
+    }
+    It "reframes the lean config list and drops redundant columns" {
+        Assert-True ($tpl -match 'function configDescription')    "config description helper missing"
+        Assert-True ($tpl -match 'Baseline default llama.cpp configuration') "vanilla reframing missing"
+        Assert-True ($tpl -match 'Context size: ')                "context-size framing missing"
+        Assert-True ($tpl -match 'Key/Value quant')               "KV quant framing missing"
+        Assert-True ($tpl -match 'compare-configs')               "configs card missing from single-row panel"
     }
     It "lets a config row re-target the comparison radar" {
         Assert-True ($tpl -match 'function selectCompareConfig')  "row-selection handler missing"

@@ -168,11 +168,16 @@
   .planning-summary code { color:var(--c-accent); }
 
   /* ----- Vanilla-vs-config comparison panel (radar + load curve) ----- */
-  .compare-panel { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px;
-                   align-items:stretch; margin:2px 0 12px; max-width:680px; }
-  @media (max-width: 760px) { .compare-panel { grid-template-columns:1fr; max-width:340px; } }
+  .compare-panel { display:grid; gap:12px; align-items:stretch; margin:2px 0 12px; }
+  .compare-panel.cols-1 { grid-template-columns:minmax(0,480px); max-width:480px; }
+  .compare-panel.cols-2 { grid-template-columns:minmax(220px,1fr) minmax(230px,1.05fr); max-width:720px; }
+  .compare-panel.cols-3 { grid-template-columns:minmax(220px,0.95fr) minmax(220px,1fr) minmax(220px,1fr); max-width:1040px; }
+  @media (max-width: 920px) { .compare-panel { grid-template-columns:1fr !important; max-width:420px !important; } }
   .compare-card { background:#242424; border:1px solid var(--c-border); border-radius:6px;
                   padding:8px 10px 6px; min-width:0; display:flex; flex-direction:column; }
+  .compare-configs table { margin:0; }
+  .compare-configs th, .compare-configs td { padding:4px 6px; }
+  .compare-configs td:first-child { font-size:11px; line-height:1.35; }
   .compare-card h4 { margin:0 0 3px; font-size:11px; color:var(--c-text); font-weight:600; }
   .compare-card h4 .meta { font-weight:400; }
   .compare-card svg { width:100%; height:auto; }
@@ -185,7 +190,8 @@
   .radar-ref-tag { fill:var(--c-muted); font:7px Consolas, monospace; }
   .radar-poly-vanilla { fill:rgba(183,183,183,0.12); stroke:var(--c-muted); stroke-width:1.5; }
   .radar-poly-config  { fill:rgba(139,92,246,0.22); stroke:var(--c-win); stroke-width:2; }
-  .radar-dot-config { fill:var(--c-win); }
+  .radar-dot-config { fill:var(--c-win); cursor:help; }
+  .radar-dot-vanilla { fill:var(--c-muted); opacity:0.75; cursor:help; }
   .compare-legend { display:flex; gap:6px 12px; flex-wrap:wrap; margin:6px 0 0;
                     color:var(--c-muted); font-size:10px; }
   .compare-cap { color:var(--c-muted); font:10px Consolas, monospace; margin:5px 0 0; }
@@ -902,6 +908,36 @@ function isWorkloadRow(c) {
   return c.workload_kind === 'prefill' || c.workload_kind === 'kv-fill';
 }
 
+// Human-friendly config description for the lean picker, instead of the raw
+// engine label. Vanilla is the baseline control; real configs read as their
+// context size + KV-cache quantization (the two knobs that actually vary).
+function configContextSize(c) {
+  if (+c.ctx_size) return +c.ctx_size;
+  if (+c.requested_context_size) return +c.requested_context_size;
+  const m = /ctx[=_-]?(\d+)/i.exec(c.label || c.extra_args || '');
+  return m ? +m[1] : 0;
+}
+function kvQuantLabel(c) {
+  let k = c.requested_cache_type_k, v = c.requested_cache_type_v;
+  if (!k || !v) {
+    const mk = /--cache-type-k\s+(\S+)/.exec(c.extra_args || '');
+    const mv = /--cache-type-v\s+(\S+)/.exec(c.extra_args || '');
+    k = k || (mk && mk[1]); v = v || (mv && mv[1]);
+  }
+  if (!k && !v) { const ml = /kv[=_]([a-z0-9_]+)/i.exec(c.label || ''); if (ml) k = v = ml[1]; }
+  if (!k && !v) return null;
+  k = k || v; v = v || k;
+  return k === v ? k : k + '/' + v;
+}
+function configDescription(c) {
+  if (c.control_kind === 'vanilla') return 'Baseline default llama.cpp configuration';
+  const ctx = configContextSize(c), kv = kvQuantLabel(c);
+  const parts = [];
+  if (ctx) parts.push('Context size: ' + ctx);
+  if (kv) parts.push('Key/Value quant: ' + kv);
+  return parts.length ? parts.join(' · ') : escapeHtml(c.label);
+}
+
 // Pick the vanilla control to reference, preferring the one from the same
 // bench session as `ref` (mirrors vanillaClaim's selection).
 function vanillaControlFor(configs, ref) {
@@ -921,11 +957,14 @@ function vanillaControlFor(configs, ref) {
 const RADAR_AXES = [
   { key:'eval',   label:'eval t/s',   dir:'up',   unit:'t/s', get:d => +d.eval_tps || 0 },
   { key:'prompt', label:'prompt t/s', dir:'up',   unit:'t/s', get:d => +d.prompt_tps || 0 },
+  { key:'ctx',    label:'context',    dir:'up',   unit:'tok', get:d => +d.effective_context_size || +d.ctx_size || +d.requested_context_size || 0 },
   { key:'vram',   label:'VRAM',       dir:'down', unit:'MiB', get:d => benchmarkVramUsedMib(d) },
   { key:'power',  label:'power',      dir:'down', unit:'W',   get:d => +d.gpu_power_peak_w || 0 },
   { key:'temp',   label:'temp',       dir:'down', unit:'°C', get:d => +d.gpu_temp_peak_c || 0 },
   { key:'ram',    label:'RAM',        dir:'down', unit:'MiB', get:d => +d.ram_used_peak_mib || 0 },
 ];
+// Integer-ish axes (tokens, MiB) read better without a decimal.
+function radarVal(a, v) { return (a.unit === 'tok' || a.unit === 'MiB') ? fmt0(v) : fmt1(v); }
 
 function renderRadar(vanilla, config) {
   // Keep only axes where both sides have a usable (>0) value — power/temp/RAM
@@ -970,12 +1009,21 @@ function renderRadar(vanilla, config) {
   // vanilla polygon (reference), then config polygon on top
   svg += '<polygon class="radar-poly-vanilla" points="' + poly(REF) + '"/>';
   svg += '<polygon class="radar-poly-config" points="' + poly(a => frac(a.ratio)) + '"/>';
+  // Hoverable vertices: vanilla reference value, then the config's actual value
+  // and its delta vs vanilla (× form when the gap is large, e.g. context).
+  axes.forEach((a, i) => {
+    const [vx, vy] = pt(i, REF);
+    svg += '<circle class="radar-dot-vanilla" cx="' + vx + '" cy="' + vy + '" r="1.8"><title>' +
+      escapeHtml('vanilla · ' + a.label + ': ' + radarVal(a, a.vv) + ' ' + a.unit) + '</title></circle>';
+  });
   axes.forEach((a, i) => {
     const [dx, dy] = pt(i, frac(a.ratio));
+    const big = a.ratio >= 1.95 || a.ratio <= 0.51;
     const pct = (a.ratio - 1) * 100;
-    const sign = pct >= 0 ? '+' : '';
-    const title = a.label + ': ' + fmt1(a.cv) + ' ' + a.unit + ' vs vanilla ' + fmt1(a.vv) + ' ' + a.unit +
-                  ' (' + sign + fmt0(pct) + '% ' + (pct >= 0 ? 'better' : 'worse') + ')';
+    const cmp = big ? a.ratio.toFixed(1) + '× vanilla'
+                    : ((pct >= 0 ? '+' : '') + fmt0(pct) + '% ' + (pct >= 0 ? 'better' : 'worse'));
+    const title = 'selected · ' + a.label + ': ' + radarVal(a, a.cv) + ' ' + a.unit +
+                  ' (vanilla ' + radarVal(a, a.vv) + ' ' + a.unit + ', ' + cmp + ')';
     svg += '<circle class="radar-dot-config" cx="' + dx + '" cy="' + dy + '" r="2.6"><title>' + escapeHtml(title) + '</title></circle>';
   });
   svg += '<text class="radar-ref-tag" x="' + CX + '" y="' + (CY - R * REF - 3).toFixed(1) + '" text-anchor="middle">vanilla</text>';
@@ -984,7 +1032,7 @@ function renderRadar(vanilla, config) {
   svg += '<div class="compare-legend">' +
     '<span class="legend-item"><span class="legend-box" style="background:rgba(183,183,183,.45);border-color:var(--c-muted)"></span>vanilla (reference)</span>' +
     '<span class="legend-item"><span class="legend-box" style="background:rgba(139,92,246,.5);border-color:var(--c-win)"></span>selected config</span>' +
-    '<span class="legend-item">outward = better: eval/prompt higher · VRAM/power/temp/RAM lower</span>' +
+    '<span class="legend-item">outward = better: eval/prompt/context higher · VRAM/power/temp/RAM lower · hover a point for values</span>' +
     '</div>';
   return svg;
 }
@@ -1075,17 +1123,21 @@ function radarCardInner(vanilla, selected) {
   return '<h4>vanilla vs <span class="meta">' + escapeHtml(label) + '</span></h4>' + body;
 }
 
-// Wraps the radar (left) and load curve (right). `selected` is the config the
-// radar compares against vanilla. Renders nothing when there is neither a
-// vanilla control nor any load-curve data.
-function comparisonPanel(model, configs, selected) {
+// Single-row panel: configs (left) · radar (middle, vs vanilla) · load curve
+// (right, only when load-curve data exists). `configsCardHtml` is the lean
+// picker built by renderModelsList. The radar drops out when there is no
+// vanilla control to reference.
+function comparisonPanel(model, configs, selected, configsCardHtml) {
   const vanilla = vanillaControlFor(configs, selected);
   const hasCurve = configs.some(isWorkloadRow);
-  if (!vanilla && !hasCurve) return '';
-  return '<div class="compare-panel">' +
-    '<div class="compare-card" id="' + radarCardId(model) + '">' + radarCardInner(vanilla, selected) + '</div>' +
-    '<div class="compare-card"><h4>Load curve <span class="meta">prefill vs KV-fill</span></h4>' + renderLoadCurve(configs) + '</div>' +
-    '</div>';
+  const cards = [configsCardHtml];
+  if (vanilla && selected) {
+    cards.push('<div class="compare-card" id="' + radarCardId(model) + '">' + radarCardInner(vanilla, selected) + '</div>');
+  }
+  if (hasCurve) {
+    cards.push('<div class="compare-card"><h4>Load curve <span class="meta">prefill vs KV-fill</span></h4>' + renderLoadCurve(configs) + '</div>');
+  }
+  return '<div class="compare-panel cols-' + cards.length + '">' + cards.join('') + '</div>';
 }
 
 // Row-click handler target: re-point the radar at `configId` for `model`.
@@ -1144,7 +1196,10 @@ function renderModelsList() {
     const selected = defaultCompareConfig(configs, w);
     const selectedId = selected ? selected.id : null;
 
-    // Lean picker table: Config | Level | Eval t/s | VRAM run | Fit | bat.
+    // Lean picker: a friendly description + eval t/s + fit (+ bat). Level and
+    // VRAM are dropped — level is in the model header and the raw per-config
+    // numbers live in the diagnostics drilldown. Clicking a row re-targets the
+    // radar.
     let rows = '';
     for (const c of tableConfigs) {
       const isWin = w && c.id === w.id;
@@ -1152,15 +1207,18 @@ function renderModelsList() {
       const cls = [isWin ? 'is-winner' : '', selectable ? 'cfg-row' : '', (selectable && c.id === selectedId) ? 'cfg-selected' : ''].filter(Boolean).join(' ');
       rows += '<tr' + (cls ? ' class="' + cls + '"' : '') +
               (selectable ? ' data-select-cfg="' + escapeHtml(c.id) + '" data-model="' + escapeHtml(model) + '"' : '') + '>' +
-              '<td><code>' + escapeHtml(c.label) + '</code>' +
+              '<td>' + configDescription(c) +
                 (c.control_kind === 'vanilla' ? ' <span class="meta">control</span>' : '') + '</td>' +
-              '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
               '<td class="num"><b>' + fmt1(c.eval_tps) + '</b></td>' +
-              '<td class="num" title="' + vramCellTitle(c) + '">' + benchmarkVramUsedMib(c) + '</td>' +
               '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
               '<td>' + ((!c.control_kind && (!c.workload_kind || c.workload_kind === 'baseline')) ? '<a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a>' : '') + '</td>' +
               '</tr>';
     }
+    const configsCard =
+      '<div class="compare-card compare-configs"><h4>Configs</h4>' +
+        '<table><thead><tr>' +
+          '<th>Config</th><th class="num">Eval t/s</th><th>Fit</th><th></th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 
     // Diagnostics audit table: keeps the probes/workload rows reachable with
     // the launch profile that explains why vanilla and calibr differ.
@@ -1198,16 +1256,7 @@ function renderModelsList() {
         '<div class="config-list">' +
           coldLoadSummary(w || configs[0]) +
           calibrationSummary(configs) +
-          comparisonPanel(model, configs, selected) +
-          '<table>' +
-            '<thead><tr>' +
-              '<th>Config</th><th>Level</th>' +
-              '<th class="num">Eval t/s</th>' +
-              '<th class="num">VRAM run</th>' +
-              '<th>Fit</th><th></th>' +
-            '</tr></thead>' +
-            '<tbody>' + rows + '</tbody>' +
-          '</table>' +
+          comparisonPanel(model, configs, selected, configsCard) +
           diagHtml +
         '</div>' +
       '</details>'
