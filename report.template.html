@@ -81,7 +81,7 @@
   .model-row .config-list { padding: 0 14px 12px 42px; }
   .model-load-info { margin: 0 0 8px; color: var(--c-muted); font-size: 11px; }
   .model-row .config-list table { margin-top: 0; font-size: 11px; }
-  .model-row .config-list th { background: transparent; border-bottom: 1px solid var(--c-border); color: var(--c-muted); font-weight: 400; }
+  .model-row .config-list th { background: transparent; border-bottom: 1px solid var(--c-border); color: var(--c-muted); font-weight: 400; position: static; }
   .model-row .config-list tr.is-winner { background: var(--c-win-bg); }
   .model-row .config-list tr.is-winner td:first-child::before { content: '★ '; color: var(--c-win); }
 
@@ -168,11 +168,12 @@
   .planning-summary code { color:var(--c-accent); }
 
   /* ----- Vanilla-vs-config comparison panel (radar + load curve) ----- */
-  .compare-panel { display:grid; gap:12px; align-items:stretch; margin:2px 0 12px; }
-  .compare-panel.cols-1 { grid-template-columns:minmax(0,480px); max-width:480px; }
-  .compare-panel.cols-2 { grid-template-columns:minmax(220px,1fr) minmax(230px,1.05fr); max-width:720px; }
-  .compare-panel.cols-3 { grid-template-columns:minmax(220px,0.95fr) minmax(220px,1fr) minmax(220px,1fr); max-width:1040px; }
-  @media (max-width: 920px) { .compare-panel { grid-template-columns:1fr !important; max-width:420px !important; } }
+  /* Configs card flexes to fill the row; the charts stay a controlled size. */
+  .compare-panel { display:grid; gap:12px; align-items:start; margin:2px 0 12px; }
+  .compare-panel.cols-1 { grid-template-columns:minmax(0,1fr); }
+  .compare-panel.cols-2 { grid-template-columns:minmax(0,1fr) minmax(280px,360px); }
+  .compare-panel.cols-3 { grid-template-columns:minmax(0,1fr) minmax(250px,330px) minmax(250px,330px); }
+  @media (max-width: 920px) { .compare-panel { grid-template-columns:1fr !important; } }
   .compare-card { background:#242424; border:1px solid var(--c-border); border-radius:6px;
                   padding:8px 10px 6px; min-width:0; display:flex; flex-direction:column; }
   .compare-configs table { margin:0; }
