@@ -296,6 +296,18 @@ Recently shipped and removed from the TODO queue:
 
 - Engine modularization plus mirrored PowerShell tests.
 - Report UI redesign.
+- Report comparison panel (2026-06): per-model single-row configs/radar/load-curve,
+  vanilla-vs-config radar (eval/prompt/context/VRAM/power/temp/RAM, vanilla as
+  reference, clickable row selection), prefill/KV-fill retention curve, and the
+  vanilla-adjacent / workload rows separated into a collapsed diagnostics block.
+  Rationale in `architecture/ux/report-experience.md`.
+- Report declutter (2026-06): per-config throughput/memory bars folded into a
+  tabbed diagnostics widget; global section re-cast as a collapsed "Complete
+  session leaderboard" (winner per model); All results collapsed into an opt-in
+  raw table with a lean default column set and a full-column toggle. This also
+  resolves the old "All-results row layout review" density item and moots the
+  handoff's "launch profile in the Throughput & memory widget" follow-up (that
+  widget is gone; launch profiles live in the diagnostics audit table).
 - llama.cpp auto-fetch and guided setup prompt.
 - Main-menu guided run with setup badges.
 - Dead CLI paths hidden behind the old advanced-tools screen.
@@ -375,13 +387,24 @@ baseline, total VRAM, computed percentage, and configured threshold. A visible
 warning marker in the live run header is useful, but it must not flicker or
 hide the numeric explanation.
 
-### All-results row layout review
+### Report follow-ups (after the 2026-06 comparison/declutter redesign)
 
-The All results table exposes useful details through header/value tooltips, but
-the rows are now too dense and important memory context is hidden on hover.
-Review the row layout so baseline VRAM, estimated run VRAM, system peak, and
-related throughput values are readable without requiring hover. Consider a
-two-line row or grouped metric cells rather than adding more narrow columns.
+The per-model comparison panel and the Complete session leaderboard shipped.
+Remaining open items:
+
+- **Per-config load curves.** The prefill/KV-fill curve is generated only at the
+  anchor config, so the load-curve chart is per-model, not switchable per
+  selected config. Per-config curves need an engine/methodology change (running
+  the workload sweep across more configs) — methodology approval required.
+- **Leaderboard scope override.** The Complete session leaderboard follows the
+  page data-scope toggle; consider an independent "all sessions" view inside it
+  so cross-model ranking does not depend on the page scope.
+- **Diagnostics bar density.** The tabbed per-config bars cover real configs plus
+  the vanilla control; a model with many context candidates is still a tall list
+  inside the collapsed diagnostics.
+- **Outdated report screenshot.** `docs/report-complete.png` (linked from
+  `README.md` and `cli/README.md`) predates this redesign and should be
+  regenerated from the new report.
 
 ### CPU + RAM as first-class metrics
 
