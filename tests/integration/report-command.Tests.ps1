@@ -200,6 +200,14 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'VRAM run') "report should label baseline-adjusted VRAM explicitly"
         Assert-True ($tpl -match 'unknown \(legacy record\)') "invalid historical llama build tags should be identified as legacy"
     }
+    It "collapses the All results raw table behind a disclosure with a column-tier toggle" {
+        Assert-True ($tpl -match 'details class="card" id="all-results"') "All results should be a collapsed card"
+        Assert-True ($tpl -match 'id="all-columns-toggle"')           "column-tier toggle button missing"
+        Assert-True ($tpl -match '\+ all columns')                    "default lean column affordance missing"
+        Assert-True ($tpl -match 'table\.all-lean \.col-extra')       "lean-mode column hiding rule missing"
+        Assert-True ($tpl -match 'class="num col-extra"')             "deep columns should be tagged col-extra"
+        Assert-True ($tpl -match 'id="all-count"')                    "all-results count summary missing"
+    }
     It "falls back to requested gpu layers when llama.cpp does not report actual layers" {
         Assert-True ($tpl -match 'function layersLabel')       "layersLabel helper missing"
         Assert-True ($tpl -match 'req '' \+ m\[1\]')           "requested gpu-layers fallback missing"

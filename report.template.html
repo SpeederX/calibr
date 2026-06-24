@@ -263,6 +263,14 @@
   /* ----- All-results table (winner-aware) ----- */
   #all tbody tr.is-winner { background: var(--c-win-bg); }
   #all tbody tr.is-winner td:first-child::before { content: '★ '; color: var(--c-win); }
+  /* Collapsible reference cards (metric glossary, all-results raw table). */
+  details.card { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 8px 14px; margin: 16px 0; }
+  details.card > summary { cursor: pointer; font-size: 15px; color: var(--c-text); }
+  details.card > summary .meta { font-weight: 400; }
+  .all-results-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 4px; }
+  .all-results-toolbar .tabs { margin: 0; }
+  /* Lean mode hides the deep-diagnostic columns until "+ all columns". */
+  table.all-lean .col-extra { display: none; }
 </style>
 </head>
 <body>
@@ -376,36 +384,41 @@
   <p class="meta">Rows where shared GPU memory grew during the run (confirmed paging) or VRAM peak exceeded the saturation threshold (suspected).</p>
   <div id="wddm-list"></div>
 
-  <h2>All results</h2>
-  <div class="tabs" id="level-tabs"></div>
-  <div class="tab-content">
-    <table id="all">
+  <details class="card" id="all-results">
+    <summary class="all-results-summary"><b>All results</b> <span class="meta" id="all-count">raw table</span></summary>
+    <div class="all-results-toolbar">
+      <div class="tabs" id="level-tabs"></div>
+      <button id="all-columns-toggle" class="filter-btn" type="button">+ all columns</button>
+    </div>
+    <div class="tab-content">
+    <table id="all" class="all-lean">
       <thead><tr>
-        <th>ID <span class="th-help" title="Stable result id for this model/config combination.">?</span></th>
-        <th>Level <span class="th-help" title="Curated hardware level: low, middle, high, or ultra.">?</span></th>
+        <th class="col-extra">ID <span class="th-help" title="Stable result id for this model/config combination.">?</span></th>
+        <th class="col-extra">Level <span class="th-help" title="Curated hardware level: low, middle, high, or ultra.">?</span></th>
         <th>Model <span class="th-help" title="Model name grouped in the report winner list.">?</span></th>
         <th>Config <span class="th-help" title="llama-server flags used for this benchmark: context, GPU layers, KV cache, threads, and related settings.">?</span></th>
         <th>Workload <span class="th-help" title="Baseline configs are winner-eligible. Prefill and KV-fill are diagnostic load curves and never replace the launcher winner.">?</span></th>
-        <th class="num">TTFT s <span class="th-help" title="Server TTFT when per-token timings are available; otherwise client TTFT or the legacy fallback.">?</span></th>
-        <th class="num">Stream ms <span class="th-help" title="Client time to the first SSE frame, which may contain no generated text. Legacy name: TTFR.">?</span></th>
-        <th class="num">Prompt ms <span class="th-help" title="llama.cpp prompt processing / prefill time for the input prompt.">?</span></th>
+        <th class="num col-extra">TTFT s <span class="th-help" title="Server TTFT when per-token timings are available; otherwise client TTFT or the legacy fallback.">?</span></th>
+        <th class="num col-extra">Stream ms <span class="th-help" title="Client time to the first SSE frame, which may contain no generated text. Legacy name: TTFR.">?</span></th>
+        <th class="num col-extra">Prompt ms <span class="th-help" title="llama.cpp prompt processing / prefill time for the input prompt.">?</span></th>
         <th class="num">Prompt t/s <span class="th-help" title="Prompt processing throughput: prompt tokens divided by prompt processing time. Higher is better.">?</span></th>
-        <th class="num">Prompt rel % <span class="th-help" title="Prompt throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
+        <th class="num col-extra">Prompt rel % <span class="th-help" title="Prompt throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
         <th class="num">Eval t/s <span class="th-help" title="Decode throughput for generated tokens. This is the main speed metric used by winner selection.">?</span></th>
-        <th class="num">Eval rel % <span class="th-help" title="Eval throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
+        <th class="num col-extra">Eval rel % <span class="th-help" title="Eval throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
         <th class="num">VRAM run <span class="th-help" title="Baseline-adjusted run VRAM: total system peak minus VRAM already used before the run. Hover for baseline and total peak.">?</span></th>
-        <th class="num">Shared spill <span class="th-help" title="WDDM shared-memory growth is shown only when it exceeds the configured confirmation threshold; smaller positive deltas are treated as counter/background noise.">?</span></th>
-        <th class="num">RAM Δ <span class="th-help" title="Peak system RAM increase observed during the run, in MiB.">?</span></th>
-        <th class="num">CPU % <span class="th-help" title="Average total CPU utilization observed while calibr was polling metrics.">?</span></th>
-        <th class="num">GPU W <span class="th-help" title="Peak GPU power draw observed during the run.">?</span></th>
-        <th class="num">GPU °C <span class="th-help" title="Peak GPU temperature observed during the run.">?</span></th>
-        <th class="num">GPU % <span class="th-help" title="Average GPU utilization observed while calibr was polling metrics.">?</span></th>
-        <th>Layers <span class="th-help" title="llama.cpp reported GPU-offloaded layers when available; otherwise the requested --gpu-layers value is shown as req N.">?</span></th>
+        <th class="num col-extra">Shared spill <span class="th-help" title="WDDM shared-memory growth is shown only when it exceeds the configured confirmation threshold; smaller positive deltas are treated as counter/background noise.">?</span></th>
+        <th class="num col-extra">RAM Δ <span class="th-help" title="Peak system RAM increase observed during the run, in MiB.">?</span></th>
+        <th class="num col-extra">CPU % <span class="th-help" title="Average total CPU utilization observed while calibr was polling metrics.">?</span></th>
+        <th class="num col-extra">GPU W <span class="th-help" title="Peak GPU power draw observed during the run.">?</span></th>
+        <th class="num col-extra">GPU °C <span class="th-help" title="Peak GPU temperature observed during the run.">?</span></th>
+        <th class="num col-extra">GPU % <span class="th-help" title="Average GPU utilization observed while calibr was polling metrics.">?</span></th>
+        <th class="col-extra">Layers <span class="th-help" title="llama.cpp reported GPU-offloaded layers when available; otherwise the requested --gpu-layers value is shown as req N.">?</span></th>
         <th>Fit <span class="th-help" title="Whether the run fit cleanly in VRAM, spilled into shared memory, or failed before completion.">?</span></th>
       </tr></thead>
       <tbody></tbody>
     </table>
-  </div>
+    </div>
+  </details>
 
 </div>
 <script>
@@ -2039,6 +2052,8 @@ function renderLevelTabs() {
 function renderAllTable() {
   const tb = document.querySelector('#all tbody');
   tb.innerHTML = '';
+  const allCount = document.getElementById('all-count');
+  if (allCount) allCount.textContent = VIEW.length + ' configs · ' + new Set(VIEW.map(d => d.model)).size + ' models · raw table';
   const rows = VIEW.filter(d => STATE.levelTab === 'all' || lvl(d) === STATE.levelTab);
   const promptExtent = metricExtent(rows, d => +d.prompt_tps);
   const evalExtent = metricExtent(rows, d => +d.eval_tps);
@@ -2049,26 +2064,26 @@ function renderAllTable() {
     const evalRel = normalizedPct(+d.eval_tps, evalExtent);
     tb.insertAdjacentHTML('beforeend',
       '<tr' + winCls + '>' +
-        '<td><code>' + d.id + '</code></td>' +
-        '<td class="level-' + lvl(d) + '">' + lvl(d) + '</td>' +
+        '<td class="col-extra"><code>' + d.id + '</code></td>' +
+        '<td class="level-' + lvl(d) + ' col-extra">' + lvl(d) + '</td>' +
         '<td>' + escapeHtml(d.model) + '</td>' +
         '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + escapeHtml(d.extra_args) + '</td>' +
         '<td title="' + escapeHtml(workloadTitle(d)) + '">' + workloadLabel(d) + '</td>' +
-        '<td class="num">' + (latencyMs(d) > 0 ? (latencyMs(d) / 1000).toFixed(2) : '-') + '</td>' +
-        '<td class="num">' + ((d.stream_open_ms ?? d.ttfr_ms) != null ? (+(d.stream_open_ms ?? d.ttfr_ms)).toFixed(1) : '-') + '</td>' +
-        '<td class="num">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +
+        '<td class="num col-extra">' + (latencyMs(d) > 0 ? (latencyMs(d) / 1000).toFixed(2) : '-') + '</td>' +
+        '<td class="num col-extra">' + ((d.stream_open_ms ?? d.ttfr_ms) != null ? (+(d.stream_open_ms ?? d.ttfr_ms)).toFixed(1) : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_tps ? (+d.prompt_tps).toFixed(1) : '-') + '</td>' +
-        '<td class="num">' + fmtPct(promptRel) + '</td>' +
+        '<td class="num col-extra">' + fmtPct(promptRel) + '</td>' +
         '<td class="num"><b>' + (d.eval_tps ? (+d.eval_tps).toFixed(1) : '-') + '</b></td>' +
-        '<td class="num">' + fmtPct(evalRel) + '</td>' +
+        '<td class="num col-extra">' + fmtPct(evalRel) + '</td>' +
         '<td class="num" title="' + vramCellTitle(d) + '">' + benchmarkVramUsedMib(d) + '</td>' +
-        '<td class="num">' + wddm + '</td>' +
-        '<td class="num">' + (d.ram_used_peak_mib != null ? d.ram_used_peak_mib : '-') + '</td>' +
-        '<td class="num">' + (d.cpu_util_avg_pct != null && d.cpu_util_avg_pct >= 0 ? d.cpu_util_avg_pct + '%' : '-') + '</td>' +
-        '<td class="num">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? (+d.gpu_power_peak_w).toFixed(0) : '-') + '</td>' +
-        '<td class="num">' + (d.gpu_temp_peak_c != null && d.gpu_temp_peak_c > 0 ? d.gpu_temp_peak_c : '-') + '</td>' +
-        '<td class="num">' + (d.gpu_util_avg_pct != null && d.gpu_util_avg_pct > 0 ? d.gpu_util_avg_pct + '%' : '-') + '</td>' +
-        '<td>' + layersLabel(d) + '</td>' +
+        '<td class="num col-extra">' + wddm + '</td>' +
+        '<td class="num col-extra">' + (d.ram_used_peak_mib != null ? d.ram_used_peak_mib : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.cpu_util_avg_pct != null && d.cpu_util_avg_pct >= 0 ? d.cpu_util_avg_pct + '%' : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? (+d.gpu_power_peak_w).toFixed(0) : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.gpu_temp_peak_c != null && d.gpu_temp_peak_c > 0 ? d.gpu_temp_peak_c : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.gpu_util_avg_pct != null && d.gpu_util_avg_pct > 0 ? d.gpu_util_avg_pct + '%' : '-') + '</td>' +
+        '<td class="col-extra">' + layersLabel(d) + '</td>' +
         '<td class="' + fitClass(d) + '">' + fitLabel(d) + '</td>' +
       '</tr>'
     );
@@ -2085,6 +2100,13 @@ tabsEl.addEventListener('click', e => {
   STATE.levelTab = tab.dataset.level;
   renderLevelTabs();
   renderAllTable();
+});
+
+// All-results column tier toggle: lean default set vs the full raw set.
+const allColsBtn = document.getElementById('all-columns-toggle');
+if (allColsBtn) allColsBtn.addEventListener('click', () => {
+  const lean = document.getElementById('all').classList.toggle('all-lean');
+  allColsBtn.textContent = lean ? '+ all columns' : '− fewer columns';
 });
 
 // Data-scope buttons (latest session / all sessions).
