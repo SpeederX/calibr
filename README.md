@@ -176,6 +176,13 @@ There is not one universal winner. The report exposes profiles:
 - **Efficiency**: best tokens per watt when GPU power data is available.
 - **Overall**: weighted view across speed, safety, and efficiency.
 
+Each expanded model row shows a compact comparison panel — the selected config
+versus the untuned llama.cpp control on a radar (eval/prompt/context/VRAM/power/
+temperature/RAM) plus a prefill/KV-fill load curve. The report also includes a
+collapsed **Complete session leaderboard** that ranks each model's winner head to
+head under the selected profile — a local, at-a-glance comparison (distinct from
+the future online leaderboard noted under Direction).
+
 Each model also gets one untuned llama.cpp control run. It supplies the model
 (and a required projector, when present) but none of calibr's context, KV,
 offload, MoE, batch, thread, or fit flags. The request workload and repetition
@@ -426,9 +433,10 @@ spill detection, and output layout. Metric definitions and formulas live in
 
 The current product phase and working rules live in [`AGENTS.md`](AGENTS.md).
 Near-term work focuses on deeper load characterization (prefill sweeps and
-KV-fill), MTP-aware measurements, and leaderboard integration. A service or
-web UI is a later phase, started only when the shipped CLI creates a concrete
-need for it.
+KV-fill), MTP-aware measurements, and an **online** leaderboard — a fuller
+community leaderboard with search, filters, and submission, distinct from the
+local Complete session leaderboard already in the report. A service or web UI is
+a later phase, started only when the shipped CLI creates a concrete need for it.
 
 ## Contributing
 

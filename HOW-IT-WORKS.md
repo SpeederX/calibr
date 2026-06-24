@@ -248,3 +248,8 @@ calibr.ps1              raw engine entrypoint
 report.template.html    self-contained report application
 data/                   runtime artifacts
 ```
+
+The report's on-page UX — the per-model comparison panel (configs/radar/load
+curve), tabbed diagnostics, the Complete session leaderboard, and the collapsed
+raw table — and the rationale behind it are documented in
+[`architecture/ux/report-experience.md`](architecture/ux/report-experience.md).
