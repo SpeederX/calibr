@@ -167,6 +167,41 @@
   .planning-summary { margin:6px 0 8px; color:var(--c-muted); font-size:11px; }
   .planning-summary code { color:var(--c-accent); }
 
+  /* ----- Vanilla-vs-config comparison panel (radar + load curve) ----- */
+  .compare-panel { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px;
+                   align-items:stretch; margin:2px 0 12px; }
+  @media (max-width: 900px) { .compare-panel { grid-template-columns:1fr; } }
+  .compare-card { background:#242424; border:1px solid var(--c-border); border-radius:6px;
+                  padding:9px 11px 7px; min-width:0; display:flex; flex-direction:column; }
+  .compare-card h4 { margin:0 0 4px; font-size:12px; color:var(--c-text); font-weight:600; }
+  .compare-card h4 .meta { font-weight:400; }
+  .compare-card svg { width:100%; height:auto; }
+  .compare-empty { color:var(--c-muted); font-size:11px; font-style:italic;
+                   padding:26px 8px; text-align:center; margin:auto 0; }
+  .radar-grid { fill:none; stroke:var(--c-border); stroke-width:1; opacity:0.4; }
+  .radar-ref  { fill:none; stroke:var(--c-muted); stroke-width:1; stroke-dasharray:3 3; opacity:0.7; }
+  .radar-spoke { stroke:var(--c-border); stroke-width:1; opacity:0.5; }
+  .radar-label { fill:var(--c-text); font:10px Consolas, monospace; }
+  .radar-ref-tag { fill:var(--c-muted); font:9px Consolas, monospace; }
+  .radar-poly-vanilla { fill:rgba(183,183,183,0.12); stroke:var(--c-muted); stroke-width:1.5; }
+  .radar-poly-config  { fill:rgba(139,92,246,0.22); stroke:var(--c-win); stroke-width:2; }
+  .radar-dot-config { fill:var(--c-win); }
+  .compare-legend { display:flex; gap:6px 12px; flex-wrap:wrap; margin:6px 0 0;
+                    color:var(--c-muted); font-size:10px; }
+  .compare-cap { color:var(--c-muted); font:10px Consolas, monospace; margin:5px 0 0; }
+  .curve-axis { stroke:var(--c-border); stroke-width:1; }
+  .curve-tick { fill:var(--c-muted); font:9px Consolas, monospace; }
+  .curve-prefill { fill:none; stroke:#22c55e; stroke-width:2; }
+  .curve-kvfill  { fill:none; stroke:#f59e0b; stroke-width:2; }
+  .curve-dot-prefill { fill:#22c55e; }
+  .curve-dot-kvfill  { fill:#f59e0b; }
+  .diag-details { margin:8px 0 0; }
+  .diag-details > summary { cursor:pointer; color:var(--c-muted); font-size:11px;
+                            list-style:none; padding:3px 0; }
+  .diag-details > summary::-webkit-details-marker { display:none; }
+  .diag-details > summary::before { content:'\25B8 '; color:var(--c-muted); }
+  .diag-details[open] > summary::before { content:'\25BE '; }
+
   /* ----- Scatter (now first chart) ----- */
   .scatter-bg-ram   { fill: rgba(255,255,255,0.035); }
   .scatter-line-gpu { stroke: var(--c-c); stroke-dasharray: 4 4; stroke-width: 1.2; opacity: 0.7; }
@@ -832,6 +867,196 @@ function winnerSummary(w, configs) {
   return parts.join(' · ');
 }
 
+// ===========================================================================
+// Vanilla-vs-config comparison panel: a radar/star chart (left) that scales
+// every axis against the vanilla control, plus a prefill/KV-fill load curve
+// (right) showing how throughput holds up as context fills. Both are
+// presentation over existing result fields — no metric is recomputed here.
+// ===========================================================================
+
+// A config is a real, pickable candidate (not a control, not a diagnostic
+// workload row). These are what the lean drilldown table and the radar use.
+function isRealConfig(c) {
+  return !c.control_kind && (!c.workload_kind || c.workload_kind === 'baseline');
+}
+function isVanillaAdjacent(c) { return c.control_kind === 'vanilla-adjacent'; }
+function isWorkloadRow(c) {
+  return c.workload_kind === 'prefill' || c.workload_kind === 'kv-fill';
+}
+
+// Pick the vanilla control to reference, preferring the one from the same
+// bench session as `ref` (mirrors vanillaClaim's selection).
+function vanillaControlFor(configs, ref) {
+  const controls = configs
+    .filter(c => c.control_kind === 'vanilla')
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+  if (ref && ref.bench_session_started_at) {
+    const match = controls.find(c => c.bench_session_started_at === ref.bench_session_started_at);
+    if (match) return match;
+  }
+  return controls[0] || null;
+}
+
+// Radar axes. `dir:'up'` means higher is better (ratio = config/vanilla);
+// `dir:'down'` means lower is better (ratio = vanilla/config) so that a
+// better config always bulges OUTWARD past the vanilla reference ring.
+const RADAR_AXES = [
+  { key:'eval',   label:'eval t/s',   dir:'up',   unit:'t/s', get:d => +d.eval_tps || 0 },
+  { key:'prompt', label:'prompt t/s', dir:'up',   unit:'t/s', get:d => +d.prompt_tps || 0 },
+  { key:'vram',   label:'VRAM',       dir:'down', unit:'MiB', get:d => benchmarkVramUsedMib(d) },
+  { key:'power',  label:'power',      dir:'down', unit:'W',   get:d => +d.gpu_power_peak_w || 0 },
+  { key:'temp',   label:'temp',       dir:'down', unit:'°C', get:d => +d.gpu_temp_peak_c || 0 },
+  { key:'ram',    label:'RAM',        dir:'down', unit:'MiB', get:d => +d.ram_used_peak_mib || 0 },
+];
+
+function renderRadar(vanilla, config) {
+  // Keep only axes where both sides have a usable (>0) value — power/temp/RAM
+  // are often unmeasured, and a ratio needs a non-zero vanilla reference.
+  const axes = RADAR_AXES.map(ax => {
+    const vv = ax.get(vanilla), cv = ax.get(config);
+    if (!(vv > 0) || !(cv > 0)) return null;
+    const ratio = ax.dir === 'up' ? cv / vv : vv / cv;
+    return { ...ax, vv, cv, ratio };
+  }).filter(Boolean);
+  if (axes.length < 3) {
+    return '<div class="compare-empty">Not enough shared metrics between vanilla and this config to plot a radar (need 3+).</div>';
+  }
+
+  const n = axes.length, CX = 132, CY = 116, R = 84;
+  const ang = i => (-90 + i * 360 / n) * Math.PI / 180;
+  // vanilla sits on a fixed reference ring (0.5); the config scales around it
+  // on a symmetric log2 axis clamped to 0.5x..2x so a runaway ratio can't
+  // shoot off the chart.
+  const REF = 0.5;
+  const frac = r => REF + Math.max(-1, Math.min(1, Math.log2(r))) * 0.46;
+  const pt = (i, f) => [
+    (CX + Math.cos(ang(i)) * R * Math.max(0.02, Math.min(1, f))).toFixed(1),
+    (CY + Math.sin(ang(i)) * R * Math.max(0.02, Math.min(1, f))).toFixed(1),
+  ];
+  const poly = f => axes.map((a, i) => pt(i, typeof f === 'function' ? f(a) : f).join(',')).join(' ');
+
+  let svg = '<svg viewBox="0 0 264 232" role="img" aria-label="vanilla versus selected config radar">';
+  // grid: outer ring + the vanilla reference ring
+  svg += '<polygon class="radar-grid" points="' + poly(1) + '"/>';
+  svg += '<polygon class="radar-ref" points="' + poly(REF) + '"/>';
+  // spokes + axis labels
+  axes.forEach((a, i) => {
+    const [sx, sy] = pt(i, 1);
+    svg += '<line class="radar-spoke" x1="' + CX + '" y1="' + CY + '" x2="' + sx + '" y2="' + sy + '"/>';
+    const [lx, ly] = pt(i, 1.16);
+    const c = Math.cos(ang(i));
+    const anchor = Math.abs(c) < 0.3 ? 'middle' : (c > 0 ? 'start' : 'end');
+    const dy = Math.sin(ang(i)) < -0.5 ? -2 : (Math.sin(ang(i)) > 0.5 ? 8 : 3);
+    svg += '<text class="radar-label" x="' + lx + '" y="' + (+ly + dy) + '" text-anchor="' + anchor + '">' + escapeHtml(a.label) + '</text>';
+  });
+  // vanilla polygon (reference), then config polygon on top
+  svg += '<polygon class="radar-poly-vanilla" points="' + poly(REF) + '"/>';
+  svg += '<polygon class="radar-poly-config" points="' + poly(a => frac(a.ratio)) + '"/>';
+  axes.forEach((a, i) => {
+    const [dx, dy] = pt(i, frac(a.ratio));
+    const pct = (a.ratio - 1) * 100;
+    const sign = pct >= 0 ? '+' : '';
+    const title = a.label + ': ' + fmt1(a.cv) + ' ' + a.unit + ' vs vanilla ' + fmt1(a.vv) + ' ' + a.unit +
+                  ' (' + sign + fmt0(pct) + '% ' + (pct >= 0 ? 'better' : 'worse') + ')';
+    svg += '<circle class="radar-dot-config" cx="' + dx + '" cy="' + dy + '" r="2.6"><title>' + escapeHtml(title) + '</title></circle>';
+  });
+  svg += '<text class="radar-ref-tag" x="' + CX + '" y="' + (CY - R * REF - 3).toFixed(1) + '" text-anchor="middle">vanilla</text>';
+  svg += '</svg>';
+
+  svg += '<div class="compare-legend">' +
+    '<span class="legend-item"><span class="legend-box" style="background:rgba(183,183,183,.45);border-color:var(--c-muted)"></span>vanilla (reference)</span>' +
+    '<span class="legend-item"><span class="legend-box" style="background:rgba(139,92,246,.5);border-color:var(--c-win)"></span>this config</span>' +
+    '<span class="legend-item">outward = better: eval/prompt higher · VRAM/power/temp/RAM lower</span>' +
+    '</div>';
+  return svg;
+}
+
+// Prefill and KV-fill rows share the anchor config; plot each series'
+// throughput as retention vs its own best (% kept) so the two — which live on
+// very different absolute scales — can be read on one axis as "how fast does
+// it fall off as context fills?". Absolute values stay in the point tooltips.
+function renderLoadCurve(configs) {
+  const usable = c => c.ok !== false;
+  const prefill = configs.filter(c => c.workload_kind === 'prefill' && usable(c))
+    .map(c => ({ tok: +(c.workload_prompt_tokens ?? c.prefill_target_tokens) || 0, tps: +c.prompt_tps || 0 }))
+    .filter(p => p.tok > 0 && p.tps > 0).sort((a, b) => a.tok - b.tok);
+  const kv = configs.filter(c => c.workload_kind === 'kv-fill' && usable(c))
+    .map(c => ({ tok: +(c.kv_fill_cached_tokens ?? c.kv_fill_target_tokens ?? c.workload_prompt_tokens) || 0, tps: +c.eval_tps || 0 }))
+    .filter(p => p.tok > 0 && p.tps > 0).sort((a, b) => a.tok - b.tok);
+  if (!prefill.length && !kv.length) {
+    return '<div class="compare-empty">Run a <b>load-curve</b> or <b>exhaustive</b> scope to chart prefill / KV-fill as context fills.</div>';
+  }
+
+  const ctx = Math.max(0, ...configs.map(c => +c.ctx_size || 0));
+  const maxTok = Math.max(1, ...prefill.map(p => p.tok), ...kv.map(p => p.tok));
+  const W = 264, H = 200, L = 30, Rm = 8, T = 10, B = 28;
+  const px = tok => (L + (W - L - Rm) * (tok / maxTok)).toFixed(1);
+  const py = rel => (T + (H - T - B) * (1 - rel)).toFixed(1);
+  const base = s => Math.max(...s.map(p => p.tps), 1);
+
+  const series = (s, cls, dotCls, metricName) => {
+    if (!s.length) return '';
+    const b = base(s);
+    const line = '<polyline class="' + cls + '" points="' +
+      s.map(p => px(p.tok) + ',' + py(p.tps / b)).join(' ') + '"/>';
+    const dots = s.map(p => {
+      const pctCtx = ctx > 0 ? ' (' + Math.round(p.tok / ctx * 100) + '% ctx)' : '';
+      const title = metricName + ' @ ' + p.tok + ' tok' + pctCtx + ': ' + fmt1(p.tps) + ' t/s';
+      return '<circle class="' + dotCls + '" cx="' + px(p.tok) + '" cy="' + py(p.tps / b) + '" r="2.4">' +
+        '<title>' + escapeHtml(title) + '</title></circle>';
+    }).join('');
+    return line + dots;
+  };
+
+  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="prefill and KV-fill load curve">';
+  svg += '<line class="curve-axis" x1="' + L + '" y1="' + T + '" x2="' + L + '" y2="' + (H - B) + '"/>';
+  svg += '<line class="curve-axis" x1="' + L + '" y1="' + (H - B) + '" x2="' + (W - Rm) + '" y2="' + (H - B) + '"/>';
+  // y gridline at 100% (full retention) and 50%
+  [1, 0.5].forEach(r => {
+    svg += '<line class="curve-axis" style="opacity:.3" x1="' + L + '" y1="' + py(r) + '" x2="' + (W - Rm) + '" y2="' + py(r) + '"/>';
+    svg += '<text class="curve-tick" x="' + (L - 3) + '" y="' + (+py(r) + 3) + '" text-anchor="end">' + Math.round(r * 100) + '%</text>';
+  });
+  // x ticks at 0 and max (and ctx-relative label)
+  svg += '<text class="curve-tick" x="' + L + '" y="' + (H - B + 12) + '" text-anchor="middle">0</text>';
+  svg += '<text class="curve-tick" x="' + (W - Rm) + '" y="' + (H - B + 12) + '" text-anchor="end">' +
+    (maxTok >= 1024 ? Math.round(maxTok / 1024) + 'k' : maxTok) + ' tok' +
+    (ctx > 0 ? ' (' + Math.round(maxTok / ctx * 100) + '% ctx)' : '') + '</text>';
+  svg += series(prefill, 'curve-prefill', 'curve-dot-prefill', 'prefill');
+  svg += series(kv, 'curve-kvfill', 'curve-dot-kvfill', 'KV-fill');
+  svg += '</svg>';
+
+  const cap = [];
+  if (prefill.length) cap.push('prefill best ' + fmt1(base(prefill)) + ' t/s');
+  if (kv.length) cap.push('KV-fill best ' + fmt1(base(kv)) + ' t/s');
+  svg += '<div class="compare-legend">' +
+    (prefill.length ? '<span class="legend-item"><span class="legend-line" style="color:#22c55e"></span>prefill (prompt t/s)</span>' : '') +
+    (kv.length ? '<span class="legend-item"><span class="legend-line" style="color:#f59e0b"></span>KV-fill (eval t/s)</span>' : '') +
+    '<span class="legend-item">y = throughput retained vs each series’ best</span>' +
+    '</div>';
+  svg += '<div class="compare-cap">' + cap.join(' · ') + '</div>';
+  return svg;
+}
+
+// Wraps the radar (left) and load curve (right). `selected` is the config the
+// radar compares against vanilla — Slice 1 preselects the winner. Renders
+// nothing when there is neither a vanilla control nor any load-curve data.
+function comparisonPanel(configs, winner) {
+  const vanilla = vanillaControlFor(configs, winner);
+  const hasCurve = configs.some(isWorkloadRow);
+  if (!vanilla && !hasCurve) return '';
+  const selected = winner && isRealConfig(winner)
+    ? winner
+    : configs.filter(isRealConfig).sort((a, b) => (+b.eval_tps || 0) - (+a.eval_tps || 0))[0];
+  const radar = (vanilla && selected)
+    ? renderRadar(vanilla, selected)
+    : '<div class="compare-empty">No vanilla control in this run — nothing to compare against.</div>';
+  const selLabel = selected ? selected.label : 'config';
+  return '<div class="compare-panel">' +
+    '<div class="compare-card"><h4>vanilla vs <span class="meta">' + escapeHtml(selLabel) + '</span></h4>' + radar + '</div>' +
+    '<div class="compare-card"><h4>Load curve <span class="meta">prefill vs KV-fill</span></h4>' + renderLoadCurve(configs) + '</div>' +
+    '</div>';
+}
+
 function renderModelsList() {
   const el = document.getElementById('models-list');
   // Group all configs by model.
@@ -865,26 +1090,55 @@ function renderModelsList() {
         '<span class="fail-summary">' + noWinnerSummary(configs) + '</span>' +
         '<span></span>';
 
-    // Per-model sub-table: every config benched, winner highlighted.
+    // Split the dense config dump into a lean, pickable table (real configs +
+    // the vanilla control) and a collapsed diagnostics view (vanilla-adjacent
+    // probes + prefill/KV-fill workload rows). The probes/workload rows are
+    // what made the old single table "complete no sense"; the multi-metric
+    // detail now lives in the comparison radar, the curves in the load chart.
+    const tableConfigs = configs.filter(c => !isVanillaAdjacent(c) && !isWorkloadRow(c));
+    const diagConfigs  = configs.filter(c => isVanillaAdjacent(c) || isWorkloadRow(c));
+
+    // Lean picker table: Config | Level | Eval t/s | VRAM run | Fit | bat.
     let rows = '';
-    for (const c of configs) {
+    for (const c of tableConfigs) {
       const isWin = w && c.id === w.id;
-      const wddm = confirmedSharedMib(c) > 0 ? '<span class="wddm">+' + confirmedSharedMib(c) + '</span>' : '-';
       rows += '<tr' + (isWin ? ' class="is-winner"' : '') + '>' +
-              '<td><code>' + escapeHtml(c.label) + '</code></td>' +
+              '<td><code>' + escapeHtml(c.label) + '</code>' +
+                (c.control_kind === 'vanilla' ? ' <span class="meta">control</span>' : '') + '</td>' +
               '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
-              '<td title="' + escapeHtml(workloadTitle(c)) + '">' + workloadLabel(c) + '</td>' +
+              '<td class="num"><b>' + fmt1(c.eval_tps) + '</b></td>' +
+              '<td class="num" title="' + vramCellTitle(c) + '">' + benchmarkVramUsedMib(c) + '</td>' +
+              '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
+              '<td>' + ((!c.control_kind && (!c.workload_kind || c.workload_kind === 'baseline')) ? '<a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a>' : '') + '</td>' +
+              '</tr>';
+    }
+
+    // Diagnostics audit table: keeps the probes/workload rows reachable with
+    // the launch profile that explains why vanilla and calibr differ.
+    let diagRows = '';
+    for (const c of diagConfigs) {
+      const wddm = confirmedSharedMib(c) > 0 ? '<span class="wddm">+' + confirmedSharedMib(c) + '</span>' : '-';
+      diagRows += '<tr>' +
+              '<td><code>' + escapeHtml(c.label) + '</code></td>' +
+              '<td title="' + escapeHtml(workloadTitle(c)) + '">' + (isVanillaAdjacent(c) ? 'vanilla-adjacent' : workloadLabel(c)) + '</td>' +
               '<td title="' + escapeHtml(launchProfileTitle(c)) + '">' + launchProfileLabel(c) + '</td>' +
               '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
               '<td class="num" title="' + vramCellTitle(c) + '">' + benchmarkVramUsedMib(c) + '</td>' +
               '<td class="num">' + wddm + '</td>' +
-              '<td class="num">' + fmt2(c.ttft_sec) + '</td>' +
-              '<td class="num">' + ((+c.gpu_power_peak_w > 0) ? fmt0(c.gpu_power_peak_w) + ' W' : '-') + '</td>' +
               '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
-              '<td>' + ((!c.control_kind && (!c.workload_kind || c.workload_kind === 'baseline')) ? '<a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a>' : '') + '</td>' +
               '</tr>';
     }
+    const diagHtml = diagConfigs.length
+      ? '<details class="diag-details"><summary>diagnostics · ' + diagConfigs.length +
+          ' vanilla-adjacent / load-curve row' + (diagConfigs.length === 1 ? '' : 's') +
+          ' (excluded from winner selection)</summary>' +
+          '<table><thead><tr>' +
+            '<th>Config</th><th>Workload</th><th>Launch profile</th>' +
+            '<th class="num">Prompt t/s</th><th class="num">Eval t/s</th>' +
+            '<th class="num">VRAM run</th><th class="num">Shared spill</th><th>Fit</th>' +
+          '</tr></thead><tbody>' + diagRows + '</tbody></table></details>'
+      : '';
 
     el.insertAdjacentHTML('beforeend',
       '<details class="model-row' + (allFailed ? ' is-failed' : '') + '">' +
@@ -895,19 +1149,17 @@ function renderModelsList() {
         '<div class="config-list">' +
           coldLoadSummary(w || configs[0]) +
           calibrationSummary(configs) +
+          comparisonPanel(configs, w) +
           '<table>' +
             '<thead><tr>' +
-              '<th>Config</th><th>Level</th><th>Workload</th>' +
-              '<th>Launch profile</th>' +
-              '<th class="num">Prompt t/s</th>' +
+              '<th>Config</th><th>Level</th>' +
               '<th class="num">Eval t/s</th>' +
-              '<th class="num">VRAM run</th><th class="num">Shared spill</th>' +
-              '<th class="num">TTFT s</th>' +
-              '<th class="num">GPU W</th>' +
+              '<th class="num">VRAM run</th>' +
               '<th>Fit</th><th></th>' +
             '</tr></thead>' +
             '<tbody>' + rows + '</tbody>' +
           '</table>' +
+          diagHtml +
         '</div>' +
       '</details>'
     );

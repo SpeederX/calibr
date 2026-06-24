@@ -73,6 +73,31 @@ const DATA = [
     ram_used_peak_mib:1, ram_baseline_mib:13000,
     model_path:"C:\\fake\\m3.gguf", mmproj_path:null,
     failure_reason:"unsupported_arch", unsupported_architecture:"fakearch_v2", ready:false },
+  // M1 vanilla control + load-curve rows: exercise the comparison radar and
+  // the prefill/KV-fill chart. All are winner-ineligible (control / non-baseline
+  // workload), so M1's winner must stay "a2".
+  { id:"a_v", label:"vanilla_llama_cpp", model:"M1", series:"M", variant:"Q8", level:"low", sweep:"context",
+    control_kind:"vanilla", prompt_tps:120, eval_tps:56, vram_peak_mib:3600, vram_total_peak_mib:3600,
+    vram_baseline_mib:1500, shared_peak_mib:0, load_sec:2, layers_offloaded:null, fit_status:"success",
+    extra_args:"", ok:true, ctx_size:16384, kv_cache_mib:50, gpu_power_peak_w:128, gpu_temp_peak_c:66,
+    ram_used_peak_mib:1100, requested_context_size:null, effective_context_size:4096,
+    effective_parallel_slots:4, effective_n_parallel:4, model_path:"C:\\fake\\m1.gguf", mmproj_path:null },
+  { id:"a_p1", label:"ctx16k_kv_q8", model:"M1", series:"M", variant:"Q8", level:"low", sweep:"context",
+    workload_kind:"prefill", prefill_target_tokens:2048, workload_prompt_tokens:2048,
+    prompt_tps:118, eval_tps:50, vram_peak_mib:3500, vram_baseline_mib:1500, shared_peak_mib:0,
+    fit_status:"success", ok:true, ctx_size:16384, model_path:"C:\\fake\\m1.gguf", mmproj_path:null },
+  { id:"a_p2", label:"ctx16k_kv_q8", model:"M1", series:"M", variant:"Q8", level:"low", sweep:"context",
+    workload_kind:"prefill", prefill_target_tokens:8192, workload_prompt_tokens:8192,
+    prompt_tps:92, eval_tps:49, vram_peak_mib:3520, vram_baseline_mib:1500, shared_peak_mib:0,
+    fit_status:"success", ok:true, ctx_size:16384, model_path:"C:\\fake\\m1.gguf", mmproj_path:null },
+  { id:"a_k1", label:"ctx16k_kv_q8", model:"M1", series:"M", variant:"Q8", level:"low", sweep:"context",
+    workload_kind:"kv-fill", kv_fill_target_tokens:4096, kv_fill_cached_tokens:4096,
+    prompt_tps:110, eval_tps:46, vram_peak_mib:3550, vram_baseline_mib:1500, shared_peak_mib:0,
+    fit_status:"success", ok:true, ctx_size:16384, model_path:"C:\\fake\\m1.gguf", mmproj_path:null },
+  { id:"a_k2", label:"ctx16k_kv_q8", model:"M1", series:"M", variant:"Q8", level:"low", sweep:"context",
+    workload_kind:"kv-fill", kv_fill_target_tokens:12288, kv_fill_cached_tokens:12288,
+    prompt_tps:108, eval_tps:38, vram_peak_mib:3580, vram_baseline_mib:1500, shared_peak_mib:0,
+    fit_status:"success", ok:true, ctx_size:16384, model_path:"C:\\fake\\m1.gguf", mmproj_path:null },
 ];
 const WINNERS = [{ model:"M1", winner_id:"a", bat:"M1.bat" }, { model:"M2", winner_id:"b", bat:"M2.bat" }];
 const CFG = {
