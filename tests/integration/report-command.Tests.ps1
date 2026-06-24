@@ -119,6 +119,14 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'const RADAR_AXES')             "radar axis registry missing"
         Assert-True ($tpl -match 'gpu_temp_peak_c')              "temperature axis missing from radar"
         Assert-True ($tpl -match 'outward = better')             "radar direction legend missing"
+        Assert-True ($tpl -match 'selected config')              "radar legend should name the selected config"
+    }
+    It "lets a config row re-target the comparison radar" {
+        Assert-True ($tpl -match 'function selectCompareConfig')  "row-selection handler missing"
+        Assert-True ($tpl -match 'function radarCardId')          "radar card id helper missing"
+        Assert-True ($tpl -match 'data-select-cfg')               "selectable config rows missing"
+        Assert-True ($tpl -match "tr\.cfg-row\[data-select-cfg\]") "row-selection click delegate missing"
+        Assert-True ($tpl -match 'cfg-selected')                  "selected-row marker missing"
     }
     It "charts prefill and KV-fill load curves with a no-data fallback" {
         Assert-True ($tpl -match 'function renderLoadCurve')     "load curve renderer missing"

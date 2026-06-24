@@ -168,12 +168,12 @@
   .planning-summary code { color:var(--c-accent); }
 
   /* ----- Vanilla-vs-config comparison panel (radar + load curve) ----- */
-  .compare-panel { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:14px;
-                   align-items:stretch; margin:2px 0 12px; }
-  @media (max-width: 900px) { .compare-panel { grid-template-columns:1fr; } }
+  .compare-panel { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px;
+                   align-items:stretch; margin:2px 0 12px; max-width:680px; }
+  @media (max-width: 760px) { .compare-panel { grid-template-columns:1fr; max-width:340px; } }
   .compare-card { background:#242424; border:1px solid var(--c-border); border-radius:6px;
-                  padding:9px 11px 7px; min-width:0; display:flex; flex-direction:column; }
-  .compare-card h4 { margin:0 0 4px; font-size:12px; color:var(--c-text); font-weight:600; }
+                  padding:8px 10px 6px; min-width:0; display:flex; flex-direction:column; }
+  .compare-card h4 { margin:0 0 3px; font-size:11px; color:var(--c-text); font-weight:600; }
   .compare-card h4 .meta { font-weight:400; }
   .compare-card svg { width:100%; height:auto; }
   .compare-empty { color:var(--c-muted); font-size:11px; font-style:italic;
@@ -181,8 +181,8 @@
   .radar-grid { fill:none; stroke:var(--c-border); stroke-width:1; opacity:0.4; }
   .radar-ref  { fill:none; stroke:var(--c-muted); stroke-width:1; stroke-dasharray:3 3; opacity:0.7; }
   .radar-spoke { stroke:var(--c-border); stroke-width:1; opacity:0.5; }
-  .radar-label { fill:var(--c-text); font:10px Consolas, monospace; }
-  .radar-ref-tag { fill:var(--c-muted); font:9px Consolas, monospace; }
+  .radar-label { fill:var(--c-text); font:8px Consolas, monospace; }
+  .radar-ref-tag { fill:var(--c-muted); font:7px Consolas, monospace; }
   .radar-poly-vanilla { fill:rgba(183,183,183,0.12); stroke:var(--c-muted); stroke-width:1.5; }
   .radar-poly-config  { fill:rgba(139,92,246,0.22); stroke:var(--c-win); stroke-width:2; }
   .radar-dot-config { fill:var(--c-win); }
@@ -190,7 +190,7 @@
                     color:var(--c-muted); font-size:10px; }
   .compare-cap { color:var(--c-muted); font:10px Consolas, monospace; margin:5px 0 0; }
   .curve-axis { stroke:var(--c-border); stroke-width:1; }
-  .curve-tick { fill:var(--c-muted); font:9px Consolas, monospace; }
+  .curve-tick { fill:var(--c-muted); font:7.5px Consolas, monospace; }
   .curve-prefill { fill:none; stroke:#22c55e; stroke-width:2; }
   .curve-kvfill  { fill:none; stroke:#f59e0b; stroke-width:2; }
   .curve-dot-prefill { fill:#22c55e; }
@@ -201,6 +201,11 @@
   .diag-details > summary::-webkit-details-marker { display:none; }
   .diag-details > summary::before { content:'\25B8 '; color:var(--c-muted); }
   .diag-details[open] > summary::before { content:'\25BE '; }
+  /* Click a config row to re-target the comparison radar (vanilla vs that config). */
+  .model-row .config-list tr.cfg-row { cursor:pointer; }
+  .model-row .config-list tr.cfg-row:hover { background:rgba(255,255,255,0.05); }
+  .model-row .config-list tr.cfg-selected td:first-child { box-shadow: inset 3px 0 0 var(--c-win); }
+  .model-row .config-list tr.cfg-selected td:first-child::after { content:' ◂ shown'; color:var(--c-win); font-size:10px; }
 
   /* ----- Scatter (now first chart) ----- */
   .scatter-bg-ram   { fill: rgba(255,255,255,0.035); }
@@ -816,6 +821,19 @@ document.addEventListener('click', e => {
   if (d) downloadBat(d);
 });
 
+// Click a config row in the lean drilldown table to re-target the comparison
+// radar at that config (vanilla stays the reference). The bat link inside the
+// row keeps its own handler above, so guard against it here.
+document.addEventListener('click', e => {
+  if (e.target.closest('.bat-link')) return;
+  const row = e.target.closest('tr.cfg-row[data-select-cfg]');
+  if (!row) return;
+  selectCompareConfig(row.dataset.model, row.dataset.selectCfg);
+  const tbody = row.parentElement;
+  if (tbody) tbody.querySelectorAll('tr.cfg-selected').forEach(r => r.classList.remove('cfg-selected'));
+  row.classList.add('cfg-selected');
+});
+
 // ===========================================================================
 // Models list (replaces the old winners grid). Each model is a <details>
 // row; collapsed = winning config for current filter; expand = all configs.
@@ -965,7 +983,7 @@ function renderRadar(vanilla, config) {
 
   svg += '<div class="compare-legend">' +
     '<span class="legend-item"><span class="legend-box" style="background:rgba(183,183,183,.45);border-color:var(--c-muted)"></span>vanilla (reference)</span>' +
-    '<span class="legend-item"><span class="legend-box" style="background:rgba(139,92,246,.5);border-color:var(--c-win)"></span>this config</span>' +
+    '<span class="legend-item"><span class="legend-box" style="background:rgba(139,92,246,.5);border-color:var(--c-win)"></span>selected config</span>' +
     '<span class="legend-item">outward = better: eval/prompt higher · VRAM/power/temp/RAM lower</span>' +
     '</div>';
   return svg;
@@ -1037,24 +1055,47 @@ function renderLoadCurve(configs) {
   return svg;
 }
 
-// Wraps the radar (left) and load curve (right). `selected` is the config the
-// radar compares against vanilla — Slice 1 preselects the winner. Renders
-// nothing when there is neither a vanilla control nor any load-curve data.
-function comparisonPanel(configs, winner) {
-  const vanilla = vanillaControlFor(configs, winner);
-  const hasCurve = configs.some(isWorkloadRow);
-  if (!vanilla && !hasCurve) return '';
-  const selected = winner && isRealConfig(winner)
+// Default config the radar targets: the winner if it is a real config, else
+// the fastest real config.
+function defaultCompareConfig(configs, winner) {
+  return winner && isRealConfig(winner)
     ? winner
     : configs.filter(isRealConfig).sort((a, b) => (+b.eval_tps || 0) - (+a.eval_tps || 0))[0];
-  const radar = (vanilla && selected)
+}
+
+// Stable id so a row click can re-render just one model's radar card.
+function radarCardId(model) { return 'cmp-radar-' + String(model).replace(/[^\w]/g, '_'); }
+
+// Inner of the radar card (title + chart). Re-rendered on row selection.
+function radarCardInner(vanilla, selected) {
+  const label = selected ? selected.label : 'config';
+  const body = (vanilla && selected)
     ? renderRadar(vanilla, selected)
     : '<div class="compare-empty">No vanilla control in this run — nothing to compare against.</div>';
-  const selLabel = selected ? selected.label : 'config';
+  return '<h4>vanilla vs <span class="meta">' + escapeHtml(label) + '</span></h4>' + body;
+}
+
+// Wraps the radar (left) and load curve (right). `selected` is the config the
+// radar compares against vanilla. Renders nothing when there is neither a
+// vanilla control nor any load-curve data.
+function comparisonPanel(model, configs, selected) {
+  const vanilla = vanillaControlFor(configs, selected);
+  const hasCurve = configs.some(isWorkloadRow);
+  if (!vanilla && !hasCurve) return '';
   return '<div class="compare-panel">' +
-    '<div class="compare-card"><h4>vanilla vs <span class="meta">' + escapeHtml(selLabel) + '</span></h4>' + radar + '</div>' +
+    '<div class="compare-card" id="' + radarCardId(model) + '">' + radarCardInner(vanilla, selected) + '</div>' +
     '<div class="compare-card"><h4>Load curve <span class="meta">prefill vs KV-fill</span></h4>' + renderLoadCurve(configs) + '</div>' +
     '</div>';
+}
+
+// Row-click handler target: re-point the radar at `configId` for `model`.
+// The load curve is per-model (anchor config), so only the radar updates.
+function selectCompareConfig(model, configId) {
+  const configs = VIEW.filter(c => c.model === model);
+  const selected = configs.find(c => c.id === configId && isRealConfig(c));
+  if (!selected) return;
+  const card = document.getElementById(radarCardId(model));
+  if (card) card.innerHTML = radarCardInner(vanillaControlFor(configs, selected), selected);
 }
 
 function renderModelsList() {
@@ -1098,11 +1139,19 @@ function renderModelsList() {
     const tableConfigs = configs.filter(c => !isVanillaAdjacent(c) && !isWorkloadRow(c));
     const diagConfigs  = configs.filter(c => isVanillaAdjacent(c) || isWorkloadRow(c));
 
+    // The radar compares vanilla against the selected config (default = winner
+    // or fastest real config); clicking another real row re-targets it.
+    const selected = defaultCompareConfig(configs, w);
+    const selectedId = selected ? selected.id : null;
+
     // Lean picker table: Config | Level | Eval t/s | VRAM run | Fit | bat.
     let rows = '';
     for (const c of tableConfigs) {
       const isWin = w && c.id === w.id;
-      rows += '<tr' + (isWin ? ' class="is-winner"' : '') + '>' +
+      const selectable = isRealConfig(c);
+      const cls = [isWin ? 'is-winner' : '', selectable ? 'cfg-row' : '', (selectable && c.id === selectedId) ? 'cfg-selected' : ''].filter(Boolean).join(' ');
+      rows += '<tr' + (cls ? ' class="' + cls + '"' : '') +
+              (selectable ? ' data-select-cfg="' + escapeHtml(c.id) + '" data-model="' + escapeHtml(model) + '"' : '') + '>' +
               '<td><code>' + escapeHtml(c.label) + '</code>' +
                 (c.control_kind === 'vanilla' ? ' <span class="meta">control</span>' : '') + '</td>' +
               '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
@@ -1149,7 +1198,7 @@ function renderModelsList() {
         '<div class="config-list">' +
           coldLoadSummary(w || configs[0]) +
           calibrationSummary(configs) +
-          comparisonPanel(configs, w) +
+          comparisonPanel(model, configs, selected) +
           '<table>' +
             '<thead><tr>' +
               '<th>Config</th><th>Level</th>' +
