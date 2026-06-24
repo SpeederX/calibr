@@ -913,6 +913,7 @@ function isWorkloadRow(c) {
 // engine label. Vanilla is the baseline control; real configs read as their
 // context size + KV-cache quantization (the two knobs that actually vary).
 function configContextSize(c) {
+  if (+c.effective_context_size) return +c.effective_context_size;
   if (+c.ctx_size) return +c.ctx_size;
   if (+c.requested_context_size) return +c.requested_context_size;
   const m = /ctx[=_-]?(\d+)/i.exec(c.label || c.extra_args || '');
@@ -930,13 +931,14 @@ function kvQuantLabel(c) {
   k = k || v; v = v || k;
   return k === v ? k : k + '/' + v;
 }
-function configDescription(c) {
-  if (c.control_kind === 'vanilla') return 'Baseline default llama.cpp configuration';
-  const ctx = configContextSize(c), kv = kvQuantLabel(c);
-  const parts = [];
-  if (ctx) parts.push('Context size: ' + ctx);
-  if (kv) parts.push('Key/Value quant: ' + kv);
-  return parts.length ? parts.join(' · ') : escapeHtml(c.label);
+// The vanilla control runs llama.cpp defaults, whose KV cache is float16; pin
+// that so the baseline row never shows an empty/parsed value.
+function kvCacheLabel(c) {
+  if (c.control_kind === 'vanilla') return 'f16';
+  return kvQuantLabel(c) || '–';
+}
+function configIdentity(c) {
+  return c.control_kind === 'vanilla' ? 'Baseline default llama.cpp configuration' : 'Calibrated';
 }
 
 // Pick the vanilla control to reference, preferring the one from the same
@@ -1197,19 +1199,23 @@ function renderModelsList() {
     const selected = defaultCompareConfig(configs, w);
     const selectedId = selected ? selected.id : null;
 
-    // Lean picker: a friendly description + eval t/s + fit (+ bat). Level and
-    // VRAM are dropped — level is in the model header and the raw per-config
-    // numbers live in the diagnostics drilldown. Clicking a row re-targets the
-    // radar.
+    // Lean picker with context + KV as their own columns, plus prompt/eval t/s
+    // and fit. Level and per-config VRAM are dropped — level is in the model
+    // header and the raw numbers live in the diagnostics drilldown. Clicking a
+    // row re-targets the radar.
     let rows = '';
     for (const c of tableConfigs) {
       const isWin = w && c.id === w.id;
       const selectable = isRealConfig(c);
       const cls = [isWin ? 'is-winner' : '', selectable ? 'cfg-row' : '', (selectable && c.id === selectedId) ? 'cfg-selected' : ''].filter(Boolean).join(' ');
+      const ctx = configContextSize(c);
       rows += '<tr' + (cls ? ' class="' + cls + '"' : '') +
               (selectable ? ' data-select-cfg="' + escapeHtml(c.id) + '" data-model="' + escapeHtml(model) + '"' : '') + '>' +
-              '<td>' + configDescription(c) +
+              '<td>' + configIdentity(c) +
                 (c.control_kind === 'vanilla' ? ' <span class="meta">control</span>' : '') + '</td>' +
+              '<td class="num">' + (ctx ? ctx : '–') + '</td>' +
+              '<td class="num">' + kvCacheLabel(c) + '</td>' +
+              '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num"><b>' + fmt1(c.eval_tps) + '</b></td>' +
               '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
               '<td>' + ((!c.control_kind && (!c.workload_kind || c.workload_kind === 'baseline')) ? '<a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a>' : '') + '</td>' +
@@ -1218,7 +1224,8 @@ function renderModelsList() {
     const configsCard =
       '<div class="compare-card compare-configs"><h4>Configs</h4>' +
         '<table><thead><tr>' +
-          '<th>Config</th><th class="num">Eval t/s</th><th>Fit</th><th></th>' +
+          '<th>Configuration</th><th class="num">Context size</th><th class="num">Key/Value</th>' +
+          '<th class="num">Prompt t/s</th><th class="num">Eval t/s</th><th>Fit</th><th></th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 
     // Diagnostics audit table: keeps the probes/workload rows reachable with

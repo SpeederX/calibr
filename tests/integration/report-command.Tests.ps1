@@ -123,11 +123,13 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'outward = better')             "radar direction legend missing"
         Assert-True ($tpl -match 'selected config')              "radar legend should name the selected config"
     }
-    It "reframes the lean config list and drops redundant columns" {
-        Assert-True ($tpl -match 'function configDescription')    "config description helper missing"
+    It "reframes the lean config list with context + KV columns" {
+        Assert-True ($tpl -match 'function configIdentity')       "config identity helper missing"
         Assert-True ($tpl -match 'Baseline default llama.cpp configuration') "vanilla reframing missing"
-        Assert-True ($tpl -match 'Context size: ')                "context-size framing missing"
-        Assert-True ($tpl -match 'Key/Value quant')               "KV quant framing missing"
+        Assert-True ($tpl -match 'function kvCacheLabel')         "KV cache label helper missing"
+        Assert-True ($tpl -match "vanilla'\) return 'f16'")       "vanilla KV should be pinned to llama.cpp default f16"
+        Assert-True ($tpl -match 'Context size</th>')             "context-size column missing"
+        Assert-True ($tpl -match 'Key/Value</th>')                "key/value column missing"
         Assert-True ($tpl -match 'compare-configs')               "configs card missing from single-row panel"
     }
     It "lets a config row re-target the comparison radar" {
