@@ -386,8 +386,13 @@
     <div class="tab-content"><div id="leaderboard-bars"></div></div>
   </details>
 
-  <h2>WDDM paging watchlist</h2>
-  <p class="meta">Rows where shared GPU memory grew during the run (confirmed paging) or VRAM peak exceeded the saturation threshold (suspected).</p>
+  <h2>Shared memory spillover watchlist</h2>
+  <p class="meta">Configs where GPU-addressable system memory grew during the run
+    (WDDM shared memory on Windows, GTT on AMD/Linux) or where VRAM peak crossed
+    the saturation threshold (suspected). Confirming that spillover actually
+    drops eval speed at the cliff needs the prefill/KV-fill load curves from a
+    <b>load-curve</b> or <b>exhaustive</b> run, so this list can be empty on a
+    baseline-only campaign.</p>
   <div id="wddm-list"></div>
 
   <details class="card" id="all-results">
@@ -1549,7 +1554,10 @@ function renderScatter() {
   const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
   const cap = (CFG.hardware && CFG.hardware.vram_total_mib) ? CFG.hardware.vram_total_mib : 8192;
   const ramTotal = (CFG.hardware && CFG.hardware.system_ram_total_mib) ? CFG.hardware.system_ram_total_mib : 0;
-  const pts = VIEW.filter(d => d.ok && d.time_total_sec != null).map(d => ({
+  // Prefill / KV-fill diagnostic rows share the anchor config's footprint at
+  // varying times, which only adds a chaotic cluster here; keep the scatter to
+  // baseline/real configs and the vanilla control.
+  const pts = VIEW.filter(d => d.ok && d.time_total_sec != null && !isWorkloadRow(d)).map(d => ({
     d: d,
     x: d.time_total_sec,
     y: effectiveMemoryUsedMib(d, STATE.adjustScatterBaseline)
@@ -1641,6 +1649,17 @@ function telemetryRuns(d) {
   return Array.isArray(d?.runs) ? d.runs.filter(r => Array.isArray(r.telemetry) && r.telemetry.length > 0) : [];
 }
 
+// Short centered moving average for the noisy per-token generation rate.
+function smoothSeries(vals, win) {
+  if (!Array.isArray(vals) || vals.length <= 2 || win <= 1) return Array.isArray(vals) ? vals.slice() : [];
+  const half = Math.floor(win / 2);
+  return vals.map((_, i) => {
+    let sum = 0, n = 0;
+    for (let j = Math.max(0, i - half); j <= Math.min(vals.length - 1, i + half); j++) { sum += vals[j]; n++; }
+    return sum / n;
+  });
+}
+
 function renderTimeline() {
   const svg = document.getElementById('timeline');
   if (!STATE.timelineConfigId) {
@@ -1715,13 +1734,20 @@ function renderTimeline() {
   const memoryMin = Math.max(0, memoryMinRaw - memoryPad);
   const memoryMax = Math.max(memoryMin + 256, memoryMaxRaw + memoryPad);
   const speedOf = p => p.server_tps != null ? +p.server_tps : (p.rolling_tps != null ? +p.rolling_tps : null);
-  const speedPoints = allPoints.filter(p => speedOf(p) != null && speedOf(p) >= 0);
-  const speedValues = speedPoints.map(p => speedOf(p) || 0);
-  const speedMinRaw = speedValues.length ? Math.min(...speedValues) : 0;
-  const speedMaxRaw = speedValues.length ? Math.max(...speedValues) : 1;
-  const speedPad = Math.max(1, (speedMaxRaw - speedMinRaw) * 0.12);
-  const speedMin = Math.max(0, speedMinRaw - speedPad);
-  const speedMax = Math.max(speedMin + 2, speedMaxRaw + speedPad);
+  // Instantaneous per-token server tok/s is very noisy; smooth each run with a
+  // short centered moving average and anchor the axis at 0 so the generation
+  // line reads as a trend rather than a jagged band. Raw values stay in tooltips.
+  const speedSeries = series.map(item => {
+    const sp = item.points.filter(p => speedOf(p) != null && speedOf(p) >= 0);
+    const win = Math.max(5, Math.round(sp.length / 6));
+    const sm = smoothSeries(sp.map(p => speedOf(p) || 0), win);
+    return { index: item.index, points: sp.map((p, i) => ({ point: p, raw: speedOf(p) || 0, smooth: sm[i] != null ? sm[i] : (speedOf(p) || 0) })) };
+  });
+  const speedByIndex = new Map(speedSeries.map(s => [s.index, s.points]));
+  const smoothedVals = speedSeries.flatMap(s => s.points.map(p => p.smooth));
+  const speedMaxRaw = smoothedVals.length ? Math.max(...smoothedVals) : 1;
+  const speedMin = 0;
+  const speedMax = Math.max(speedMin + 2, speedMaxRaw * 1.12);
   const xs = v => M.l + v * innerW;
   const ym = v => M.t + innerH - ((v - memoryMin) / (memoryMax - memoryMin)) * innerH;
   const ys = v => M.t + innerH - ((v - speedMin) / (speedMax - speedMin)) * innerH;
@@ -1757,17 +1783,21 @@ function renderTimeline() {
     const style = 'stroke-dasharray:' + dash + ';stroke-opacity:' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + ';';
     out.push('<path class="timeline-vram" style="' + style + '" d="' + line(item.points, p => +p.vram_total_mib || 0, ym) + '"><title>Run ' + (item.index + 1) + ' VRAM</title></path>');
     out.push('<path class="timeline-ram" style="' + style + '" d="' + line(item.points, p => +p.ram_used_mib || 0, ym) + '"><title>Run ' + (item.index + 1) + ' RAM delta</title></path>');
-    const runSpeed = item.points.filter(p => speedOf(p) != null && speedOf(p) >= 0);
-    if (runSpeed.length > 0) out.push('<path class="timeline-speed" style="' + style + '" d="' + line(runSpeed, p => speedOf(p) || 0, ys) + '"><title>Run ' + (item.index + 1) + ' server generation rate</title></path>');
-    runSpeed.forEach(p => {
-      const phase = p.event_kind || p.phase || 'generation';
-      const gap = p.delivery_gap_ms != null ? ' · delivery gap ' + fmt1(p.delivery_gap_ms) + ' ms' : '';
-      const tip = 'run ' + (item.index + 1) + ' · t=' + ((+p.plot_ms || 0) / 1000).toFixed(2) + 's · ' + phase +
-        ' · server ' + fmt1(speedOf(p)) + ' tok/s' + gap + ' · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib + ' MiB';
-      const fill = phase === 'reasoning' ? '#7c3aed' : phase === 'answer' ? '#2563eb' : 'var(--c-accent)';
-      out.push('<circle class="timeline-point" cx="' + xs(+p.plot_x || 0) + '" cy="' + ys(speedOf(p) || 0) +
-        '" r="3" fill="' + fill + '" stroke="#fff" opacity="' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + '"><title>' + tip + '</title></circle>');
-    });
+    const runSpeed = speedByIndex.get(item.index) || [];
+    if (runSpeed.length > 0) {
+      const speedRows = runSpeed.map(x => ({ plot_x: +x.point.plot_x || 0, v: x.smooth }));
+      out.push('<path class="timeline-speed" style="' + style + '" d="' + line(speedRows, r => r.v, ys) + '"><title>Run ' + (item.index + 1) + ' server generation rate (smoothed)</title></path>');
+      runSpeed.forEach(x => {
+        const p = x.point;
+        const phase = p.event_kind || p.phase || 'generation';
+        const gap = p.delivery_gap_ms != null ? ' · delivery gap ' + fmt1(p.delivery_gap_ms) + ' ms' : '';
+        const tip = 'run ' + (item.index + 1) + ' · t=' + ((+p.plot_ms || 0) / 1000).toFixed(2) + 's · ' + phase +
+          ' · server ' + fmt1(x.raw) + ' tok/s (smoothed ' + fmt1(x.smooth) + ')' + gap + ' · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib + ' MiB';
+        const fill = phase === 'reasoning' ? '#7c3aed' : phase === 'answer' ? '#2563eb' : 'var(--c-accent)';
+        out.push('<circle class="timeline-point" cx="' + xs(+p.plot_x || 0) + '" cy="' + ys(x.smooth) +
+          '" r="3" fill="' + fill + '" stroke="#fff" opacity="' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + '"><title>' + tip + '</title></circle>');
+      });
+    }
   });
   timelineRunLegend.innerHTML = series.map(item => {
     const dash = dashPatterns[item.index % dashPatterns.length];
@@ -1788,7 +1818,7 @@ function renderWddmWatchlist() {
   const flagged = VIEW.filter(d => d.ok && (d.wddm_flag_shared_pos || d.wddm_flag_high_vram));
   const wddmEl = document.getElementById('wddm-list');
   if (flagged.length === 0) {
-    wddmEl.innerHTML = '<p class="meta">None. No WDDM paging detected in the visible scope.</p>';
+    wddmEl.innerHTML = '<p class="meta">None. No shared-memory spillover detected in the visible scope.</p>';
     return;
   }
   let html = '<table><thead><tr><th>ID</th><th>Label</th><th class="num">VRAM</th><th class="num">Shared</th><th class="num">Sat.</th><th class="num">Eval t/s</th></tr></thead><tbody>';
