@@ -9,6 +9,85 @@
   - `npm test` from `cli/`: 145/145
   - `.\tests\run-tests.ps1`: 16 files passed
 
+## 2026-06-24 update from Codex thread
+
+This handoff was originally written before the latest `dev` state. The current
+important pushed merges are:
+
+- `1e8b9d7 merge: vanilla-adjacent speed probes`
+- `3760048 merge: benchmark scope policies`
+
+Recent verification:
+
+- after vanilla-adjacent probes:
+  - `npm test` from `cli/`: 146/146
+  - `.\tests\run-tests.ps1`: 16 files passed
+- after benchmark-scope policy UI:
+  - `npm test` from `cli/`: 147/147
+
+### Vanilla-adjacent probes now exist, but the UX is not done
+
+The planner now adds diagnostic controls for context-primary models:
+
+```text
+llama_cpp_ctx=<N>_default
+llama_cpp_ctx=<N>_parallel1
+llama_cpp_ctx=<N>_parallel1_kv=<type>
+```
+
+They are `control_kind = vanilla-adjacent`, excluded from winner selection and
+launcher generation. Their purpose is to explain why vanilla may beat a
+calibrated config: default context behavior, auto-parallelism, KV-cache
+precision, or calibr's remaining base runtime flags.
+
+Important: after the first Gemma E4B retest, the user judged the current table
+presentation as "complete no sense". The data is useful, but dumping the
+vanilla-adjacent probe rows into the same drilldown/table as normal configs
+creates visual noise and makes the product story harder to read.
+
+Required UX follow-up:
+
+1. Keep vanilla-adjacent rows available for audit/logs.
+2. Do not present them as ordinary baseline candidates in the main drilldown.
+3. Add a compact comparison visualization instead:
+   - radar/star chart or small baseline profile chart;
+   - sequence: `vanilla -> ctx-only -> parallel1 -> parallel1+KV -> calibr`;
+   - show deltas for eval, prompt, VRAM, shared, power/efficiency if present.
+4. Use it to explain the "why is vanilla faster?" case, not to pick winners.
+
+This is now one of the most important UX gaps because otherwise the controls
+look like random extra configs.
+
+### Benchmark scope policy first layer is implemented
+
+Guided run now exposes `benchmark scope` instead of raw `load sweep`:
+
+```text
+baseline
+baseline + prefill/KV load curves
+exhaustive (load curves + full speed curve)
+```
+
+Mapping in `cli/src/AllOptionsView.tsx`:
+
+- `baseline` -> `WorkloadSweep baseline`
+- `load-curves` -> `WorkloadSweep all`
+- `exhaustive` -> `WorkloadSweep all` + `-FullSpeedCurve`
+
+This is only the first layer. It clarifies user intent and prevents
+`-FullSpeedCurve` from being an obscure advanced toggle, but it does **not yet**
+implement the originally desired full scope matrix:
+
+- baseline;
+- baseline + simple config;
+- baseline + advanced config;
+- baseline + advanced + prefill/KV-fill;
+- full matrix / "folle".
+
+The missing piece is planner density: deciding how many context/offload/MoE/KV
+candidates each scope should generate. Do not assume the UX label already means
+the planner is doing different simple-vs-advanced density.
+
 ## What changed most recently
 
 The latest change addressed an incorrect diagnostic workload shape for
@@ -147,22 +226,53 @@ migration.
 
 ## Remaining queued work
 
-1. Surface launch profile in Throughput & memory chart rows/tooltips.
-2. Add the `context-only-partial-offload` guardrail behavior:
+1. Separate vanilla-adjacent controls from ordinary result rows:
+   - keep them in raw results and logs;
+   - hide/collapse them from the main model drilldown by default;
+   - add a radar/star/baseline-delta chart showing the sequence
+     `vanilla -> ctx-only -> parallel1 -> parallel1+KV -> calibr`;
+   - show why calibr/vanilla differ instead of making the table noisier.
+2. Surface launch profile in Throughput & memory chart rows/tooltips:
+   - this is still open for report widgets outside the detailed table;
+   - use `requested_*` and `effective_*` fields already present in results;
+   - show `default` / `unknown` rather than inventing missing values.
+3. Implement true benchmark-scope planner density:
+   - current UI maps scope to workload/full-curve only;
+   - still missing: baseline/simple/advanced/advanced+load/full-matrix
+     config-count differences;
+   - before run, show model count, config count, measured run count, estimated
+     duration, total transfer, and peak disk working set.
+4. Add the `context-only-partial-offload` guardrail behavior:
    - context-primary models should get a small empirical offload check when
      vanilla/default behavior beats calibr materially or when full GPU offload
      shows saturation/shared pressure.
-3. Implement near-winner refinement:
+5. Implement near-winner refinement:
    - allow configs/models within a tolerance band from the top result to enter
      the next refinement step;
    - needed because a near winner may have better KV/cache scaling later.
-4. Implement clearer guided benchmark scopes:
-   - baseline;
-   - baseline + simple config;
-   - baseline + advanced config;
-   - baseline + advanced + prefill/KV-fill;
-   - full matrix / "folle".
-5. Final documentation pass after the policy work:
+6. Runtime error decision tree:
+   - architecture/design/runtime-failure-policy.md exists and should remain
+     the reference;
+   - continue moving generic `server didn't become ready` into structured
+     causes/actions;
+   - retry same config for ambiguous transient errors;
+   - same-context KV rescue only for direct capacity/profile-fit failure;
+   - prune larger diagnostic targets after repeated diagnostic failures.
+7. Spill-risk semantics and UI:
+   - memory growth alone is risk, not proof;
+   - dense model + significant shared growth without KV-fill should read
+     "might spill with high context usage";
+   - confirmed spill requires workload evidence: KV-fill crossing the estimated
+     cliff plus significant eval degradation;
+   - MoE shared allocation remains ambiguous unless a dedicated policy proves
+     otherwise.
+8. Persistent Node benchmark/job direction:
+   - user wants to move away from PowerShell orchestration long-term;
+   - desired UX: benchmark can keep running if UI freezes/closes, with tray
+     indicator/reconnect later;
+   - do not implement a new backend/web phase yet, but keep this direction in
+     mind when touching long-running workflow boundaries.
+9. Final documentation pass after the policy work:
    - README;
    - HOW-IT-WORKS;
    - METRICS;
@@ -175,7 +285,7 @@ For Gemma 4 E4B, regenerate the plan through guided run and rerun:
 
 - local folder;
 - model: Gemma 4 E4B;
-- load sweep: baseline + prefill + KV-fill;
+- benchmark scope: baseline + prefill/KV load curves;
 - default settings.
 
 Expected diagnostic targets at ctx 131072:
