@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, policyForBenchmarkScope, scanLocalModelNames } from "../dist/AllOptionsView.js";
+import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, policyForBenchmarkScope, scanLocalModelNames } from "../dist/guidedRun/GuidedRunView.js";
 
 const base = {
   decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",

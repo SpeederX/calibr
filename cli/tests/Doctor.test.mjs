@@ -1,10 +1,10 @@
-// Component tests for DoctorView. The engine is mocked via the injectable
+// Component tests for Doctor. The engine is mocked via the injectable
 // `runner`/`exporter` props, so these run fast and need no pwsh/llama-server.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { render } from "ink-testing-library";
-import { DoctorView } from "../dist/DoctorView.js";
+import { Doctor } from "../dist/help/Doctor.js";
 
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 const DOWN = "[B";
@@ -36,7 +36,7 @@ const mockExporter = async () => ({ path: "/tmp/doctor-report.json" });
 
 test("menu lists the three actions", async () => {
   const { lastFrame, unmount } = render(
-    React.createElement(DoctorView, { onExit: () => {}, runner: mockRunner, exporter: mockExporter })
+    React.createElement(Doctor, { onExit: () => {}, runner: mockRunner, exporter: mockExporter })
   );
   await tick();
   const f = lastFrame();
@@ -48,7 +48,7 @@ test("menu lists the three actions", async () => {
 
 test("running the check renders the report with status, system info and a remediation", async () => {
   const { lastFrame, stdin, unmount } = render(
-    React.createElement(DoctorView, { onExit: () => {}, runner: mockRunner, exporter: mockExporter })
+    React.createElement(Doctor, { onExit: () => {}, runner: mockRunner, exporter: mockExporter })
   );
   await tick();
   stdin.write("\r"); // enter on "run check"
@@ -69,7 +69,7 @@ test("running the check renders the report with status, system info and a remedi
 
 test("a failing dep with no remediation surfaces the open-an-issue hint", async () => {
   const { lastFrame, stdin, unmount } = render(
-    React.createElement(DoctorView, { onExit: () => {}, runner: mockRunner, exporter: mockExporter })
+    React.createElement(Doctor, { onExit: () => {}, runner: mockRunner, exporter: mockExporter })
   );
   await tick();
   stdin.write("\r");        // run
@@ -86,7 +86,7 @@ test("a failing dep with no remediation surfaces the open-an-issue hint", async 
 
 test("export action shows the written path", async () => {
   const { lastFrame, stdin, unmount } = render(
-    React.createElement(DoctorView, { onExit: () => {}, runner: mockRunner, exporter: mockExporter })
+    React.createElement(Doctor, { onExit: () => {}, runner: mockRunner, exporter: mockExporter })
   );
   await tick();
   stdin.write(DOWN); // run check (extended)

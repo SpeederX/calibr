@@ -1,16 +1,16 @@
 import React, { useEffect, useState } from "react";
 import { existsSync } from "node:fs";
 import { Box, Text, useApp, useInput } from "ink";
-import { readStatus, traceAction, traceSessionEnd, traceSessionStart, type Status, type TraceContext } from "./engine.js";
-import { StatusView } from "./StatusView.js";
-import { RunView } from "./RunView.js";
-import { ResultsView } from "./ResultsView.js";
-import { ResultsMenuView } from "./ResultsMenuView.js";
-import { BenchmarkLogsView } from "./BenchmarkLogsView.js";
-import { AllOptionsView, type GuidedRunSession } from "./AllOptionsView.js";
-import { LlamaPathView } from "./LlamaPathView.js";
-import { DoctorView } from "./DoctorView.js";
-import { PreferencesView } from "./PreferencesView.js";
+import { readStatus, traceAction, traceSessionEnd, traceSessionStart, type Status, type TraceContext } from "../engine.js";
+import { MainMenu } from "../mainMenu/MainMenu.js";
+import { ReportBenchView } from "../guidedRun/ReportBenchView.js";
+import { ResultView } from "../resultMenu/ResultView.js";
+import { ResultsMenuView } from "../resultMenu/ResultsMenuView.js";
+import { ResultsLogs } from "../resultMenu/ResultsLogs.js";
+import { GuidedRunView, type GuidedRunSession } from "../guidedRun/GuidedRunView.js";
+import { LlamaConfigurationMenuView } from "../llamaMenu/LlamaConfigurationMenuView.js";
+import { Doctor } from "../help/Doctor.js";
+import { PreferencesView } from "../preferences/PreferencesView.js";
 
 type Screen =
   | { kind: "menu" }
@@ -175,7 +175,7 @@ export function App() {
   if (screen.kind === "run") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <RunView args={screen.args} label={screen.label} trace={screen.trace} onExit={() => setScreen({ kind: "menu" })} />
+        <ReportBenchView args={screen.args} label={screen.label} trace={screen.trace} onExit={() => setScreen({ kind: "menu" })} />
       </Box>
     );
   }
@@ -183,7 +183,7 @@ export function App() {
   if (screen.kind === "results") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <ResultsView
+        <ResultView
           onExit={() => setScreen({ kind: "resultsMenu" })}
           onRun={(args, label) => setScreen({
             kind: "run",
@@ -204,7 +204,7 @@ export function App() {
   if (screen.kind === "benchmarkLogs") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <BenchmarkLogsView onExit={() => setScreen({ kind: "resultsMenu" })} />
+        <ResultsLogs onExit={() => setScreen({ kind: "resultsMenu" })} />
       </Box>
     );
   }
@@ -224,7 +224,7 @@ export function App() {
   if (screen.kind === "allOptions") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <AllOptionsView
+        <GuidedRunView
           session={guidedSession}
           onSessionChange={(patch) => setGuidedSession((current) => ({ ...current, ...patch }))}
           onRun={(args, label, trace) => setScreen({ kind: "run", args, label, trace })}
@@ -237,7 +237,7 @@ export function App() {
   if (screen.kind === "llamaPath") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <LlamaPathView onCancel={() => setScreen({ kind: "menu" })} />
+        <LlamaConfigurationMenuView onCancel={() => setScreen({ kind: "menu" })} />
       </Box>
     );
   }
@@ -253,7 +253,7 @@ export function App() {
   if (screen.kind === "doctor") {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
-        <DoctorView onExit={() => setScreen({ kind: "help" })} />
+        <Doctor onExit={() => setScreen({ kind: "help" })} />
       </Box>
     );
   }
@@ -274,7 +274,7 @@ export function App() {
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <StatusView status={status} />
+      <MainMenu status={status} />
       <Box marginTop={1} flexDirection="column">
         <Text bold>what next?</Text>
         <Box marginTop={1} flexDirection="column">

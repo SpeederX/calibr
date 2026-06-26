@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { render } from "ink-testing-library";
-import { ResultsMenuView } from "../dist/ResultsMenuView.js";
+import { ResultsMenuView } from "../dist/resultMenu/ResultsMenuView.js";
 
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 

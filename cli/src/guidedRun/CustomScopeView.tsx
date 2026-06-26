@@ -4,10 +4,10 @@ import {
   readModelCatalog,
   saveUserPreset,
   type CatalogEntry,
-} from "./engine.js";
+} from "../engine.js";
 
 interface Props {
-  // The caller (AllOptionsView) prepends the verb + top-level flags; this view
+  // The caller (GuidedRunView) prepends the verb + top-level flags; this view
   // contributes the model selection and, in v2, the context-size set.
   onSubmit: (catalogIdList: string, contextSizes?: number[]) => void;
   onCancel: () => void;
@@ -20,9 +20,9 @@ const ctxLabel = (n: number) => `${Math.round(n / 1024)}k`;
 
 type Mode = "nav" | "search" | "savePrompt";
 
-// CustomBenchView v2: typed search filter + model checkboxes + context-size
+// CustomScopeView v2: typed search filter + model checkboxes + context-size
 // checkboxes (cross-product = bench scope) + save-as-user-preset.
-export function CustomBenchView({ onSubmit, onCancel }: Props) {
+export function CustomScopeView({ onSubmit, onCancel }: Props) {
   const catalog = useMemo<CatalogEntry[]>(readModelCatalog, []);
   const [checkedModels, setCheckedModels] = useState<Set<string>>(() => new Set());
   const [checkedCtx, setCheckedCtx] = useState<Set<number>>(() => new Set(CTX_OPTIONS)); // all on = full sweep

@@ -10,7 +10,7 @@ import {
   updateLocalConfigField,
   CALIBR_LOCAL_CFG,
   type CachedLlamaBuild,
-} from "./engine.js";
+} from "../engine.js";
 
 interface Props {
   onCancel: () => void;
@@ -35,7 +35,7 @@ type Phase =
  * setups), editing `config.json` by hand still works — the field is
  * just `"llama_server_exe": "..."`.
  */
-export function LlamaPathView({ onCancel }: Props) {
+export function LlamaConfigurationMenuView({ onCancel }: Props) {
   const isWindows = process.platform === "win32";
   const expectedBinaryName = isWindows ? "llama-server.exe" : "llama-server";
   const currentPath = useMemo<string | null>(() => {

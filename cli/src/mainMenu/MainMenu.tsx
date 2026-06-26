@@ -1,8 +1,8 @@
 import React from "react";
 import { Box, Text } from "ink";
-import type { Status } from "./engine.js";
+import type { Status } from "../engine.js";
 
-export function StatusView({ status }: { status: Status }) {
+export function MainMenu({ status }: { status: Status }) {
   const c = status.config;
   const hw = c.hardware ?? {};
   const vramBudget = hw.vram_safety_budget_mib ?? "?";

@@ -19,7 +19,7 @@ const sources = [
   // pre-bench disk-space gate (downloadFootprintBytes / readModelCatalog).
   { src: join(repoRoot, "models_catalog.json"), required: true },
   // default_bench_presets.json: shipped hardware-tier presets
-  // (low/middle/high/all) that the CLI's AllOptionsView preset row reads.
+  // (low/middle/high/all) that the CLI's GuidedRunView preset row reads.
   { src: join(repoRoot, "default_bench_presets.json"), required: true },
   // report.template.html: required by `calibr report` (Invoke-Report reads
   // it from $CALIBR_ROOT = the directory holding calibr.ps1). Without

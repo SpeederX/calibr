@@ -9,7 +9,7 @@ import {
   type ModelGroup,
   type Result,
   type ResultStatus,
-} from "./engine.js";
+} from "../engine.js";
 
 interface Props {
   onExit: () => void;
@@ -106,7 +106,7 @@ function calibrationFromResult(result: Result): string | null {
   return `adaptive offload · verified ${verified} layers · ${source}${offset}`;
 }
 
-export function ResultsView({ onExit, onRun }: Props) {
+export function ResultView({ onExit, onRun }: Props) {
   const threshold = useMemo(() => getSharedThreshold(), []);
   const groups = useMemo<ModelGroup[]>(() => groupByModel(readResults()), []);
   const [cursor, setCursor] = useState(0);

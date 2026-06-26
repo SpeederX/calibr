@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import Spinner from "ink-spinner";
 import { spawnSync } from "node:child_process";
-import { runEngine, openReport, type TraceContext } from "./engine.js";
+import { runEngine, openReport, type TraceContext } from "../engine.js";
 
 // Kill the whole process tree rooted at pid. Node's child.kill() doesn't
 // propagate to grandchildren — the shell (powershell/pwsh) spawns
@@ -251,7 +251,7 @@ function fmtElapsed(ms: number): string {
   return `${pad2(minutes)}:${pad2(seconds)}.${pad3(milli)}`;
 }
 
-export function RunView({ args, label, trace, onExit }: Props) {
+export function ReportBenchView({ args, label, trace, onExit }: Props) {
   const { stdout } = useStdout();
   const [lines, setLines] = useState<string[]>([]);
   const [progress, setProgress] = useState<Progress | null>(null);
