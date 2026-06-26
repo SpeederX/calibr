@@ -36,8 +36,10 @@ function realDeps(expectedHint: number): DownloadDeps {
     async remoteInfo({ repo, file, revision }) {
       const info = await fileDownloadInfo({ repo, path: file, revision });
       if (!info) return null;
-      const sha = info.xet?.hash ?? info.etag ?? null;
-      return { size: info.size, sha: sha ? sha.replace(/"/g, "") : null, url: info.url };
+      // The content sha256 is the (quote-wrapped) LFS etag. xet.hash is a
+      // Xet-internal digest, NOT sha256(content), so it must not be used here.
+      const sha = info.etag ? info.etag.replace(/"/g, "") : null;
+      return { size: info.size, sha, url: info.url };
     },
     async httpGet(url, opts): Promise<HttpGetResult> {
       const headers: Record<string, string> = {};
