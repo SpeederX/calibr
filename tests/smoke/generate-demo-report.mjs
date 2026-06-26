@@ -46,7 +46,8 @@ for (const md of MODELS) {
     const shared = pages ? 1200 : 0;
     const fit = pages ? "failed_but_running" : (vram > 7000 ? "unknown" : "success");
     // Skip extended metrics on two rows to exercise the speed-fallback.
-    const hasExt = !(i === 5 || i === 14);
+    // Keep them off the anchor model (i 4-6) so its radar shows every axis.
+    const hasExt = !(i === 8 || i === 14);
     const baseline = 900;
     const label = `ctx_${ctx}_kv_q8_0`;
     const args = `--ctx-size ${ctx} --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0`;
@@ -103,11 +104,63 @@ for (const md of MODELS) {
   }
 }
 
+// Vanilla control, vanilla-adjacent probes, and prefill/KV-fill load curves
+// for one context-primary model (anchor ctx = 65536), so the comparison radar
+// and the load-curve chart have something to render in the demo. These mirror
+// the planner's diagnostic rows and are excluded from winner selection.
+const ANCHOR_MODEL = MODELS[1]; // Gemma-4-E4B-Q4
+const ANCHOR_CTX = 65536;
+const anchorBase = { model:ANCHOR_MODEL.m, series:ANCHOR_MODEL.s, variant:ANCHOR_MODEL.v,
+  level:ANCHOR_MODEL.level, sweep:"context", ctx_size:ANCHOR_CTX, ok:true, fit_status:"success",
+  vram_baseline_mib:900, layers_offloaded:"32/32", model_path:`D:\\models\\${ANCHOR_MODEL.m.toLowerCase()}.gguf`, mmproj_path:null };
+const anchorVram = ANCHOR_MODEL.vramBase + 300;
+// vanilla control: untuned llama.cpp defaults (auto parallel-4, 4096 ctx/slot).
+DATA.push({ ...anchorBase, id:"V_gemma_vanilla", label:"vanilla_llama_cpp", control_kind:"vanilla",
+  extra_args:"", prompt_tps:322, eval_tps:56.2, vram_peak_mib:anchorVram + 900, vram_total_peak_mib:anchorVram + 900,
+  shared_peak_mib:0, gpu_power_peak_w:138, gpu_temp_peak_c:67, ram_used_peak_mib:1180, gpu_util_avg_pct:90,
+  requested_context_size:null, requested_cache_type_k:null, requested_cache_type_v:null, requested_gpu_layers:null,
+  effective_context_size:4096, effective_parallel_slots:4, effective_n_parallel:4, flash_attention_state:"auto" });
+// vanilla-adjacent probes: ctx-only, +parallel1, +parallel1+KV.
+const probes = [
+  ["_default", "--ctx-size 65536", 52.1, 308],
+  ["_parallel1", "--ctx-size 65536 --parallel 1", 49.8, 300],
+  ["_parallel1_kv=q8_0", "--ctx-size 65536 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0", 47.0, 296],
+];
+for (const [suffix, args, ev, pr] of probes) {
+  DATA.push({ ...anchorBase, id:`VA_gemma${suffix}`, label:`llama_cpp_ctx=${ANCHOR_CTX}${suffix}`,
+    control_kind:"vanilla-adjacent", extra_args:args, prompt_tps:pr, eval_tps:ev,
+    vram_peak_mib:anchorVram + 900, vram_total_peak_mib:anchorVram + 900, shared_peak_mib:0,
+    gpu_power_peak_w:134, gpu_temp_peak_c:66, ram_used_peak_mib:1150,
+    requested_context_size:ANCHOR_CTX, effective_context_size:ANCHOR_CTX,
+    effective_parallel_slots:suffix === "_default" ? 4 : 1, flash_attention_state:"auto" });
+}
+// prefill + KV-fill load curves at the anchor config (shared label/args).
+const calibrArgs = `--ctx-size ${ANCHOR_CTX} --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0`;
+const calibrLabel = `ctx=${ANCHOR_CTX}_kv_q8_0`;
+const prefillCurve = [[2048, 318], [16384, 286], [32768, 244], [49152, 205], [58982, 171]];
+const kvCurve = [[16384, 46.8], [32768, 43.1], [49152, 38.4], [58982, 32.0]];
+let wi = 0;
+for (const [tok, pr] of prefillCurve) {
+  DATA.push({ ...anchorBase, id:`W_gemma_prefill_${tok}`, label:calibrLabel, extra_args:calibrArgs,
+    workload_kind:"prefill", prefill_target_tokens:tok, workload_prompt_tokens:tok,
+    prompt_tps:pr, eval_tps:47 - wi, vram_peak_mib:anchorVram + 900 + wi * 40,
+    vram_total_peak_mib:anchorVram + 900 + wi * 40, shared_peak_mib:0,
+    gpu_power_peak_w:140, gpu_temp_peak_c:68, ram_used_peak_mib:1200 }); wi++;
+}
+for (const [tok, ev] of kvCurve) {
+  DATA.push({ ...anchorBase, id:`W_gemma_kvfill_${tok}`, label:calibrLabel, extra_args:calibrArgs,
+    workload_kind:"kv-fill", kv_fill_target_tokens:tok, kv_fill_cached_tokens:tok, workload_prompt_tokens:tok,
+    prompt_tps:300, eval_tps:ev, vram_peak_mib:anchorVram + 1100, vram_total_peak_mib:anchorVram + 1100,
+    shared_peak_mib:0, gpu_power_peak_w:142, gpu_temp_peak_c:69, ram_used_peak_mib:1240 });
+}
+
 // Engine winner = safety-first speed. Compute it here too so the
-// "default bat" links in the rendered models list resolve.
+// "default bat" links in the rendered models list resolve. Controls and
+// diagnostic workload rows are excluded, matching the real winner policy.
 const winnersByModel = {};
 for (const d of DATA) {
   if (!d.ok || d.shared_peak_mib > 500) continue;
+  if (d.control_kind || (d.workload_kind && d.workload_kind !== "baseline")) continue;
   if (!winnersByModel[d.model] || d.eval_tps > winnersByModel[d.model].eval_tps) {
     winnersByModel[d.model] = d;
   }

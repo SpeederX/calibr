@@ -72,13 +72,21 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'unsupported_architecture')         "unsupported_architecture detail missing"
         Assert-True ($tpl -match 'is-failed')                        "is-failed model row modifier missing"
     }
-    It "exposes the eval/vram tabbed widget that replaces the old separate bar sections" {
-        Assert-True ($tpl -match 'id="bars-tabs"')           "bars-tabs container missing"
-        Assert-True ($tpl -match 'data-bars="eval"')         "eval bars tab missing"
-        Assert-True ($tpl -match 'data-bars="vram"')         "vram bars tab missing"
-        Assert-True ($tpl -match 'function renderBars')      "renderBars function missing"
-        Assert-True ($tpl -match 'function vramHeadroom')    "vramHeadroom annotation function missing"
+    It "folds per-config throughput & memory bars into each model's diagnostics as a tabbed widget" {
+        Assert-True ($tpl -match 'function modelDiagnosticBars') "per-model bar renderer missing"
+        Assert-True ($tpl -match 'function metricBars')       "metric bar helper missing"
+        Assert-True ($tpl -match 'const BAR_METRICS')         "bar metric registry missing"
+        Assert-True ($tpl -match 'function barMetricTabs')    "shared metric tab strip missing"
+        Assert-True ($tpl -match 'diag-bars-tabs')            "per-model metric tabs missing"
         Assert-True ($tpl -match '\.bar-row-ann')            "bar-row-ann CSS class missing"
+        Assert-False ($tpl -match 'function renderBars\b')    "global renderBars should be removed"
+    }
+    It "shows a collapsed Complete session leaderboard of winners per model" {
+        Assert-True ($tpl -match 'details class="card" id="leaderboard"') "leaderboard should be a collapsed card"
+        Assert-True ($tpl -match 'Complete session leaderboard')          "leaderboard title missing"
+        Assert-True ($tpl -match 'id="leaderboard-tabs"')                 "leaderboard metric tabs missing"
+        Assert-True ($tpl -match 'function renderLeaderboard')            "leaderboard renderer missing"
+        Assert-True ($tpl -match 'Object\.values\(currentWinners\)')      "leaderboard should plot winners per model"
     }
     It "supports client-side .bat generation for any config" {
         Assert-True ($tpl -match 'function generateBatText')  "generateBatText function missing"
@@ -99,6 +107,51 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match "vanilla control") "control row label missing"
         Assert-True ($tpl -match "vanilla uses llama.cpp defaults") "vanilla launch-profile caveat missing"
         Assert-True ($tpl -match "!c\.control_kind") "controls must not expose launcher downloads"
+    }
+    It "separates vanilla-adjacent probes and load-curve rows from the pickable config table" {
+        Assert-True ($tpl -match 'function isVanillaAdjacent')   "vanilla-adjacent partition helper missing"
+        Assert-True ($tpl -match 'function isWorkloadRow')       "workload-row partition helper missing"
+        Assert-True ($tpl -match "control_kind === 'vanilla-adjacent'") "probe filter missing"
+        Assert-True ($tpl -match 'class="diag-details"')         "collapsed diagnostics container missing"
+        Assert-True ($tpl -match 'excluded from winner selection') "diagnostics audit caption missing"
+        # Diagnostics audit table must keep the launch-profile and workload context.
+        Assert-True ($tpl -match 'Launch profile')               "launch profile retained in diagnostics view"
+    }
+    It "renders a vanilla-vs-config comparison radar referenced to the vanilla control" {
+        Assert-True ($tpl -match 'function comparisonPanel')     "comparison panel helper missing"
+        Assert-True ($tpl -match 'function renderRadar')         "radar renderer missing"
+        Assert-True ($tpl -match 'function vanillaControlFor')   "vanilla reference selector missing"
+        Assert-True ($tpl -match 'compare-panel')                "comparison panel container missing"
+        Assert-True ($tpl -match 'radar-poly-vanilla')           "vanilla reference polygon missing"
+        Assert-True ($tpl -match 'radar-poly-config')            "config polygon missing"
+        Assert-True ($tpl -match 'const RADAR_AXES')             "radar axis registry missing"
+        Assert-True ($tpl -match 'gpu_temp_peak_c')              "temperature axis missing from radar"
+        Assert-True ($tpl -match "key:'ctx'")                    "context-size axis missing from radar"
+        Assert-True ($tpl -match 'radar-dot-vanilla')            "hoverable vanilla vertices missing"
+        Assert-True ($tpl -match 'outward = better')             "radar direction legend missing"
+        Assert-True ($tpl -match 'selected config')              "radar legend should name the selected config"
+    }
+    It "reframes the lean config list with context + KV columns" {
+        Assert-True ($tpl -match 'function configIdentity')       "config identity helper missing"
+        Assert-True ($tpl -match 'Baseline default llama.cpp configuration') "vanilla reframing missing"
+        Assert-True ($tpl -match 'function kvCacheLabel')         "KV cache label helper missing"
+        Assert-True ($tpl -match "vanilla'\) return 'f16'")       "vanilla KV should be pinned to llama.cpp default f16"
+        Assert-True ($tpl -match 'Context size</th>')             "context-size column missing"
+        Assert-True ($tpl -match 'Key/Value</th>')                "key/value column missing"
+        Assert-True ($tpl -match 'compare-configs')               "configs card missing from single-row panel"
+    }
+    It "lets a config row re-target the comparison radar" {
+        Assert-True ($tpl -match 'function selectCompareConfig')  "row-selection handler missing"
+        Assert-True ($tpl -match 'function radarCardId')          "radar card id helper missing"
+        Assert-True ($tpl -match 'data-select-cfg')               "selectable config rows missing"
+        Assert-True ($tpl -match "tr\.cfg-row\[data-select-cfg\]") "row-selection click delegate missing"
+        Assert-True ($tpl -match 'cfg-selected')                  "selected-row marker missing"
+    }
+    It "charts prefill and KV-fill load curves with a no-data fallback" {
+        Assert-True ($tpl -match 'function renderLoadCurve')     "load curve renderer missing"
+        Assert-True ($tpl -match 'curve-prefill')                "prefill series style missing"
+        Assert-True ($tpl -match 'curve-kvfill')                 "KV-fill series style missing"
+        Assert-True ($tpl -match 'load-curve.*or.*exhaustive')   "load-curve empty-state hint missing"
     }
     It "marks winners visually in scatter, bars, and tables" {
         Assert-True ($tpl -match 'is-winner')                 "is-winner CSS class missing"
@@ -154,6 +207,14 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match 'timeline-legend') "timeline color legend missing"
         Assert-True ($tpl -match 'VRAM run') "report should label baseline-adjusted VRAM explicitly"
         Assert-True ($tpl -match 'unknown \(legacy record\)') "invalid historical llama build tags should be identified as legacy"
+    }
+    It "collapses the All results raw table behind a disclosure with a column-tier toggle" {
+        Assert-True ($tpl -match 'details class="card" id="all-results"') "All results should be a collapsed card"
+        Assert-True ($tpl -match 'id="all-columns-toggle"')           "column-tier toggle button missing"
+        Assert-True ($tpl -match '\+ all columns')                    "default lean column affordance missing"
+        Assert-True ($tpl -match 'table\.all-lean \.col-extra')       "lean-mode column hiding rule missing"
+        Assert-True ($tpl -match 'class="num col-extra"')             "deep columns should be tagged col-extra"
+        Assert-True ($tpl -match 'id="all-count"')                    "all-results count summary missing"
     }
     It "falls back to requested gpu layers when llama.cpp does not report actual layers" {
         Assert-True ($tpl -match 'function layersLabel')       "layersLabel helper missing"
