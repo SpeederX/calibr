@@ -402,9 +402,6 @@ Remaining open items:
 - **Diagnostics bar density.** The tabbed per-config bars cover real configs plus
   the vanilla control; a model with many context candidates is still a tall list
   inside the collapsed diagnostics.
-- **Outdated report screenshot.** `docs/report-complete.png` (linked from
-  `README.md` and `cli/README.md`) predates this redesign and should be
-  regenerated from the new report.
 
 ### CPU + RAM as first-class metrics
 
