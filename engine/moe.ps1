@@ -4,8 +4,8 @@ function Resolve-TsMoeCalibrationScript {
     if ($env:CALIBR_TS_MOE_CALIBRATION -eq '0') { return $null }
     foreach ($candidate in @(
         $env:CALIBR_TS_MOE_CALIBRATION_SCRIPT,
-        (Join-Path $script:CALIBR_ROOT "cli\dist\moeCalibrationCli.js"),
-        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\moeCalibrationCli.js")
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\planning\moeCalibrationCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\planning\moeCalibrationCli.js")
     )) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) {
             return (Resolve-Path -LiteralPath $candidate).Path

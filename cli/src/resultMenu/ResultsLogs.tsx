@@ -7,7 +7,7 @@ import {
   readBenchmarkLogTail,
   readResults,
   type BenchmarkLog,
-} from "./engine.js";
+} from "../engine.js";
 
 interface Props {
   onExit: () => void;
@@ -29,7 +29,7 @@ function shortDate(value: string): string {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
 }
 
-export function BenchmarkLogsView({
+export function ResultsLogs({
   onExit,
   logs,
   opener = openBenchmarkLog,

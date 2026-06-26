@@ -12,7 +12,7 @@ test("preferences view exposes the VRAM warning preference", async () => {
   const dir = mkdtempSync(join(tmpdir(), "calibr-preferences-"));
   process.env.CALIBR_CONFIG = join(dir, "config.json");
   writeFileSync(process.env.CALIBR_CONFIG, "{}", "utf8");
-  const { PreferencesView } = await import(`../dist/PreferencesView.js?cache=${Date.now()}`);
+  const { PreferencesView } = await import(`../dist/preferences/PreferencesView.js?cache=${Date.now()}`);
   try {
     const { lastFrame, unmount } = render(
       React.createElement(PreferencesView, { onExit: () => {} })

@@ -1,5 +1,5 @@
 import { createServer } from "node:net";
-import { collectMetricSample, type MetricSample } from "./metricsPoller.js";
+import { collectMetricSample, type MetricSample } from "../bench/metricsPoller.js";
 import { estimateInitialOffload, type GgufWeightMetadata } from "./offloadEstimator.js";
 import { buildOffloadBenchmarkCandidates, estimateOffloadCliff, type OffloadProbeObservation } from "./offloadPlanner.js";
 import { runLoadProbe, type LoadProbePayload, type LoadProbeResult } from "./offloadProbe.js";

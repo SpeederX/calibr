@@ -4,7 +4,7 @@ import {
   parseComputeAppsQuery,
   parseGpuQuery,
   parseStandardNvidiaSmi,
-} from "../dist/metricsPoller.js";
+} from "../dist/engine/bench/metricsPoller.js";
 
 test("parseGpuQuery reads nvidia-smi GPU metrics", () => {
   assert.deepEqual(parseGpuQuery("4668, 117.25, 48, 20\n"), {

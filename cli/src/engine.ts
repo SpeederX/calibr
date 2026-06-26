@@ -2,7 +2,7 @@ import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { groupWinners, isSafe as winnerIsSafe, type WinnerWithMeta } from "./winnerPolicy.js";
+import { groupWinners, isSafe as winnerIsSafe, type WinnerWithMeta } from "./engine/results/winnerPolicy.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -398,7 +398,7 @@ export function deleteCachedLlamaBuild(build: CachedLlamaBuild): void {
 
 /**
  * Set a single top-level field on the LOCAL config.json without touching
- * any other key. Used by the config-edit screens (e.g. LlamaPathView).
+ * any other key. Used by the config-edit screens (e.g. LlamaConfigurationMenuView).
  * Creates config.json with just this field if it doesn't exist yet —
  * the engine's deepMerge with config.default.json fills the rest at
  * read time, so the file stays minimal.
@@ -765,7 +765,7 @@ function injectConfigArg(args: string[]): string[] {
 // way to forward keystrokes to a Read-Host prompt in the child PowerShell
 // (stdin isn't wired through Ink), so a prompt would hang forever. Any
 // confirmation the engine would have asked for is collected by the CLI
-// up front (see AllOptionsView's pre-flight gate). Idempotent so callers
+// up front (see GuidedRunView's pre-flight gate). Idempotent so callers
 // that pre-set the flag don't double it.
 function injectNonInteractive(args: string[]): string[] {
   if (args.includes("-NonInteractive")) return args;
@@ -1198,7 +1198,7 @@ export const CALIBR_USER_PRESETS = join(CALIBR_DATA_DIR, "user_bench_presets.jso
 
 /**
  * Save (or replace) a named preset in data/user_bench_presets.json. Used by
- * CustomBenchView v2 to persist a model selection (+ optional ctx-size set) for
+ * CustomScopeView v2 to persist a model selection (+ optional ctx-size set) for
  * reuse via `all -Preset <name>`. Returns the destination path.
  */
 export function saveUserPreset(name: string, ids: string[], contextSizes?: number[]): string {

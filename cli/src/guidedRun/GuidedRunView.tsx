@@ -22,8 +22,8 @@ import {
   type LlamaServerCandidate,
   type Preset,
   type TraceContext,
-} from "./engine.js";
-import { CustomBenchView } from "./CustomBenchView.js";
+} from "../engine.js";
+import { CustomScopeView } from "./CustomScopeView.js";
 
 interface Props {
   onRun: (args: string[], label: string, trace?: TraceContext) => void;
@@ -284,7 +284,7 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
 //                 user picks 'use cache' / 're-run all' / 'cancel'
 type Phase =
   | { kind: "form" }
-  | { kind: "custom" }   // CustomBenchView for model multi-pick
+  | { kind: "custom" }   // CustomScopeView for model multi-pick
   | { kind: "llamaSource" }
   | { kind: "llamaDownloadVersion"; error?: string }
   | { kind: "llamaLocalPick" }
@@ -327,7 +327,7 @@ function clampVramWarningPct(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value / VRAM_WARNING_STEP) * VRAM_WARNING_STEP));
 }
 
-export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Props) {
+export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Props) {
   // 'all' is the typical "I want everything" path; defaulting fetch on
   // matches what most users want (download the curated catalog + bench it).
   // Users with their own .gguf collections in the model folder toggle it off
@@ -438,7 +438,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     { kind: "cancel"   as const, label: "  cancel" },
   ];
 
-  // Custom selection (CustomBenchView) writes its result here; when set,
+  // Custom selection (CustomScopeView) writes its result here; when set,
   // buildArgs ignores the named preset and passes -CatalogId with the
   // comma-list of picked catalog ids.
   const [customIds, setCustomIds] = useState<string>(session?.customIds ?? "");
@@ -758,7 +758,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   }
 
   useInput((input, key) => {
-    // The custom phase delegates all input handling to CustomBenchView
+    // The custom phase delegates all input handling to CustomScopeView
     // (which has its own useInput inside) so we MUST not also consume
     // keystrokes here — otherwise the picker can't toggle.
     if (phase.kind === "custom") return;
@@ -1094,7 +1094,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
 
   if (phase.kind === "custom") {
     return (
-      <CustomBenchView
+      <CustomScopeView
         onSubmit={(idList, ctxSizes) => {
           setCustomIds(idList);
           setCustomCtxSizes(ctxSizes && ctxSizes.length > 0 ? ctxSizes : null);

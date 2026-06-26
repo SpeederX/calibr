@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Smoke-test the Ink key path without a real terminal. It renders
-// AllOptionsView, simulates key presses, and asserts the guided llama.cpp
+// GuidedRunView, simulates key presses, and asserts the guided llama.cpp
 // setup choices become explicit engine args.
 import React from "react";
 import { render } from "ink";
@@ -14,7 +14,7 @@ process.env.CALIBR_DATA_DIR = dataDir;
 process.env.CALIBR_CONFIG = join(dataDir, "config.json");
 process.env.CALIBR_LLAMA_SCAN_ROOTS_ONLY = "1";
 
-const { AllOptionsView } = await import("../dist/AllOptionsView.js");
+const { GuidedRunView } = await import("../dist/guidedRun/GuidedRunView.js");
 
 function makeInput() {
   const input = new PassThrough();
@@ -75,7 +75,7 @@ async function runScenario(name, setup, drive, assert) {
   try {
     const context = setup(tempRoot) ?? {};
     app = render(
-      React.createElement(AllOptionsView, {
+      React.createElement(GuidedRunView, {
         onRun: (args, label) => {
           captured = { args, label };
           app.unmount();

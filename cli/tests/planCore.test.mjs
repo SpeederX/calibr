@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { contextCandidateKv, invokePlan, newPlanItem, workloadProfilesForContext } from "../dist/planCore.js";
+import { contextCandidateKv, invokePlan, newPlanItem, workloadProfilesForContext } from "../dist/engine/planning/planCore.js";
 
 const cfg = {
   hardware: { vram_safety_budget_mib: 8000, cpu_cores_physical: 6, cpu_threads_logical: 12 },

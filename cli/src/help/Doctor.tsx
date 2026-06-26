@@ -8,7 +8,7 @@ import {
   type DoctorReport,
   type DoctorDep,
   type DoctorCheck,
-} from "./engine.js";
+} from "../engine.js";
 
 type Mode =
   | { kind: "menu" }
@@ -165,7 +165,7 @@ function ReportMode({ report, cursor }: { report: DoctorReport; cursor: number }
   );
 }
 
-export function DoctorView({
+export function Doctor({
   onExit,
   runner = runDoctor,
   exporter = exportDoctor,

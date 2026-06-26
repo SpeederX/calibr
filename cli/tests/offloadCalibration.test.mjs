@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildOffloadProbeArgs, calibrateOffload } from "../dist/offloadCalibration.js";
-import { validateOffloadCalibrationPayload } from "../dist/offloadCalibrationCli.js";
+import { buildOffloadProbeArgs, calibrateOffload } from "../dist/engine/planning/offloadCalibration.js";
+import { validateOffloadCalibrationPayload } from "../dist/engine/planning/offloadCalibrationCli.js";
 
 const MiB = 1024 * 1024;
 const metric = (gpu = 500) => ({

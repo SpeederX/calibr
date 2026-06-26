@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { deriveMemoryPolicies } from "../dist/memoryPolicy.js";
+import { deriveMemoryPolicies } from "../dist/engine/bench/memoryPolicy.js";
 
 const base = [
   { id: "a", model: "Q", variant: "9B", sweep: "context", workload_kind: "baseline", ok: true, extra_args: "--ctx-size 32768", vram_peak_mib: 6200, shared_peak_mib: 100 },

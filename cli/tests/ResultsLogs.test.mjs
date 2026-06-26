@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { render } from "ink-testing-library";
-import { BenchmarkLogsView } from "../dist/BenchmarkLogsView.js";
+import { ResultsLogs } from "../dist/resultMenu/ResultsLogs.js";
 
 const tick = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -17,7 +17,7 @@ const logs = [{
 }];
 
 test("benchmark log browser lists entries and previews their tail", async () => {
-  const listView = render(React.createElement(BenchmarkLogsView, {
+  const listView = render(React.createElement(ResultsLogs, {
     onExit: () => {},
     logs,
     tailReader: () => ["===== RUN 2 =====", "[CMD] llama-server ...", "server complete"],
@@ -30,7 +30,7 @@ test("benchmark log browser lists entries and previews their tail", async () => 
   assert.match(listView.lastFrame(), /model__ctx_16384/);
   listView.unmount();
 
-  const previewView = render(React.createElement(BenchmarkLogsView, {
+  const previewView = render(React.createElement(ResultsLogs, {
     onExit: () => {},
     logs,
     tailReader: () => ["===== RUN 2 =====", "[CMD] llama-server ...", "server complete"],

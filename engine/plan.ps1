@@ -11,8 +11,8 @@ function Get-SweepKind {
 
 function Resolve-TsLlamaCompatibilityScript {
     $candidates = @(
-        (Join-Path $script:CALIBR_ROOT "cli\dist\llamaCompatibilityCli.js"),
-        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\llamaCompatibilityCli.js")
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\bench\llamaCompatibilityCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\bench\llamaCompatibilityCli.js")
     )
     return @($candidates | Where-Object { Test-Path $_ } | Select-Object -First 1)[0]
 }

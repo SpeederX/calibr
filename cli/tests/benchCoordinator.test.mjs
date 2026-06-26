@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { integrateGpuEnergyWh, runBenchCoordinator } from "../dist/benchCoordinator.js";
+import { integrateGpuEnergyWh, runBenchCoordinator } from "../dist/engine/bench/benchCoordinator.js";
 
 function child() {
   const proc = new EventEmitter();

@@ -1,4 +1,4 @@
-import { deriveMemoryPolicies } from "./memoryPolicy.js";
+import { deriveMemoryPolicies } from "../bench/memoryPolicy.js";
 
 export interface BenchItem {
   id?: string;
@@ -120,7 +120,7 @@ export interface BenchRun {
   ram_used_peak_mib?: number | null;
   disk_read_peak_mb_s?: number | null;
   telemetry?: BenchTelemetryPoint[];
-  failure?: import("./failurePolicy.js").RuntimeFailure | null;
+  failure?: import("../bench/failurePolicy.js").RuntimeFailure | null;
 }
 
 export interface BenchTelemetryPoint {

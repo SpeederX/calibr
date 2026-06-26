@@ -164,8 +164,8 @@ function Resolve-TsResultCoreScript {
         return $env:CALIBR_TS_RESULT_CORE_SCRIPT
     }
     $candidates = @(
-        (Join-Path $script:CALIBR_ROOT "cli\dist\resultCoreCli.js"),
-        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\resultCoreCli.js")
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\results\resultCoreCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\results\resultCoreCli.js")
     )
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
@@ -777,8 +777,8 @@ function Resolve-TsBenchRunnerScript {
         return $env:CALIBR_TS_BENCH_SCRIPT
     }
     $candidates = @(
-        (Join-Path $script:CALIBR_ROOT "cli\dist\benchRunnerCli.js"),
-        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\benchRunnerCli.js")
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\bench\benchRunnerCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\bench\benchRunnerCli.js")
     )
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
@@ -792,8 +792,8 @@ function Resolve-TsBenchCoordinatorScript {
         return $env:CALIBR_TS_COORDINATOR_SCRIPT
     }
     $candidates = @(
-        (Join-Path $script:CALIBR_ROOT "cli\dist\benchCoordinatorCli.js"),
-        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\benchCoordinatorCli.js")
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\bench\benchCoordinatorCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\bench\benchCoordinatorCli.js")
     )
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
@@ -871,8 +871,8 @@ function Resolve-TsMetricsPollerScript {
         return $env:CALIBR_TS_METRICS_SCRIPT
     }
     $candidates = @(
-        (Join-Path $script:CALIBR_ROOT "cli\dist\metricsPollerCli.js"),
-        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\metricsPollerCli.js")
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\bench\metricsPollerCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\bench\metricsPollerCli.js")
     )
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
@@ -886,8 +886,8 @@ function Resolve-TsServerLifecycleScript {
         return $env:CALIBR_TS_LIFECYCLE_SCRIPT
     }
     $candidates = @(
-        (Join-Path $script:CALIBR_ROOT "cli\dist\serverLifecycleCli.js"),
-        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\serverLifecycleCli.js")
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\bench\serverLifecycleCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\bench\serverLifecycleCli.js")
     )
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }

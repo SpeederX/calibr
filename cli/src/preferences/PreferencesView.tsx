@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
-import { CALIBR_LOCAL_CFG, loadConfig, traceAction, updateLocalConfigField } from "./engine.js";
+import { CALIBR_LOCAL_CFG, loadConfig, traceAction, updateLocalConfigField } from "../engine.js";
 
 interface Props {
   onExit: () => void;

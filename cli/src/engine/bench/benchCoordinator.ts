@@ -12,7 +12,7 @@ import {
   type BenchItem,
   type BenchRun,
   type ResultCoreSession,
-} from "./resultCore.js";
+} from "../results/resultCore.js";
 import { waitForServerReady } from "./serverLifecycle.js";
 import type { StreamTelemetryEvent } from "./benchClient.js";
 import {

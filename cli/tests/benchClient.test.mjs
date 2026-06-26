@@ -7,7 +7,7 @@ import {
   parseSseDataLines,
   runNonStreamingChatCompletion,
   runStreamingChatCompletion,
-} from "../dist/benchClient.js";
+} from "../dist/engine/bench/benchClient.js";
 
 async function* streamParts(parts) {
   for (const part of parts) yield part;

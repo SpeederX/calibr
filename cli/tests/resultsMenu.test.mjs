@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { RESULTS_MENU_ITEMS, reduceResultsMenu } from "../dist/resultsMenu.js";
+import { RESULTS_MENU_ITEMS, reduceResultsMenu } from "../dist/resultMenu/resultsMenu.js";
 
 test("down/j moves the cursor toward logs and clamps at the last item", () => {
   assert.deepEqual(reduceResultsMenu(0, { input: "j" }), { type: "move", cursor: 1 });

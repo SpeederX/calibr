@@ -89,6 +89,6 @@ if (process.platform === "linux") {
 
 const { default: React } = await import("react");
 const { render } = await import("ink");
-const { App } = await import("./App.js");
+const { App } = await import("./app/App.js");
 
 render(React.createElement(App));
