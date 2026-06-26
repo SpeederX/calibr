@@ -187,6 +187,76 @@ function Get-DownloadDestination {
     return (Join-Path $root $sample.target_dir)
 }
 
+function Resolve-TsModelDownloadScript {
+    if ($env:CALIBR_TS_MODEL_DOWNLOAD -eq '0') { return "" }
+    if ($env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT)) {
+        return $env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\catalog\modelDownloadCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\catalog\modelDownloadCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Invoke-TsModelDownload {
+    # Spawns the Node downloader (resume + integrity + atomic rename). The
+    # download/skip decision is made by file validity, NOT $Force - re-running
+    # benchmarks must never re-download an already-valid model. Returns the
+    # parsed result hashtable, or $null when Node could not run (caller then
+    # falls back to the PowerShell path).
+    param(
+        [Parameter(Mandatory)][string]$Repo,
+        [Parameter(Mandatory)][string]$File,
+        [Parameter(Mandatory)][string]$DestPath,
+        [Parameter(Mandatory)][string]$Script
+    )
+    $payload = @{
+        repo        = $Repo
+        file        = $File
+        destPath    = $DestPath
+        calibrOwned = [bool](Test-DownloadedByCalibr -Path $DestPath)
+    }
+    $payloadPath = Join-Path $script:CALIBR_DATA_DIR ("model-download-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    try {
+        [System.IO.File]::WriteAllText(
+            $payloadPath,
+            ($payload | ConvertTo-Json -Depth 5),
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        $lastJson = $null
+        & $node $Script --json-file $payloadPath 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            $trimmed = $line.TrimStart()
+            if ($trimmed.StartsWith('[')) {
+                Write-Host $line          # pass [phase]/[dlprog]/[dldone] through to the CLI
+            } elseif ($trimmed.StartsWith('{')) {
+                $lastJson = $line
+            }
+        }
+        if (-not $lastJson) { return $null }
+        $result = ConvertTo-Hashtable -obj ($lastJson | ConvertFrom-Json)
+        switch ([string]$result.action) {
+            'skip'                { Write-Host ("  [skip] already present: {0} ({1})" -f $DestPath, (Format-HumanSize ([long]$result.bytes))) -ForegroundColor DarkGray }
+            'user-owned-mismatch' { Write-Host ("  [keep] {0}" -f $result.reason) -ForegroundColor Yellow }
+            default {
+                if ($result.ok) { Write-Host ("  [done] {0} ({1})" -f $DestPath, (Format-HumanSize ([long]$result.bytes))) -ForegroundColor Green }
+                else            { Write-Host ("  [FAIL] {0}" -f $result.reason) -ForegroundColor Red }
+            }
+        }
+        return $result
+    } catch {
+        Write-Host ("  [download] Node downloader error: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-HFDownload {
     # Downloads a single file from HuggingFace using HttpWebRequest with a
     # manual byte-counting loop, so we can emit `[dlprog]` progress markers
@@ -203,6 +273,18 @@ function Invoke-HFDownload {
     $url = "https://huggingface.co/$Repo/resolve/main/$File"
     $destDir = Split-Path $DestPath -Parent
     if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+
+    # Prefer the Node downloader: real HTTP Range resume, size+sha integrity,
+    # atomic .part -> final rename, and a skip decision based on file validity
+    # rather than $Force. Falls back to the PowerShell path below only when the
+    # Node build is unavailable (so a raw repo checkout without `npm run build`
+    # still works).
+    $tsScript = Resolve-TsModelDownloadScript
+    if ($tsScript) {
+        $tsResult = Invoke-TsModelDownload -Repo $Repo -File $File -DestPath $DestPath -Script $tsScript
+        if ($null -ne $tsResult) { return [bool]$tsResult.ok }
+        Write-Host "  [download] Node downloader unavailable; using PowerShell fallback" -ForegroundColor DarkYellow
+    }
 
     if ((Test-Path $DestPath) -and (-not $Force)) {
         $actual = (Get-Item $DestPath).Length

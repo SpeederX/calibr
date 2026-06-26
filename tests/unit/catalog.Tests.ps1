@@ -158,4 +158,67 @@ Describe "Download destination" {
     }
 }
 
+Describe "Node download wiring" {
+    It "Resolve-TsModelDownloadScript finds the local cli/dist downloader" {
+        $oldRoot = $script:CALIBR_ROOT
+        $oldFlag = $env:CALIBR_TS_MODEL_DOWNLOAD
+        $oldScript = $env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT
+        $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-dl-resolver-{0}" -f [guid]::NewGuid().ToString('N'))
+        $runner = Join-Path $tmpRoot "cli\dist\engine\catalog\modelDownloadCli.js"
+        New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
+        Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
+        try {
+            $script:CALIBR_ROOT = $tmpRoot
+            $env:CALIBR_TS_MODEL_DOWNLOAD = $null
+            $env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT = $null
+            Assert-Equal $runner (Resolve-TsModelDownloadScript)
+        } finally {
+            $script:CALIBR_ROOT = $oldRoot
+            $env:CALIBR_TS_MODEL_DOWNLOAD = $oldFlag
+            $env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT = $oldScript
+            Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "Invoke-HFDownload delegates to the Node downloader and returns its ok" {
+        function Resolve-TsModelDownloadScript { return "C:\fake\modelDownloadCli.js" }
+        function Invoke-TsModelDownload { param($Repo,$File,$DestPath,$Script) return @{ ok = $true; action = 'restart'; bytes = 10 } }
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-dl-{0}" -f [guid]::NewGuid().ToString('N'))
+        try {
+            $ok = Invoke-HFDownload -Repo "r/m" -File "m.gguf" -DestPath (Join-Path $tmp "m.gguf") -ExpectedBytes 10
+            Assert-Equal $true $ok
+        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It "Invoke-HFDownload surfaces a failed Node download" {
+        function Resolve-TsModelDownloadScript { return "C:\fake\modelDownloadCli.js" }
+        function Invoke-TsModelDownload { param($Repo,$File,$DestPath,$Script) return @{ ok = $false; action = 'restart'; reason = 'boom' } }
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-dl-{0}" -f [guid]::NewGuid().ToString('N'))
+        try {
+            $ok = Invoke-HFDownload -Repo "r/m" -File "m.gguf" -DestPath (Join-Path $tmp "m.gguf") -ExpectedBytes 10
+            Assert-Equal $false $ok
+        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It "delegates regardless of -Force and an existing file (download decoupled from benchmark -Force)" {
+        $oldForce = $script:Force
+        $script:tsCalled = $false
+        function Resolve-TsModelDownloadScript { return "C:\fake\modelDownloadCli.js" }
+        function Invoke-TsModelDownload { param($Repo,$File,$DestPath,$Script) $script:tsCalled = $true; return @{ ok = $true; action = 'skip'; bytes = 10 } }
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-dl-{0}" -f [guid]::NewGuid().ToString('N'))
+        $dest = Join-Path $tmp "m.gguf"
+        New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+        Set-Content -LiteralPath $dest -Value "present" -Encoding UTF8
+        try {
+            $script:Force = $true
+            $ok = Invoke-HFDownload -Repo "r/m" -File "m.gguf" -DestPath $dest -ExpectedBytes 10
+            Assert-Equal $true $ok
+            Assert-Equal $true $script:tsCalled
+        } finally {
+            $script:Force = $oldForce
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Exit-WithResults
