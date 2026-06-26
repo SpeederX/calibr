@@ -53,8 +53,57 @@ function ctxFromArgs(args?: string): string {
 }
 
 function kvFromArgs(args?: string): string {
+  const k = args?.match(/--cache-type-k\s+(\S+)/)?.[1];
+  const v = args?.match(/--cache-type-v\s+(\S+)/)?.[1];
+  if (k && v && k !== v) return `${k}/${v}`;
   const m = args?.match(/--cache-type-k\s+(\S+)/);
   return m ? m[1] : "—";
+}
+
+function valueOrDefault(value: unknown): string {
+  return value === undefined || value === null || value === "" ? "default" : String(value);
+}
+
+function launchProfileFromResult(result: Result): string {
+  const cacheK = valueOrDefault(result.requested_cache_type_k);
+  const cacheV = valueOrDefault(result.requested_cache_type_v);
+  const cache = cacheK === cacheV ? cacheK : `${cacheK}/${cacheV}`;
+  const layers = result.layers_offloaded ?? (result.requested_gpu_layers != null ? `req ${result.requested_gpu_layers}` : "default");
+  const slots = result.effective_parallel_slots != null ? ` Â· slots ${result.effective_parallel_slots}` : "";
+  return `requested ctx ${valueOrDefault(result.requested_context_size)} → effective ctx ${valueOrDefault(result.effective_context_size)} Â· cache ${cache} Â· ${layers}${slots}`;
+}
+
+function workloadFromResult(result: Result): string {
+  if (result.control_kind === "vanilla") return "vanilla llama.cpp control";
+  if (result.control_kind === "vanilla-adjacent") return "vanilla-adjacent speed probe";
+  if (result.workload_kind === "prefill") return `prefill ${result.workload_prompt_tokens ?? result.prefill_target_tokens ?? "?"} tok`;
+  if (result.workload_kind === "kv-fill") {
+    const cached = result.kv_fill_cached_tokens != null ? ` · ${result.kv_fill_cached_tokens} cached` : "";
+    return `KV-fill ${result.workload_prompt_tokens ?? result.kv_fill_target_tokens ?? "?"} tok${cached}`;
+  }
+  return "baseline";
+}
+
+function calibrationFromResult(result: Result): string | null {
+  if (result.planning_mode === "adaptive-moe") {
+    const verified = result.verified_n_cpu_moe ?? "?";
+    const source = result.calibration_cache_hit
+      ? `cached${result.calibration_cache_age_hours != null ? ` ${result.calibration_cache_age_hours}h` : ""}`
+      : `${result.probe_count ?? "?"} probes`;
+    const offset = result.fit_offset == null
+      ? ""
+      : ` · candidate ${result.fit_offset >= 0 ? "+" : ""}${result.fit_offset}`;
+    return `adaptive MoE · load-fit anchor n-cpu-moe ${verified} · ${source}${offset}`;
+  }
+  if (result.planning_mode !== "adaptive-offload") return null;
+  const verified = result.verified_fit_layers ?? "?";
+  const source = result.calibration_cache_hit
+    ? `cached${result.calibration_cache_age_hours != null ? ` ${result.calibration_cache_age_hours}h` : ""}`
+    : `${result.probe_count ?? "?"} probes`;
+  const offset = result.fit_offset == null
+    ? ""
+    : ` · candidate ${result.fit_offset >= 0 ? "+" : ""}${result.fit_offset}`;
+  return `adaptive offload · verified ${verified} layers · ${source}${offset}`;
 }
 
 export function ResultsView({ onExit, onRun }: Props) {
@@ -188,16 +237,30 @@ function DetailView({
       {sel && (
         <Box marginTop={1} flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
           <Text bold>{sel.label}</Text>
+          <Text dimColor>workload: {workloadFromResult(sel)}</Text>
+          <Text dimColor>launch profile: {launchProfileFromResult(sel)}</Text>
+          {sel.workload_kind !== "baseline" && (
+            <Text dimColor>
+              preparation: {sel.workload_prepare_ms ?? "—"} ms · target error: {sel.workload_target_error_tokens ?? "—"} tok
+              {sel.kv_fill_ms != null ? ` · KV fill: ${sel.kv_fill_ms} ms` : ""}
+            </Text>
+          )}
+          {calibrationFromResult(sel) && <Text color="magenta">{calibrationFromResult(sel)}</Text>}
           <Text dimColor>{sel.extra_args ?? ""}</Text>
           {sel.error && <Text color="red">error: {sel.error}</Text>}
+          {sel.failure && (
+            <Text color="yellow">
+              {sel.failure.cause} during {sel.failure.phase} — {sel.failure.evidence} (next: {sel.failure.action})
+            </Text>
+          )}
           {sel.unsupported_architecture && (
             <Text color="gray">
               n/a — llama.cpp build doesn't support architecture: {sel.unsupported_architecture}
             </Text>
           )}
-          {!sel.ok && !sel.unsupported_architecture && sel.ready === false && (
+          {!sel.ok && !sel.failure && !sel.unsupported_architecture && sel.ready === false && (
             <Text color="yellow">
-              no-load — server never answered /v1/models within wait_sec_ready. likely OOM during model load.
+              no-load — llama-server did not answer /v1/models; inspect the benchmark log for the load failure.
             </Text>
           )}
           <Text>

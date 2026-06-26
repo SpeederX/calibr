@@ -33,6 +33,51 @@ Describe "Get-Median" {
     }
 }
 
+Describe "Update-AdaptiveSpeedSweepState" {
+    It "tracks a new peak and stops after two meaningful descending points" {
+        $state = $null
+        $a = Update-AdaptiveSpeedSweepState -State $state -EvalTps 10 -ConfigId "a"
+        $state = $a.state
+        $b = Update-AdaptiveSpeedSweepState -State $state -EvalTps 15 -ConfigId "b"
+        $state = $b.state
+        $c = Update-AdaptiveSpeedSweepState -State $state -EvalTps 13 -ConfigId "c"
+        $state = $c.state
+        $d = Update-AdaptiveSpeedSweepState -State $state -EvalTps 11 -ConfigId "d"
+
+        Assert-False $a.should_stop
+        Assert-Equal "new_peak" $b.relation
+        Assert-False $c.should_stop
+        Assert-True $d.should_stop
+        Assert-Equal 15 $d.state.best_eval_tps
+        Assert-Equal "b" $d.state.best_config_id
+    }
+
+    It "treats a near tie as noise and resets the descending sequence" {
+        $state = (Update-AdaptiveSpeedSweepState -State $null -EvalTps 100 -ConfigId "peak").state
+        $state = (Update-AdaptiveSpeedSweepState -State $state -EvalTps 95 -ConfigId "down").state
+        $near = Update-AdaptiveSpeedSweepState -State $state -EvalTps 99 -ConfigId "near"
+
+        Assert-Equal "near_peak" $near.relation
+        Assert-Equal 0 $near.state.below_peak_count
+        $after = Update-AdaptiveSpeedSweepState -State $near.state -EvalTps 94 -ConfigId "down2"
+        Assert-False $after.should_stop
+    }
+}
+
+Describe "Test-KvRescueEligibility" {
+    It "enables rescue only for direct capacity failures" {
+        Assert-True (Test-KvRescueEligibility -Result @{
+            ok = $false
+            failure = @{ cause = "load_oom"; phase = "load"; evidence = "OOM"; action = "abandon_heavier" }
+        })
+        Assert-False (Test-KvRescueEligibility -Result @{
+            ok = $false
+            failure = @{ cause = "request_timeout"; phase = "completion"; evidence = "timeout"; action = "skip_larger_targets" }
+        })
+        Assert-False (Test-KvRescueEligibility -Result @{ ok = $true })
+    }
+}
+
 Describe "Resolve-TsBenchRunnerScript" {
     It "finds the local cli/dist runner for standalone repo runs" {
         $oldRoot = $script:CALIBR_ROOT
@@ -198,6 +243,7 @@ Describe "New-AggregatedBenchResult" {
             id = "qwen3.5-9b-q4km__ctx16384_q8"
             label = "Qwen3.5-9B Q4_K_M @ ctx=16384 / kv=q8_0"
             model = "Qwen3.5-9B"; variant = "Q4_K_M"; series = "Qwen3.5"; sweep = "context"; level = "high"
+            workload_kind = "prefill"; prefill_target_tokens = 8192; kv_fill_target_tokens = 0
             model_path = "C:\models\Qwen3.5-9B-Q4_K_M.gguf"
             mmproj_path = $null
             extra_args = "--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0"
@@ -279,6 +325,9 @@ Describe "New-AggregatedBenchResult" {
         Assert-Equal "Qwen3.5-9B" $r.model
         Assert-Equal "context" $r.sweep
         Assert-Equal "high" $r.level
+        Assert-Equal "prefill" $r.workload_kind
+        Assert-Equal 8192 $r.prefill_target_tokens
+        Assert-Equal 0 $r.kv_fill_target_tokens
         Assert-Equal 80 $r.prompt_n          # runs[0]
         Assert-Equal 128 $r.eval_n           # runs[0]
         Assert-Equal "33/33" $r.layers_offloaded
@@ -421,25 +470,25 @@ Describe "Get-FailureReason" {
         $r = Get-FailureReason -result @{ ok = $true }
         Assert-Equal $null $r
     }
-    It "returns 'unsupported_arch' when llama.cpp didn't recognize the model" {
+    It "returns 'unsupported_architecture' when llama.cpp didn't recognize the model" {
         $r = Get-FailureReason -result @{ ok = $false; unsupported_architecture = "qwen-new"; shared_peak_mib = 0; ready = $false }
-        Assert-Equal "unsupported_arch" $r
+        Assert-Equal "unsupported_architecture" $r
     }
-    It "returns 'vram_overflow' when fit_status flagged failed_but_running" {
+    It "returns 'load_oom' when fit_status flagged failed_but_running" {
         $r = Get-FailureReason -result @{ ok = $false; fit_status = "failed_but_running"; shared_peak_mib = 12000; ready = $false; unsupported_architecture = $null }
-        Assert-Equal "vram_overflow" $r
+        Assert-Equal "load_oom" $r
     }
-    It "returns 'vram_overflow' on high shared_peak even without fit flag (defensive)" {
-        $r = Get-FailureReason -result @{ ok = $false; fit_status = "unknown"; shared_peak_mib = 900; ready = $false; unsupported_architecture = $null } -sharedConfirmMib 500
-        Assert-Equal "vram_overflow" $r
+    It "does not infer overflow from shared allocation alone" {
+        $r = Get-FailureReason -result @{ ok = $false; fit_status = "unknown"; shared_peak_mib = 900; ready = $true; unsupported_architecture = $null } -sharedConfirmMib 500
+        Assert-Equal "unknown" $r
     }
-    It "returns 'server_timeout' when ready was false with low shared_peak" {
+    It "returns 'load_process_exit' when ready was false with low shared_peak" {
         $r = Get-FailureReason -result @{ ok = $false; fit_status = "success"; shared_peak_mib = 50; ready = $false; unsupported_architecture = $null } -sharedConfirmMib 500
-        Assert-Equal "server_timeout" $r
+        Assert-Equal "load_process_exit" $r
     }
-    It "returns 'other' as the catch-all when ok is false but no signal fired" {
+    It "returns 'unknown' as the catch-all when ok is false but no signal fired" {
         $r = Get-FailureReason -result @{ ok = $false; fit_status = "success"; shared_peak_mib = 50; ready = $true; unsupported_architecture = $null } -sharedConfirmMib 500
-        Assert-Equal "other" $r
+        Assert-Equal "unknown" $r
     }
 }
 

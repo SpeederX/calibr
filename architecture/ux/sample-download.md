@@ -1,74 +1,22 @@
-# UX flow: sample download
+# UX flow: curated model catalog
 
-The user has no `.gguf` files yet, or wants comparable benchmark numbers
-against the curated reference set.
+The curated catalog gives users known GGUF variants and makes results more
+comparable across machines.
 
-## Goal
+## Guided flow
 
-Get a known set of GGUF models on disk and benchmark them.
+The user selects a hardware level, model, or explicit catalog scope. Guided run
+then interleaves:
 
-## The curated set
+1. download one catalog entry;
+2. discover and plan it;
+3. benchmark its configs;
+4. apply the selected retention policy;
+5. continue with the next entry.
 
-`samples.json` lists 12 reference models spanning 0.5 GB → 22 GB:
+This avoids requiring enough free disk for the whole catalog. The exact model
+list, sizes, upstream repositories, and context limits live in
+`models_catalog.json`; presets live in `default_bench_presets.json`.
 
-- Qwen3.5: 0.8B (Q8 + Q4_K_XL), 2B (Q4_K_XL + BF16), 4B, 9B, 27B
-- Qwen3.6 35B-A3B (MoE)
-- Gemma 4: E2B, E4B, 26B-A4B (MoE), 31B
-
-Each entry has `hf_repo`, `hf_file`, `target_dir`, `size_bytes`, `tier_hint`,
-and an optional `mmproj_file` for multimodal pairs.
-
-## Steps
-
-### Listing what's available
-
-```powershell
-calibr get-sample-models
-```
-
-Prints the 12 entries as a table. `OK` next to ones already on disk.
-No download triggered without a flag.
-
-### Single sample
-
-```powershell
-calibr get-sample-models -SampleId qwen3.5-9b-q4km   # ~5 GB
-```
-
-### Model
-
-```powershell
-calibr get-sample-models -Model "Qwen3.5"            # all Qwen3.5-* models
-```
-
-### The full set
-
-```powershell
-calibr get-sample-models -DownloadAll                # ~100 GB; prompts to confirm
-```
-
-Failures (401 = HF license needed; 404 = renamed file) print actionable
-hints.
-
-### One-shot: download + benchmark
-
-```powershell
-calibr all -DownloadSamples                          # full set + pipeline
-calibr all -DownloadSamples -SampleId qwen3.5-9b-q4km # one model + pipeline
-calibr all -DownloadSamples -Model "Qwen3.5"         # one model + pipeline
-```
-
-If neither `config.json` nor `-ScanPath` provides a scan path, the samples
-land in `<lab>/downloaded-models/` and discover is auto-pointed there.
-
-## What success looks like
-
-- Files at `<scan_paths[0]>/<target_dir>/<hf_file>`. Sizes within ~1 % of
-  `size_bytes` from `samples.json`.
-- A subsequent `calibr discover` includes them in the catalog.
-
-## Why a curated set
-
-So benchmark numbers are comparable across machines. Anyone running the
-same set produces directly-comparable `data/results/*.json` files,
-enabling crowdsourced "what runs well on what GPU" datasets.
+Raw catalog commands remain available for maintainers, but they are not the
+primary download UX.

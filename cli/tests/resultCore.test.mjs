@@ -16,7 +16,7 @@ import {
   runStats,
 } from "../dist/resultCore.js";
 
-function item() {
+function item(overrides = {}) {
   return {
     id: "qwen3.5-9b-q4km__ctx16384_q8",
     label: "Qwen3.5-9B Q4_K_M @ ctx=16384_kv=q8_0",
@@ -25,13 +25,29 @@ function item() {
     series: "qwen",
     level: "high",
     sweep: "context",
+    workload_kind: "kv-fill",
+    prefill_target_tokens: 0,
+    kv_fill_target_tokens: 49152,
     reasoning_mode: "default",
     template_note: null,
     gguf_context_length: 131072,
     gguf_architecture: "qwen3",
+    planning_mode: "adaptive-offload",
+    calibration_id: "cal-123",
+    predicted_fit_layers: 28,
+    verified_fit_layers: 27,
+    first_spill_layers: 28,
+    probe_count: 3,
+    fit_offset: 1,
+    calibration_cache_hit: true,
+    calibration_cache_age_hours: 2.5,
+    predicted_n_cpu_moe: 24,
+    verified_n_cpu_moe: 25,
+    first_spill_n_cpu_moe: 24,
     model_path: "C:\\models\\qwen.gguf",
     mmproj_path: null,
     extra_args: "--ctx-size 16384 --gpu-layers 99 --cache-type-k q8_0",
+    ...overrides,
   };
 }
 
@@ -72,6 +88,10 @@ function run(i, vramPeak, sharedPeak, promptTps, evalTps) {
     compute_cuda_mib: 360,
     compute_host_mib: 80,
     layers_offloaded: "33/33",
+    effective_context_size: 4096,
+    effective_parallel_slots: 4,
+    effective_n_parallel: 4,
+    flash_attention_state: "auto-disabled",
     fit_status: "success",
     ttft_sec: 0.2 + i / 10,
     prompt_ms: 200 + i * 100,
@@ -124,6 +144,23 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   assert.equal(result.first_eval_tps, 46);
   assert.equal(result.repeat_eval_tps, 55);
   assert.equal(result.eval_spread_pct, 32.7);
+  assert.equal(result.workload_kind, "kv-fill");
+  assert.equal(result.prefill_target_tokens, 0);
+  assert.equal(result.kv_fill_target_tokens, 49152);
+  assert.equal(result.planning_mode, "adaptive-offload");
+  assert.equal(result.calibration_id, "cal-123");
+  assert.equal(result.verified_fit_layers, 27);
+  assert.equal(result.fit_offset, 1);
+  assert.equal(result.calibration_cache_hit, true);
+  assert.equal(result.calibration_cache_age_hours, 2.5);
+  assert.equal(result.verified_n_cpu_moe, 25);
+  assert.equal(result.requested_context_size, 16384);
+  assert.equal(result.requested_cache_type_k, "q8_0");
+  assert.equal(result.requested_cache_type_v, null);
+  assert.equal(result.requested_gpu_layers, 99);
+  assert.equal(result.effective_context_size, 4096);
+  assert.equal(result.effective_parallel_slots, 4);
+  assert.equal(result.flash_attention_state, "auto-disabled");
   assert.equal(result.gpu_power_peak_w, 180);
   assert.equal(result.gpu_temp_peak_c, 72);
   assert.equal(result.ram_used_peak_mib, 900);
@@ -132,15 +169,59 @@ test("aggregateBenchResult preserves first run and computes median/peaks", () =>
   assert.equal(result.llama_server_version, "b9999");
 });
 
+test("aggregateBenchResult preserves vanilla control provenance", () => {
+  const result = aggregateBenchResult({
+    item: item({ control_kind: "vanilla", workload_kind: "baseline", extra_args: "" }),
+    cfg: cfg(),
+    runs: [run(0, 7000, 30, 410, 46)],
+  });
+  assert.equal(result.control_kind, "vanilla");
+  assert.equal(result.extra_args, "");
+});
+
+test("aggregateBenchResult sums measured duration and energy across repetitions", () => {
+  const first = {
+    ...run(0, 7000, 30, 410, 46),
+    run_started_at: "2026-06-21T10:00:00.000Z",
+    run_ended_at: "2026-06-21T10:00:02.000Z",
+    run_duration_ms: 2_000,
+    gpu_energy_wh: 0.05,
+    gpu_energy_j: 180,
+  };
+  const second = {
+    ...run(1, 7100, 40, 420, 55),
+    run_started_at: "2026-06-21T10:00:03.000Z",
+    run_ended_at: "2026-06-21T10:00:07.000Z",
+    run_duration_ms: 4_000,
+    gpu_energy_wh: 0.1,
+    gpu_energy_j: 360,
+  };
+  const result = aggregateBenchResult({
+    item: item(),
+    cfg: cfg(),
+    runs: [first, second],
+  });
+  assert.equal(result.run_started_at, "2026-06-21T10:00:00.000Z");
+  assert.equal(result.run_ended_at, "2026-06-21T10:00:07.000Z");
+  assert.equal(result.run_duration_ms, 6_000);
+  assert.equal(result.run_duration_median_ms, 2_000);
+  assert.equal(result.gpu_energy_wh, 0.15);
+  assert.equal(result.gpu_energy_j, 540);
+});
+
 test("fit and failure classification match the transitional engine rules", () => {
   assert.equal(inferFitStatus("unknown", true, 40, 500), "success");
   assert.equal(inferFitStatus("unknown", true, 800, 500), "failed_but_running");
   assert.equal(getFailureReason({ ok: true }), null);
-  assert.equal(getFailureReason({ ok: false, unsupported_architecture: "qwen-new" }), "unsupported_arch");
-  assert.equal(getFailureReason({ ok: false, fit_status: "failed_but_running" }), "vram_overflow");
-  assert.equal(getFailureReason({ ok: false, shared_peak_mib: 900 }), "vram_overflow");
-  assert.equal(getFailureReason({ ok: false, ready: false, shared_peak_mib: 0 }), "server_timeout");
-  assert.equal(getFailureReason({ ok: false, ready: true, shared_peak_mib: 0 }), "other");
+  assert.equal(getFailureReason({ ok: false, unsupported_architecture: "qwen-new" }), "unsupported_architecture");
+  assert.equal(getFailureReason({
+    ok: false,
+    error: "llama.cpp compatibility check failed: unsupported option --fit",
+  }), "unsupported_argument");
+  assert.equal(getFailureReason({ ok: false, fit_status: "failed_but_running" }), "load_oom");
+  assert.equal(getFailureReason({ ok: false, shared_peak_mib: 900 }), "unknown");
+  assert.equal(getFailureReason({ ok: false, ready: false, shared_peak_mib: 0 }), "load_process_exit");
+  assert.equal(getFailureReason({ ok: false, ready: true, shared_peak_mib: 0 }), "unknown");
 });
 
 test("parseLlamaServerStderr extracts buffers, offload, architecture, and fit", () => {
@@ -151,6 +232,10 @@ test("parseLlamaServerStderr extracts buffers, offload, architecture, and fit", 
     "CUDA0 compute buffer size = 360.75 MiB",
     "CUDA_Host compute buffer size = 80.00 MiB",
     "offloaded 33/33 layers to GPU",
+    "srv  llama_server: n_parallel is set to auto, using n_parallel = 4 and kv_unified = true",
+    "srv    load_model: initializing slots, n_slots = 4",
+    "slot   load_model: id  0 | task -1 | new slot, n_ctx = 4096",
+    "sched_reserve: Flash Attention was auto, set to disabled",
     "successfully fit params",
   ].join("\n"));
   assert.deepEqual(parsed, {
@@ -160,6 +245,10 @@ test("parseLlamaServerStderr extracts buffers, offload, architecture, and fit", 
     compute_cuda_mib: 360.75,
     compute_host_mib: 80,
     layers_offloaded: "33/33",
+    effective_context_size: 4096,
+    effective_parallel_slots: 4,
+    effective_n_parallel: 4,
+    flash_attention_state: "auto-disabled",
     fit_status: "success",
   });
 
@@ -179,6 +268,22 @@ test("finalizeBenchRun derives WDDM flags and infers fit when stderr is silent",
   assert.equal(finalized.wddm_vram_saturation, 0.928);
   assert.equal(finalized.wddm_flag_high_vram, true);
   assert.equal(finalized.wddm_flag_shared_pos, true);
+});
+
+test("MoE aggregate keeps inferred shared allocation diagnostic instead of declaring fit failure", () => {
+  const moeRun = {
+    ...run(0, 7000, 10_000, 100, 12),
+    fit_status: "failed_but_running",
+    fit_status_source: "inferred",
+  };
+  const result = aggregateBenchResult({
+    item: item({ sweep: "moe-cpu" }),
+    cfg: cfg(),
+    runs: [moeRun],
+  });
+  assert.equal(result.fit_status, "success");
+  assert.equal(result.wddm_flag_shared_pos, true);
+  assert.equal(result.shared_memory_interpretation, "cpu_expert_mapping_or_wddm_pressure");
 });
 
 test("derived fields and run stats can be reconstructed from existing result JSON", () => {
@@ -214,7 +319,7 @@ test("buildReportRows assigns cold load and disk once per model", () => {
   assert.equal(rows[0].model_cold_load_ms, 1500);
   assert.equal(rows[0].model_cold_disk_read_peak_mb_s, 400);
   assert.equal(rows[1].model_cold_load_ms, 1500);
-  assert.equal(rows[1].metric_schema_version, 4);
+  assert.equal(rows[1].metric_schema_version, 5);
 });
 
 test("resultCoreCli reads a JSON-file aggregate payload", () => {

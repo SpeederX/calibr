@@ -1,3 +1,5 @@
+import type { GgufBlockTensorBytes } from "./offloadEstimator.js";
+
 export interface PlanMeta {
   path: string;
   model: string;
@@ -11,6 +13,13 @@ export interface PlanMeta {
   template_note?: string | null;
   gguf_context_length?: number | null;
   gguf_architecture?: string | null;
+  gguf_block_count?: number | null;
+  gguf_tensor_count?: number | null;
+  gguf_tensor_data_offset?: number | null;
+  gguf_tensor_bytes?: number | null;
+  gguf_global_tensor_bytes?: number | null;
+  gguf_expert_tensor_bytes?: number | null;
+  gguf_block_tensor_bytes?: GgufBlockTensorBytes[] | null;
 }
 
 export interface PlanConfig {
@@ -23,8 +32,28 @@ export interface PlanConfig {
     overhead_mib?: number | null;
     moecpu_sweep?: number[] | null;
     offload_sweep?: number[] | null;
+    kv_rescue?: {
+      enabled?: boolean | null;
+      min_context_tokens?: number | null;
+      kv_k?: string | null;
+      kv_v?: string | null;
+    } | null;
+    workload_sweeps?: {
+      prefill_micro_tokens?: number[] | null;
+      prefill_ratios?: number[] | null;
+      prefill_tokens?: number[] | null;
+      kv_fill_ratios?: number[] | null;
+      context_reserve_tokens?: number | null;
+    } | null;
   };
-  context_candidates?: Array<{ ctx: number; kv: string }> | null;
+  bench?: { n_predict?: number | null };
+  context_candidates?: Array<{
+    ctx: number;
+    kv?: string;
+    kv_k?: string;
+    kv_v?: string;
+    rescue?: boolean;
+  }> | null;
   max_context_cap?: number | null;
   base_args?: string | null;
 }
@@ -48,6 +77,7 @@ export interface PlanOptions {
   contextSizes?: number[] | null;
   presetMaxCtx?: number | null;
   presetCtxSizes?: number[] | null;
+  workloadSweep?: "baseline" | "prefill" | "kv-fill" | "all";
 }
 
 export interface PlanItem {
@@ -63,6 +93,12 @@ export interface PlanItem {
   template_note: string | null | undefined;
   gguf_context_length: number | null | undefined;
   gguf_architecture: string | null | undefined;
+  workload_kind: "baseline" | "prefill" | "kv-fill";
+  control_kind?: "vanilla" | "vanilla-adjacent" | null;
+  conditional_kind?: "kv_rescue" | null;
+  conditional_source_id?: string | null;
+  prefill_target_tokens: number;
+  kv_fill_target_tokens: number;
   label: string;
   extra_args: string;
 }
@@ -73,6 +109,17 @@ function asInt(value: unknown, fallback = 0): number {
 
 function baseName(path: string): string {
   return path.split(/[\\/]/).pop() || "";
+}
+
+export function contextCandidateKv(candidate: {
+  kv?: string;
+  kv_k?: string;
+  kv_v?: string;
+}): { k: string; v: string; label: string } {
+  const fallback = candidate.kv ?? "q8_0";
+  const k = candidate.kv_k ?? fallback;
+  const v = candidate.kv_v ?? fallback;
+  return { k, v, label: k === v ? `kv=${k}` : `kvk=${k}_kvv=${v}` };
 }
 
 export function getSweepKind(meta: Pick<PlanMeta, "is_moe" | "size_mib" | "mmproj_mib">, cfg: PlanConfig): PlanItem["sweep"] {
@@ -116,9 +163,80 @@ export function testCtxAllowedForModel(ctx: number, globalCap: number, perModelC
   return true;
 }
 
-export function newPlanItem(meta: PlanMeta, sweep: PlanItem["sweep"], level: string | null, extraArgs: string, label: string): PlanItem {
+export interface PlanWorkload {
+  kind?: PlanItem["workload_kind"];
+  prefillTokens?: number;
+  kvFillTokens?: number;
+}
+
+export function planWorkloadIdentity(workload: PlanWorkload = {}): string {
+  const kind = workload.kind ?? "baseline";
+  if (kind === "prefill") return `prefill=${asInt(workload.prefillTokens)}`;
+  if (kind === "kv-fill") return `kvfill=${asInt(workload.kvFillTokens)}`;
+  return "";
+}
+
+export function workloadProfilesForContext(
+  contextSize: number,
+  cfg: PlanConfig,
+  mode: NonNullable<PlanOptions["workloadSweep"]> = "baseline",
+): PlanWorkload[] {
+  if (mode === "baseline") return [];
+  const settings = cfg.planning?.workload_sweeps;
+  const reserve = asInt(settings?.context_reserve_tokens, 512);
+  const nPredict = asInt(cfg.bench?.n_predict, 128);
+  const maxTarget = Math.max(0, contextSize - reserve - nPredict);
+  const out: PlanWorkload[] = [];
+  const seen = new Set<string>();
+  const add = (workload: PlanWorkload): void => {
+    const target = workload.kind === "prefill" ? workload.prefillTokens : workload.kvFillTokens;
+    const key = `${workload.kind}:${asInt(target)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(workload);
+  };
+
+  if (mode === "prefill" || mode === "all") {
+    const microTargets = settings?.prefill_micro_tokens
+      ?? (settings?.prefill_ratios ? [2048] : settings?.prefill_tokens ?? [2048]);
+    for (const value of microTargets) {
+      const tokens = asInt(value);
+      if (tokens > 0 && tokens <= maxTarget) add({ kind: "prefill", prefillTokens: tokens });
+    }
+    for (const value of settings?.prefill_ratios ?? []) {
+      const ratio = typeof value === "number" && Number.isFinite(value) ? value : 0;
+      const tokens = Math.floor(contextSize * ratio);
+      if (ratio > 0 && ratio < 1 && tokens > 0 && tokens <= maxTarget) {
+        add({ kind: "prefill", prefillTokens: tokens });
+      }
+    }
+  }
+  if (mode === "kv-fill" || mode === "all") {
+    for (const value of settings?.kv_fill_ratios ?? [0.25, 0.5, 0.75, 0.9]) {
+      const ratio = typeof value === "number" && Number.isFinite(value) ? value : 0;
+      const tokens = Math.floor(contextSize * ratio);
+      if (ratio > 0 && ratio < 1 && tokens > 0 && tokens <= maxTarget) {
+        add({ kind: "kv-fill", kvFillTokens: tokens });
+      }
+    }
+  }
+  return out;
+}
+
+export function newPlanItem(
+  meta: PlanMeta,
+  sweep: PlanItem["sweep"],
+  level: string | null,
+  extraArgs: string,
+  label: string,
+  workload: PlanWorkload = {},
+  controlKind: PlanItem["control_kind"] = null,
+): PlanItem {
   const sanitizedModel = `${meta.model}_${meta.variant}`.replace(/[^\w]/g, "_").slice(0, 40);
-  const sanitizedLabel = label.replace(/[^\w]/g, "_").slice(0, 30);
+  const workloadKind = workload.kind ?? "baseline";
+  const workloadIdentity = planWorkloadIdentity(workload);
+  const identityLabel = workloadIdentity ? `${label}_${workloadIdentity}` : label;
+  const sanitizedLabel = identityLabel.replace(/[^\w]/g, "_").slice(0, 80);
   return {
     id: `${sanitizedModel}__${sanitizedLabel}`,
     model_path: meta.path,
@@ -132,9 +250,35 @@ export function newPlanItem(meta: PlanMeta, sweep: PlanItem["sweep"], level: str
     template_note: meta.template_note,
     gguf_context_length: meta.gguf_context_length,
     gguf_architecture: meta.gguf_architecture,
-    label: `${meta.model} ${meta.variant} @ ${label}`,
+    workload_kind: workloadKind,
+    control_kind: controlKind,
+    prefill_target_tokens: asInt(workload.prefillTokens),
+    kv_fill_target_tokens: asInt(workload.kvFillTokens),
+    label: `${meta.model} ${meta.variant} @ ${identityLabel}`,
     extra_args: extraArgs,
   };
+}
+
+function vanillaAdjacentSpeedProbes(
+  meta: PlanMeta,
+  sweep: PlanItem["sweep"],
+  level: string | null,
+  ctx: number,
+  cacheType = "q8_0",
+): PlanItem[] {
+  return [
+    newPlanItem(meta, sweep, level, `--ctx-size ${ctx}`, `llama_cpp_ctx=${ctx}_default`, {}, "vanilla-adjacent"),
+    newPlanItem(meta, sweep, level, `--ctx-size ${ctx} --parallel 1`, `llama_cpp_ctx=${ctx}_parallel1`, {}, "vanilla-adjacent"),
+    newPlanItem(
+      meta,
+      sweep,
+      level,
+      `--ctx-size ${ctx} --parallel 1 --cache-type-k ${cacheType} --cache-type-v ${cacheType}`,
+      `llama_cpp_ctx=${ctx}_parallel1_kv=${cacheType}`,
+      {},
+      "vanilla-adjacent",
+    ),
+  ];
 }
 
 export function invokePlan(
@@ -160,9 +304,12 @@ export function invokePlan(
   let ctxCandidates = cfg.context_candidates ?? [];
   const ctxOverride = opts.contextSizes?.length ? opts.contextSizes : (opts.presetCtxSizes?.length ? opts.presetCtxSizes : null);
   if (ctxOverride) {
-    const kvByCtx: Record<number, string> = {};
-    for (const candidate of cfg.context_candidates ?? []) kvByCtx[candidate.ctx] = candidate.kv;
-    ctxCandidates = ctxOverride.map((ctx) => ({ ctx, kv: kvByCtx[ctx] ?? "q8_0" }));
+    const kvByCtx: Record<number, { kv_k: string; kv_v: string }> = {};
+    for (const candidate of cfg.context_candidates ?? []) {
+      const kv = contextCandidateKv(candidate);
+      kvByCtx[candidate.ctx] = { kv_k: kv.k, kv_v: kv.v };
+    }
+    ctxCandidates = ctxOverride.map((ctx) => ({ ctx, ...(kvByCtx[ctx] ?? { kv: "q8_0" }) }));
   }
 
   const plan: PlanItem[] = [];
@@ -175,22 +322,55 @@ export function invokePlan(
     if (opts.level && level !== opts.level) continue;
 
     const perModelCap = name && contextMap[name] ? contextMap[name] : asInt(meta.gguf_context_length);
+    plan.push(newPlanItem(meta, sweep, level, "", "vanilla_llama_cpp", {}, "vanilla"));
     if (sweep === "context") {
       let modelCandidates = ctxCandidates;
       if (!ctxOverride && perModelCap > 0 && (globalCtxCap === 0 || perModelCap <= globalCtxCap)
         && !ctxCandidates.some((candidate) => candidate.ctx === perModelCap)) {
         const next = ctxCandidates.find((candidate) => candidate.ctx > perModelCap);
         const fallback = ctxCandidates.at(-1);
+        const inherited = contextCandidateKv(next ?? fallback ?? { kv: "q8_0" });
         modelCandidates = [...ctxCandidates, {
           ctx: perModelCap,
-          kv: next?.kv ?? fallback?.kv ?? "q8_0",
+          kv_k: inherited.k,
+          kv_v: inherited.v,
         }].sort((a, b) => a.ctx - b.ctx);
       }
-      for (const candidate of modelCandidates) {
-        if (!testCtxAllowedForModel(candidate.ctx, globalCtxCap, perModelCap)) continue;
-        const label = `ctx=${candidate.ctx}_kv=${candidate.kv}`;
-        const args = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${candidate.kv} --cache-type-v ${candidate.kv}${suffix}`;
-        plan.push(newPlanItem(meta, sweep, level, args, label));
+      const validCandidates = modelCandidates.filter((candidate) =>
+        testCtxAllowedForModel(candidate.ctx, globalCtxCap, perModelCap));
+      for (const candidate of validCandidates) {
+        const kv = contextCandidateKv(candidate);
+        const label = `ctx=${candidate.ctx}_${kv.label}`;
+        const args = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${kv.k} --cache-type-v ${kv.v}${suffix}`;
+        const primary = newPlanItem(meta, sweep, level, args, label);
+        plan.push(primary);
+        const rescue = cfg.planning?.kv_rescue;
+        const rescueK = rescue?.kv_k ?? "q4_0";
+        const rescueV = rescue?.kv_v ?? "q4_0";
+        const rescueMinCtx = asInt(rescue?.min_context_tokens, 65536);
+        if (rescue?.enabled !== false && candidate.ctx >= rescueMinCtx
+          && (kv.k !== rescueK || kv.v !== rescueV)) {
+          const rescueKv = contextCandidateKv({ kv_k: rescueK, kv_v: rescueV });
+          const rescueLabel = `ctx=${candidate.ctx}_${rescueKv.label}_rescue`;
+          const rescueArgs = `--ctx-size ${candidate.ctx} --gpu-layers 99 --cache-type-k ${rescueK} --cache-type-v ${rescueV}${suffix}`;
+          const rescueItem = newPlanItem(meta, sweep, level, rescueArgs, rescueLabel);
+          rescueItem.conditional_kind = "kv_rescue";
+          rescueItem.conditional_source_id = primary.id;
+          plan.push(rescueItem);
+        }
+      }
+      const anchor = validCandidates.at(-1);
+      if (anchor) {
+        const kv = contextCandidateKv(anchor);
+        for (const probe of vanillaAdjacentSpeedProbes(meta, sweep, level, anchor.ctx, kv.k)) {
+          plan.push(probe);
+        }
+        const args = `--ctx-size ${anchor.ctx} --gpu-layers 99 --cache-type-k ${kv.k} --cache-type-v ${kv.v}${suffix}`;
+        for (const workload of workloadProfilesForContext(anchor.ctx, cfg, opts.workloadSweep ?? "baseline")) {
+          const target = workload.kind === "prefill" ? workload.prefillTokens : workload.kvFillTokens;
+          const label = `ctx=${anchor.ctx}_${kv.label}`;
+          plan.push(newPlanItem(meta, sweep, level, args, label, workload));
+        }
       }
     } else if (sweep === "moe-cpu") {
       for (const n of cfg.planning?.moecpu_sweep ?? [28, 30, 32, 34, 36]) {

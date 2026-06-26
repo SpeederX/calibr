@@ -5,20 +5,63 @@
 # SUBCOMMAND: plan
 # ============================================================================
 function Get-SweepKind {
-    # Which dimension the plan sweeps for a model, from its own properties:
-    #   moe-cpu : mixture-of-experts -> sweep --n-cpu-moe (how many expert
-    #             layers stay on CPU)
-    #   context : fits the VRAM budget -> sweep context size + KV-cache quant
-    #   offload : too big for one GPU -> sweep --gpu-layers (how much offloads)
-    # (Formerly the A/B/C "tier"; renamed to say what it MEANS, not a letter.)
     param($meta, $cfg)
-    if ($meta.is_moe) { return "moe-cpu" }
-    $budget = [int]$cfg.hardware.vram_safety_budget_mib
-    $overhead = [int]$cfg.planning.overhead_mib
-    $mmprojMib = if ($meta.mmproj) { [int]((Get-Item $meta.mmproj).Length / 1MB) } else { 0 }
-    $needed = $meta.size_mib + $mmprojMib + $overhead
-    if ($needed -lt $budget) { return "context" }
-    return "offload"
+    return Get-FallbackSweepKind -Meta $meta -Config $cfg
+}
+
+function Resolve-TsLlamaCompatibilityScript {
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\llamaCompatibilityCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\llamaCompatibilityCli.js")
+    )
+    return @($candidates | Where-Object { Test-Path $_ } | Select-Object -First 1)[0]
+}
+
+function Get-LlamaArgumentCapabilities {
+    param($Config)
+    if (-not $Config.llama_server_exe -or -not (Test-Path $Config.llama_server_exe)) { return $null }
+    $scriptPath = Resolve-TsLlamaCompatibilityScript
+    if (-not $scriptPath) { return $null }
+    try {
+        $json = & node $scriptPath $Config.llama_server_exe
+        if (-not $json) { return $null }
+        return ($json | ConvertFrom-Json)
+    } catch {
+        Write-Host ("  llama.cpp compatibility inspection failed: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+        return $null
+    }
+}
+
+function Test-LlamaArgumentOption {
+    param($Capabilities, [string[]]$Names)
+    if (-not $Capabilities -or -not $Capabilities.options) { return $true }
+    foreach ($name in $Names) {
+        if (@($Capabilities.options) -contains $name) { return $true }
+    }
+    return $false
+}
+
+function Resolve-CompatibleKvType {
+    param([string]$Requested, $Allowed)
+    $values = @($Allowed | ForEach-Object { [string]$_ })
+    if ($values.Count -eq 0 -or $values -contains $Requested) { return $Requested }
+    foreach ($fallback in @('q8_0', 'f16')) {
+        if ($values -contains $fallback) { return $fallback }
+    }
+    return $values[0]
+}
+
+function Get-CompatibleContextCandidateKv {
+    param($Candidate, $Capabilities)
+    $kv = Get-ContextCandidateKv -Candidate $Candidate
+    if (-not $Capabilities) { return $kv }
+    $k = Resolve-CompatibleKvType -Requested $kv.k -Allowed $Capabilities.cacheTypesK
+    $v = Resolve-CompatibleKvType -Requested $kv.v -Allowed $Capabilities.cacheTypesV
+    return @{
+        k = $k
+        v = $v
+        label = $(if ($k -eq $v) { "kv=$k" } else { "kvk=${k}_kvv=$v" })
+    }
 }
 
 function Get-CatalogLevelMap {
@@ -45,8 +88,138 @@ function Get-CatalogLevelMap {
     return $map
 }
 
+function New-PlanningPolicy {
+    param(
+        [int]$MaxContext = 0,
+        [int[]]$ContextSizes = @(),
+        [ValidateSet("baseline", "prefill", "kv-fill", "all")]
+        [string]$WorkloadSweep = "baseline"
+    )
+
+    return @{
+        max_context  = $MaxContext
+        context_sizes = @($ContextSizes)
+        workload_sweep = $WorkloadSweep
+    }
+}
+
+function ConvertTo-ContextSizeList {
+    param([string]$Value)
+    if (-not $Value) { return @() }
+    return @(($Value -split ',') |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -match '^\d+$' } |
+        ForEach-Object { [int]$_ })
+}
+
+function Get-ContextCandidateKv {
+    param($Candidate)
+    $fallback = if ($Candidate.kv) { [string]$Candidate.kv } else { "q8_0" }
+    $k = if ($Candidate.kv_k) { [string]$Candidate.kv_k } else { $fallback }
+    $v = if ($Candidate.kv_v) { [string]$Candidate.kv_v } else { $fallback }
+    return @{
+        k = $k
+        v = $v
+        label = $(if ($k -eq $v) { "kv=$k" } else { "kvk=${k}_kvv=$v" })
+    }
+}
+
+function Get-PlanWorkloadIdentity {
+    param(
+        [ValidateSet("baseline", "prefill", "kv-fill")]
+        [string]$Kind = "baseline",
+        [int]$PrefillTokens = 0,
+        [int]$KvFillTokens = 0
+    )
+
+    if ($Kind -eq "prefill") { return "prefill=$PrefillTokens" }
+    if ($Kind -eq "kv-fill") { return "kvfill=$KvFillTokens" }
+    return ""
+}
+
+function Get-WorkloadProfilesForContext {
+    param(
+        [int]$ContextSize,
+        $Config,
+        [ValidateSet("baseline", "prefill", "kv-fill", "all")]
+        [string]$Mode = "baseline"
+    )
+
+    if ($Mode -eq "baseline") { return @() }
+    $settings = $Config.planning.workload_sweeps
+    $reserve = if ($settings -and $null -ne $settings.context_reserve_tokens) {
+        [int]$settings.context_reserve_tokens
+    } else { 512 }
+    $nPredict = if ($Config.bench -and $null -ne $Config.bench.n_predict) {
+        [int]$Config.bench.n_predict
+    } else { 128 }
+    $maxTarget = [math]::Max(0, $ContextSize - $reserve - $nPredict)
+    $profiles = [System.Collections.ArrayList]::new()
+    $seen = @{}
+    function Add-WorkloadProfile {
+        param([hashtable]$Profile)
+        $target = if ($Profile.kind -eq "prefill") { [int]$Profile.prefill_tokens } else { [int]$Profile.kv_fill_tokens }
+        $key = "$($Profile.kind):$target"
+        if ($seen.ContainsKey($key)) { return }
+        [void]$profiles.Add($Profile)
+        $seen[$key] = $true
+    }
+
+    if ($Mode -eq "prefill" -or $Mode -eq "all") {
+        $microTargets = if ($settings.prefill_micro_tokens) {
+            @($settings.prefill_micro_tokens)
+        } elseif ($settings.prefill_ratios) {
+            @(2048)
+        } elseif ($settings.prefill_tokens) {
+            @($settings.prefill_tokens)
+        } else { @(2048) }
+        foreach ($target in @($microTargets)) {
+            $tokens = [int]$target
+            if ($tokens -gt 0 -and $tokens -le $maxTarget) {
+                Add-WorkloadProfile @{ kind = "prefill"; prefill_tokens = $tokens; kv_fill_tokens = 0 }
+            }
+        }
+        foreach ($ratioValue in @($settings.prefill_ratios)) {
+            $ratio = [double]$ratioValue
+            $tokens = [int][math]::Floor($ContextSize * $ratio)
+            if ($ratio -gt 0 -and $ratio -lt 1 -and $tokens -gt 0 -and $tokens -le $maxTarget) {
+                Add-WorkloadProfile @{ kind = "prefill"; prefill_tokens = $tokens; kv_fill_tokens = 0 }
+            }
+        }
+    }
+    if ($Mode -eq "kv-fill" -or $Mode -eq "all") {
+        foreach ($ratioValue in @($settings.kv_fill_ratios)) {
+            $ratio = [double]$ratioValue
+            $tokens = [int][math]::Floor($ContextSize * $ratio)
+            if ($ratio -gt 0 -and $ratio -lt 1 -and $tokens -gt 0 -and $tokens -le $maxTarget) {
+                Add-WorkloadProfile @{ kind = "kv-fill"; prefill_tokens = 0; kv_fill_tokens = $tokens }
+            }
+        }
+    }
+    return @($profiles)
+}
+
 function New-PlanItem {
-    param($meta, $sweep, $level, $extraArgs, $label, $idx)
+    param(
+        $meta,
+        $sweep,
+        $level,
+        $extraArgs,
+        $label,
+        $idx,
+        [ValidateSet("baseline", "prefill", "kv-fill")]
+        [string]$WorkloadKind = "baseline",
+        [int]$PrefillTokens = 0,
+        [int]$KvFillTokens = 0,
+        [ValidateSet("", "vanilla", "vanilla-adjacent")]
+        [string]$ControlKind = "",
+        $Calibration = $null,
+        [string]$CalibrationId = "",
+        $FitOffset = $null,
+        [ValidateSet("", "kv_rescue")]
+        [string]$ConditionalKind = "",
+        [string]$ConditionalSourceId = ""
+    )
     # IDs used to be 'T{idx:D3}_{model_variant}_{label}'. The idx prefix made
     # them NON-deterministic across plan regenerations: re-running discover
     # with a different catalog (or the per-sample loop in 'all -FetchCatalog'
@@ -62,11 +235,13 @@ function New-PlanItem {
     # (model, variant, label), which is unique within any single plan. The
     # `$idx` param is kept for backwards compat with callers but unused.
     $sanitizedModel = ($meta.model + "_" + $meta.variant) -replace '[^\w]', '_'
-    $sanitizedLabel = $label -replace '[^\w]', '_'
+    $workloadIdentity = Get-PlanWorkloadIdentity -Kind $WorkloadKind -PrefillTokens $PrefillTokens -KvFillTokens $KvFillTokens
+    $identityLabel = if ($workloadIdentity) { "${label}_${workloadIdentity}" } else { $label }
+    $sanitizedLabel = $identityLabel -replace '[^\w]', '_'
     if ($sanitizedModel.Length -gt 40) { $sanitizedModel = $sanitizedModel.Substring(0, 40) }
-    if ($sanitizedLabel.Length -gt 30) { $sanitizedLabel = $sanitizedLabel.Substring(0, 30) }
+    if ($sanitizedLabel.Length -gt 80) { $sanitizedLabel = $sanitizedLabel.Substring(0, 80) }
     $id = "{0}__{1}" -f $sanitizedModel, $sanitizedLabel
-    return @{
+    $item = @{
         id          = $id
         model_path  = $meta.path
         mmproj_path = $meta.mmproj
@@ -79,9 +254,33 @@ function New-PlanItem {
         template_note = $meta.template_note
         gguf_context_length = $meta.gguf_context_length
         gguf_architecture = $meta.gguf_architecture
-        label       = "$($meta.model) $($meta.variant) @ $label"
+        workload_kind = $WorkloadKind
+        control_kind = $(if ($ControlKind) { $ControlKind } else { $null })
+        conditional_kind = $(if ($ConditionalKind) { $ConditionalKind } else { $null })
+        conditional_source_id = $(if ($ConditionalSourceId) { $ConditionalSourceId } else { $null })
+        prefill_target_tokens = $PrefillTokens
+        kv_fill_target_tokens = $KvFillTokens
+        label       = "$($meta.model) $($meta.variant) @ $identityLabel"
         extra_args  = $extraArgs
     }
+    if ($Calibration -and $Calibration.calibrated) {
+        $item.planning_mode = if ($Calibration.planning_mode) { $Calibration.planning_mode } else { "adaptive-offload" }
+        $item.calibration_id = $CalibrationId
+        if ($item.planning_mode -eq "adaptive-moe") {
+            $item.predicted_n_cpu_moe = $Calibration.predicted_n_cpu_moe
+            $item.verified_n_cpu_moe = $Calibration.verified_n_cpu_moe
+            $item.first_spill_n_cpu_moe = $Calibration.first_spill_n_cpu_moe
+        } else {
+            $item.predicted_fit_layers = $Calibration.predicted_fit_layers
+            $item.verified_fit_layers = $Calibration.verified_fit_layers
+            $item.first_spill_layers = $Calibration.first_spill_layers
+        }
+        $item.probe_count = $Calibration.probe_count
+        $item.fit_offset = $FitOffset
+        $item.calibration_cache_hit = [bool]$Calibration.cache_hit
+        $item.calibration_cache_age_hours = $Calibration.cache_age_hours
+    }
+    return $item
 }
 
 function Get-CatalogMaxContextMap {
@@ -117,8 +316,24 @@ function Test-CtxAllowedForModel {
 }
 
 function Invoke-Plan {
+    param([hashtable]$PlanningPolicy = $null)
+
     $cfg = Get-Config
-    Write-Host "=== plan ===" -ForegroundColor Cyan
+    Write-Host "=== planning & load calibration ===" -ForegroundColor Cyan
+    $llamaCapabilities = Get-LlamaArgumentCapabilities -Config $cfg
+    if ($llamaCapabilities) {
+        Write-Host ("  llama.cpp compatibility: {0} options, K cache [{1}], V cache [{2}]" -f `
+            @($llamaCapabilities.options).Count, `
+            (@($llamaCapabilities.cacheTypesK) -join ','), `
+            (@($llamaCapabilities.cacheTypesV) -join ',')) -ForegroundColor DarkGray
+    }
+    $supportsMoe = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--n-cpu-moe', '-ncmoe')
+    $supportsCacheK = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--cache-type-k', '-ctk')
+    $supportsCacheV = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--cache-type-v', '-ctv')
+    $supportsFit = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--fit', '-fit')
+    $supportsCacheRam = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--cache-ram', '-cram')
+    $supportsNoWarmup = Test-LlamaArgumentOption -Capabilities $llamaCapabilities -Names @('--no-warmup')
+    $supportsAdaptiveProbe = $supportsFit -and $supportsCacheK -and $supportsCacheV -and $supportsCacheRam -and $supportsNoWarmup
     if (-not (Test-Path $CALIBR_CATALOG)) { throw "catalog.json missing. Run: calibr discover" }
     $catRaw = Get-Content $CALIBR_CATALOG -Raw | ConvertFrom-Json
     $catalog = ConvertTo-Hashtable -obj $catRaw
@@ -130,12 +345,13 @@ function Invoke-Plan {
     $base = $cfg.base_args + $threadsArg
 
     $globalCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
-    # If 'all -Preset' set a preset-level ctx ceiling, apply the MORE
-    # restrictive of (preset, config) as the effective global cap. This
-    # is how presets like 'low' (max_ctx 32k) actually narrow the context
-    # sweep without needing a per-call -MaxCtx flag.
-    if ($script:_presetMaxCtx -and [int]$script:_presetMaxCtx -gt 0) {
-        $presetCap = [int]$script:_presetMaxCtx
+    if ($null -eq $PlanningPolicy) {
+        $PlanningPolicy = New-PlanningPolicy `
+            -ContextSizes (ConvertTo-ContextSizeList -Value $ContextSizes) `
+            -WorkloadSweep $WorkloadSweep
+    }
+    if ($PlanningPolicy.max_context -and [int]$PlanningPolicy.max_context -gt 0) {
+        $presetCap = [int]$PlanningPolicy.max_context
         if ($globalCtxCap -eq 0 -or $presetCap -lt $globalCtxCap) {
             $globalCtxCap = $presetCap
         }
@@ -143,31 +359,93 @@ function Invoke-Plan {
     $perModelCaps = Get-CatalogMaxContextMap
     $levelMap = Get-CatalogLevelMap
 
-    # Effective context candidates for the context sweep. -ContextSizes (CSV) or
-    # a preset's context_sizes override the config defaults; KV per size is taken
-    # from the matching config candidate, else q8_0. This is what CustomBenchView
-    # v2's ctx-checkbox set drives.
+    # Effective context candidates for the context sweep. The caller passes
+    # session policy explicitly; direct raw plan calls derive it from
+    # -ContextSizes. KV per size comes from the matching default, else q8_0.
     $ctxCandidates = $cfg.context_candidates
-    $ctxOverride = $null
-    if ($ContextSizes) {
-        $ctxOverride = @($ContextSizes -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^\d+$' } | ForEach-Object { [int]$_ })
-    } elseif ($script:_presetCtxSizes) {
-        $ctxOverride = @($script:_presetCtxSizes | ForEach-Object { [int]$_ })
-    }
+    $ctxOverride = @($PlanningPolicy.context_sizes | ForEach-Object { [int]$_ })
     if ($ctxOverride -and $ctxOverride.Count -gt 0) {
         $kvByCtx = @{}
-        foreach ($c in $cfg.context_candidates) { $kvByCtx[[int]$c.ctx] = $c.kv }
-        $ctxCandidates = @($ctxOverride | ForEach-Object { @{ ctx = $_; kv = $(if ($kvByCtx.ContainsKey($_)) { $kvByCtx[$_] } else { 'q8_0' }) } })
+        foreach ($c in $cfg.context_candidates) {
+            $kvByCtx[[int]$c.ctx] = Get-CompatibleContextCandidateKv -Candidate $c -Capabilities $llamaCapabilities
+        }
+        $ctxCandidates = @($ctxOverride | ForEach-Object {
+            $kv = if ($kvByCtx.ContainsKey($_)) { $kvByCtx[$_] } else { @{ k = 'q8_0'; v = 'q8_0' } }
+            @{ ctx = $_; kv_k = $kv.k; kv_v = $kv.v }
+        })
     }
 
     $plan = @()
     $idx = 1
+    $planningModelIndex = 0
+    $planningModelTotal = @($catalog).Count
     foreach ($m in $catalog) {
         if ($Model -and $m.model -notmatch $Model) { continue }
+        $planningModelIndex++
+        Write-Host ("[planning] model {0}/{1}: {2} ({3})" -f `
+            $planningModelIndex, $planningModelTotal, $m.model, $(if ($m.is_moe) { 'MoE' } else { 'dense' })) `
+            -ForegroundColor Cyan
         $sweep = Get-SweepKind -meta $m -cfg $cfg
+        $calibration = $null
+        $calibrationId = ""
         $bnameLvl = [System.IO.Path]::GetFileName($m.path)
         $level = if ($bnameLvl -and $levelMap.ContainsKey($bnameLvl.ToLower())) { $levelMap[$bnameLvl.ToLower()] } else { $null }
         if ($Level -and $level -ne $Level) { continue }
+        if (-not $m.is_moe -and -not $DryRun -and $supportsAdaptiveProbe) {
+            $offloadSettings = $cfg.planning.offload_planning
+            $probeCtx = if ($offloadSettings.context_size) { [int]$offloadSettings.context_size } else { 16384 }
+            $probeKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
+            $calibrationId = Get-OffloadCalibrationId `
+                -Meta $m -Config $cfg -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+            $calibration = Get-CachedOffloadCalibration -CalibrationId $calibrationId -Config $cfg
+            if (-not $calibration) {
+                $calibration = Invoke-TsOffloadCalibration -Meta $m -Config $cfg -BaseArgs $base
+                if ($calibration) { $calibration.cache_hit = $false }
+            }
+            if ($calibration -and $calibration.calibrated) {
+                $sweep = [string]$calibration.mode
+                if (-not $calibration.cache_hit) {
+                    Save-OffloadCalibration `
+                        -CalibrationId $calibrationId -Result $calibration -Meta $m -Config $cfg `
+                        -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+                }
+                $source = if ($calibration.cache_hit) { "cached" } else { "$($calibration.probe_count) probes" }
+                Write-Host ("  adaptive offload: {0}, fit {1}/{2} layers ({3})" -f `
+                    $m.model, $calibration.verified_fit_layers, $calibration.block_count, $source) `
+                    -ForegroundColor DarkCyan
+            } elseif ($calibration) {
+                Write-Host ("  adaptive offload fallback for {0}: {1}" -f $m.model, $calibration.reason) `
+                    -ForegroundColor DarkYellow
+            }
+        } elseif ($m.is_moe -and -not $DryRun -and $supportsMoe -and $supportsAdaptiveProbe) {
+            $moeSettings = $cfg.planning.moe_planning
+            $probeCtx = if ($moeSettings.context_size) { [int]$moeSettings.context_size } else { 16384 }
+            $requestedProbeKv = if ($moeSettings.kv_type) { [string]$moeSettings.kv_type } else { "q8_0" }
+            $probeKv = Resolve-CompatibleKvType -Requested $requestedProbeKv -Allowed $llamaCapabilities.cacheTypesK
+            $calibrationId = Get-MoeCalibrationId `
+                -Meta $m -Config $cfg -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+            $calibration = Get-CachedOffloadCalibration `
+                -CalibrationId $calibrationId -Config $cfg -Settings $moeSettings
+            if (-not $calibration) {
+                $calibration = Invoke-TsMoeCalibration -Meta $m -Config $cfg -BaseArgs $base
+                if ($calibration) { $calibration.cache_hit = $false }
+            }
+            if ($calibration -and $calibration.calibrated) {
+                if (-not $calibration.cache_hit) {
+                    Save-OffloadCalibration `
+                        -CalibrationId $calibrationId -Result $calibration -Meta $m -Config $cfg `
+                        -BaseArgs $base -ContextSize $probeCtx -KvType $probeKv
+                }
+                $source = if ($calibration.cache_hit) { "cached" } else { "$($calibration.probe_count) probes" }
+                Write-Host ("  adaptive MoE: {0}, load-fit anchor n-cpu-moe {1} ({2})" -f `
+                    $m.model, $calibration.verified_n_cpu_moe, $source) -ForegroundColor DarkCyan
+            } elseif ($calibration) {
+                Write-Host ("  adaptive MoE fallback for {0}: {1}" -f $m.model, $calibration.reason) `
+                    -ForegroundColor DarkYellow
+            }
+        } elseif ($m.is_moe -and -not $supportsMoe) {
+            Write-Host ("  llama.cpp build does not expose --n-cpu-moe; keeping only the vanilla control for {0}" -f $m.model) -ForegroundColor DarkYellow
+        }
 
         # Per-model ctx cap if the .gguf basename matches a curated sample.
         # User-owned files won't match -> $perModelCap stays 0 -> only the
@@ -180,6 +458,11 @@ function Invoke-Plan {
             $perModelCap = [int]$m.gguf_context_length
         }
 
+        $plan += (New-PlanItem `
+            -meta $m -sweep $sweep -level $level -extraArgs "" `
+            -label "vanilla_llama_cpp" -idx $idx -ControlKind "vanilla")
+        $idx++
+
         switch ($sweep) {
             "context" {
                 $skipped = 0
@@ -189,32 +472,145 @@ function Invoke-Plan {
                     @($ctxCandidates | Where-Object { [int]$_.ctx -eq $perModelCap }).Count -eq 0) {
                     $next = @($ctxCandidates | Where-Object { [int]$_.ctx -gt $perModelCap } | Sort-Object { [int]$_.ctx } | Select-Object -First 1)
                     $fallback = @($ctxCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
-                    $kv = if ($next.Count -gt 0) { $next[0].kv } elseif ($fallback.Count -gt 0) { $fallback[0].kv } else { 'q8_0' }
-                    $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv = $kv })
+                    $source = if ($next.Count -gt 0) { $next[0] } elseif ($fallback.Count -gt 0) { $fallback[0] } else { @{ kv = 'q8_0' } }
+                    $kv = Get-CompatibleContextCandidateKv -Candidate $source -Capabilities $llamaCapabilities
+                    $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv_k = $kv.k; kv_v = $kv.v })
                     $modelCandidates = @($modelCandidates | Sort-Object { [int]$_.ctx })
                 }
+                $validCandidates = @()
                 foreach ($c in $modelCandidates) {
                     if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $globalCtxCap -PerModelCap $perModelCap)) {
                         $skipped++
                         continue
                     }
-                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99 --cache-type-k $($c.kv) --cache-type-v $($c.kv) $base"
-                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ctx=$($c.ctx)_kv=$($c.kv)" -idx $idx); $idx++
+                    $validCandidates += $c
+                    $kv = Get-CompatibleContextCandidateKv -Candidate $c -Capabilities $llamaCapabilities
+                    $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
+                    $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $($kv.k) --cache-type-v $($kv.v)" } else { "" }
+                    $argStr = "--ctx-size $($c.ctx) --gpu-layers 99$cacheArgs $base$fitArg"
+                    $primary = New-PlanItem `
+                        -meta $m -sweep $sweep -level $level -extraArgs $argStr `
+                        -label "ctx=$($c.ctx)_$($kv.label)" -idx $idx `
+                        -Calibration $calibration -CalibrationId $calibrationId
+                    $plan += $primary
+                    $idx++
+                    $rescueSettings = $cfg.planning.kv_rescue
+                    $rescueEnabled = (-not $rescueSettings -or $rescueSettings.enabled -ne $false)
+                    $rescueMinCtx = if ($rescueSettings -and $rescueSettings.min_context_tokens) {
+                        [int]$rescueSettings.min_context_tokens
+                    } else { 65536 }
+                    $requestedRescueK = if ($rescueSettings -and $rescueSettings.kv_k) { [string]$rescueSettings.kv_k } else { 'q4_0' }
+                    $requestedRescueV = if ($rescueSettings -and $rescueSettings.kv_v) { [string]$rescueSettings.kv_v } else { 'q4_0' }
+                    $rescueK = Resolve-CompatibleKvType -Requested $requestedRescueK -Allowed $llamaCapabilities.cacheTypesK
+                    $rescueV = Resolve-CompatibleKvType -Requested $requestedRescueV -Allowed $llamaCapabilities.cacheTypesV
+                    if ($rescueEnabled -and [int]$c.ctx -ge $rescueMinCtx -and
+                        ($kv.k -ne $rescueK -or $kv.v -ne $rescueV)) {
+                        $rescueCacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $rescueK --cache-type-v $rescueV" } else { "" }
+                        $rescueArgs = "--ctx-size $($c.ctx) --gpu-layers 99$rescueCacheArgs $base$fitArg"
+                        $rescueLabel = if ($rescueK -eq $rescueV) { "kv=$rescueK" } else { "kvk=${rescueK}_kvv=${rescueV}" }
+                        $plan += (New-PlanItem `
+                            -meta $m -sweep $sweep -level $level -extraArgs $rescueArgs `
+                            -label "ctx=$($c.ctx)_${rescueLabel}_rescue" -idx $idx `
+                            -Calibration $calibration -CalibrationId $calibrationId `
+                            -ConditionalKind "kv_rescue" -ConditionalSourceId $primary.id)
+                        $idx++
+                    }
+                }
+                $anchor = @($validCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
+                if ($anchor.Count -gt 0) {
+                    $anchorCtx = [int]$anchor[0].ctx
+                    $anchorKv = Get-CompatibleContextCandidateKv -Candidate $anchor[0] -Capabilities $llamaCapabilities
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level `
+                        -extraArgs "--ctx-size $anchorCtx" `
+                        -label "llama_cpp_ctx=${anchorCtx}_default" -idx $idx `
+                        -ControlKind "vanilla-adjacent")
+                    $idx++
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level `
+                        -extraArgs "--ctx-size $anchorCtx --parallel 1" `
+                        -label "llama_cpp_ctx=${anchorCtx}_parallel1" -idx $idx `
+                        -ControlKind "vanilla-adjacent")
+                    $idx++
+                    if ($supportsCacheK -and $supportsCacheV) {
+                        $plan += (New-PlanItem `
+                            -meta $m -sweep $sweep -level $level `
+                            -extraArgs "--ctx-size $anchorCtx --parallel 1 --cache-type-k $($anchorKv.k) --cache-type-v $($anchorKv.k)" `
+                            -label "llama_cpp_ctx=${anchorCtx}_parallel1_kv=$($anchorKv.k)" -idx $idx `
+                            -ControlKind "vanilla-adjacent")
+                        $idx++
+                    }
+                    $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
+                    $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $($anchorKv.k) --cache-type-v $($anchorKv.v)" } else { "" }
+                    $argStr = "--ctx-size $anchorCtx --gpu-layers 99$cacheArgs $base$fitArg"
+                    $profiles = @(Get-WorkloadProfilesForContext `
+                        -ContextSize $anchorCtx `
+                        -Config $cfg `
+                        -Mode $PlanningPolicy.workload_sweep)
+                    foreach ($profile in $profiles) {
+                        $target = if ($profile.kind -eq "prefill") { $profile.prefill_tokens } else { $profile.kv_fill_tokens }
+                        $label = "ctx=${anchorCtx}_$($anchorKv.label)"
+                        $plan += (New-PlanItem `
+                            -meta $m -sweep $sweep -level $level -extraArgs $argStr -label $label -idx $idx `
+                            -WorkloadKind $profile.kind `
+                            -PrefillTokens $profile.prefill_tokens `
+                            -KvFillTokens $profile.kv_fill_tokens `
+                            -Calibration $calibration `
+                            -CalibrationId $calibrationId)
+                        $idx++
+                    }
                 }
                 if ($skipped -gt 0 -and $perModelCap -gt 0) {
                     Write-Host ("  skipped {0} context candidates above {1}'s max_context ({2})" -f $skipped, $m.model, $perModelCap) -ForegroundColor DarkGray
                 }
             }
             "moe-cpu" {
-                foreach ($n in $cfg.planning.moecpu_sweep) {
-                    $argStr = "--ctx-size 16384 --gpu-layers 99 --n-cpu-moe $n --cache-type-k q8_0 --cache-type-v q8_0 $base"
-                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ncpumoe_$n" -idx $idx); $idx++
+                if (-not $supportsMoe) { break }
+                $values = if ($calibration -and $calibration.calibrated) {
+                    @($calibration.benchmark_n_cpu_moe | ForEach-Object { [int]$_ })
+                } else {
+                    @(Get-FallbackMoeCpuLayers)
+                }
+                $moeSettings = $cfg.planning.moe_planning
+                $moeCtx = if ($moeSettings.context_size) { [int]$moeSettings.context_size } else { 16384 }
+                $requestedMoeKv = if ($moeSettings.kv_type) { [string]$moeSettings.kv_type } else { "q8_0" }
+                $moeKv = Resolve-CompatibleKvType -Requested $requestedMoeKv -Allowed $llamaCapabilities.cacheTypesK
+                foreach ($n in $values) {
+                    $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
+                    $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $moeKv --cache-type-v $moeKv" } else { "" }
+                    $argStr = "--ctx-size $moeCtx --gpu-layers 99 --n-cpu-moe $n$cacheArgs $base$fitArg"
+                    $fitOffset = if ($calibration -and $calibration.calibrated) {
+                        [int]$n - [int]$calibration.verified_n_cpu_moe
+                    } else { $null }
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level -extraArgs $argStr `
+                        -label "ncpumoe_$n" -idx $idx -Calibration $calibration `
+                        -CalibrationId $calibrationId -FitOffset $fitOffset)
+                    $idx++
                 }
             }
             "offload" {
-                foreach ($n in $cfg.planning.offload_sweep) {
-                    $argStr = "--ctx-size 16384 --gpu-layers $n --cache-type-k q8_0 --cache-type-v q8_0 $base"
-                    $plan += (New-PlanItem -meta $m -sweep $sweep -level $level -extraArgs $argStr -label "ngl_$n" -idx $idx); $idx++
+                $layers = if ($calibration -and $calibration.calibrated) {
+                    @($calibration.benchmark_layers | ForEach-Object { [int]$_ })
+                } else {
+                    @(Get-FallbackOffloadLayers)
+                }
+                $offloadSettings = $cfg.planning.offload_planning
+                $offloadCtx = if ($offloadSettings.context_size) { [int]$offloadSettings.context_size } else { 16384 }
+                $requestedOffloadKv = if ($offloadSettings.kv_type) { [string]$offloadSettings.kv_type } else { "q8_0" }
+                $offloadKv = Resolve-CompatibleKvType -Requested $requestedOffloadKv -Allowed $llamaCapabilities.cacheTypesK
+                foreach ($n in $layers) {
+                    $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }
+                    $cacheArgs = if ($supportsCacheK -and $supportsCacheV) { " --cache-type-k $offloadKv --cache-type-v $offloadKv" } else { "" }
+                    $argStr = "--ctx-size $offloadCtx --gpu-layers $n$cacheArgs $base$fitArg"
+                    $fitOffset = if ($calibration -and $calibration.calibrated) {
+                        [int]$n - [int]$calibration.verified_fit_layers
+                    } else { $null }
+                    $plan += (New-PlanItem `
+                        -meta $m -sweep $sweep -level $level -extraArgs $argStr `
+                        -label "ngl_$n" -idx $idx -Calibration $calibration `
+                        -CalibrationId $calibrationId -FitOffset $fitOffset)
+                    $idx++
                 }
             }
         }

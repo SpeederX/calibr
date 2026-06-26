@@ -60,6 +60,11 @@ param(
     # CustomBenchView v2's ctx-checkbox selection.
     [string]$ContextSizes = "",
 
+    # Optional diagnostic workload curves. Baseline is always included;
+    # prefill/KV-fill profiles are added on the largest valid context config.
+    [ValidateSet("baseline", "prefill", "kv-fill", "all")]
+    [string]$WorkloadSweep = "baseline",
+
     # CLI overrides for config fields. These take priority over config.json.
     # Used by: discover (ScanPath, ExcludePattern), bench/report (LlamaServer), all (all of them), init (pre-fills instead of auto-detecting).
     [string[]]$ScanPath = @(),
@@ -90,6 +95,10 @@ param(
     # Used by report (and `all`): pick the highest-eval_tps config per group,
     # ignoring WDDM-paging safety. Default off - safety wins ties.
     [switch]$PreferSpeed,
+
+    # Run the complete ordered offload/MoE performance curve instead of
+    # stopping after the measured peak has two confirmed descending points.
+    [switch]$FullSpeedCurve,
 
     # Used by report (and `all`): warn when baseline VRAM already used by
     # OS/apps before each config run is at or above this percentage. -1 means
@@ -156,12 +165,13 @@ $script:CALIBR_LOGS_DIR    = Join-Path $CALIBR_DATA_DIR "logs"
 $script:CALIBR_BATS_DIR    = Join-Path $CALIBR_DATA_DIR "bats"
 $script:CALIBR_REPORT      = Join-Path $CALIBR_DATA_DIR "report.html"
 $script:CALIBR_REPORTS_DIR = Join-Path $CALIBR_DATA_DIR "reports"   # archived old reports
+$script:CALIBR_CALIBRATIONS_DIR = Join-Path $CALIBR_DATA_DIR "calibrations"
 $script:CALIBR_DOWNLOADS   = Join-Path $CALIBR_DATA_DIR "downloads.json"
 $script:CALIBR_DOWNLOADED_MODELS_DIR = Join-Path $CALIBR_DATA_DIR "downloaded-models"
 $script:CALIBR_DEFAULT_PRESETS = Join-Path $CALIBR_ROOT     "default_bench_presets.json"
 $script:CALIBR_USER_PRESETS    = Join-Path $CALIBR_DATA_DIR "user_bench_presets.json"
 
-foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR, $CALIBR_REPORTS_DIR, $CALIBR_DOWNLOADED_MODELS_DIR)) {
+foreach ($d in @($CALIBR_DATA_DIR, $CALIBR_RESULTS_DIR, $CALIBR_LOGS_DIR, $CALIBR_BATS_DIR, $CALIBR_REPORTS_DIR, $CALIBR_CALIBRATIONS_DIR, $CALIBR_DOWNLOADED_MODELS_DIR)) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
 
@@ -177,9 +187,12 @@ $script:CALIBR_ENGINE_MODULES = @(
     'llama.ps1'
     'commands.ps1'
     'discover.ps1'
+    'offload.ps1'
+    'moe.ps1'
     'plan.ps1'
     'bench.ps1'
     'report.ps1'
+    'workflow.ps1'
     'catalog.ps1'
     'doctor.ps1'
 )

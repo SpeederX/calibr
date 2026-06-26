@@ -59,7 +59,7 @@ fit, speed, headroom, and spill behavior on your machine.
 - [Technical details](#technical-details)
 - [Known limitations](#known-limitations)
 - [Troubleshooting](TROUBLESHOOTING.md)
-- [Roadmap](#roadmap)
+- [Direction](#direction)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -76,6 +76,10 @@ calibr
 
 You get a menu with `guided run`, `results`, `configure llama path`, and
 `help`. Walk through it with arrow keys + enter.
+`results` contains two views: `benchmark results` keeps the model leaderboard
+and per-config drilldown, while `benchmark run logs` lists the retained
+llama-server command/stderr logs, previews their tail, and can open either the
+full log or the logs folder.
 If something won't start, open `help` -> `doctor`: it checks your CPU/GPU/OS
 and every dependency, tells you exactly what's missing and how to fix it, and
 can export a redacted bundle to attach to a GitHub issue. Start with
@@ -87,6 +91,12 @@ winners according to the selected winner rule. Switch the scope to `middle`,
 `high`, `ultra`, or `all` when you want the broader catalog sweep.
 The menu marks setup items with a green check when ready, or a red `*` when
 they need attention.
+
+`benchmark scope` controls how deep the campaign goes. `baseline` runs the
+fast calibration path and winner-eligible baseline configs. `baseline + load
+curves` adds prefill and KV-fill diagnostics at the largest valid context.
+`exhaustive` keeps those diagnostics and also disables adaptive early-stop for
+the speed curve, so it can take much longer but preserves the full curve.
 
 On a fresh machine, `guided run` asks how to set up llama.cpp if
 `llama_server_exe` is missing: download an official release (latest by default,
@@ -104,6 +114,8 @@ Don't have any `.gguf` files yet? Pick `guided run`, keep `source: catalog downl
 choose the llama.cpp setup when prompted, and let calibr walk the curated set
 one model at a time:
 download -> bench -> cleanup -> next model -> report.
+Before starting, the download gate shows both the total data transferred by the
+campaign and the peak disk working-set required by one-at-a-time rotation.
 
 Already have local `.gguf` files? In `guided run`, set `local folder` to that
 directory, then set `source: local folder`. The default local folder is
@@ -120,6 +132,42 @@ the current run.
 quant/variant, context/KV-cache choice, offload flags, memory behavior, and a
 ready launcher.
 
+The default context sweep is quality-first. Every primary context target uses
+`q8_0` for both K and V, including 131K and 262K. Cache quality is not reduced
+merely because context increases. Symmetric `q4_0` is generated only as a
+conditional fallback at the same context after the q8 primary fails with
+direct capacity evidence. calibr inspects the active
+`llama-server --help`: unsupported cache requests fall back to `q8_0`, then
+`f16`, while unsupported required sweep arguments fail before model loading
+with a compatibility message.
+
+For oversized dense models, guided run no longer assumes a fixed GPU-layer
+range tuned for one VRAM size. It performs bounded load-only probes using the
+detected VRAM budget, finds the highest non-spilling layer count, then
+benchmarks densely around that boundary. The probes do not generate tokens
+and do not participate in winner selection. Raw/headless planning falls back
+to a conservative static range when the TypeScript calibration adapter is
+unavailable.
+During this `planning & load calibration` phase, guided run shows the current
+model and probe number together with the tested allocation and ready-state
+VRAM, so long plans do not look stalled.
+
+Matching calibration records can be reused for up to seven days when the
+llama.cpp build, model files, allocation policy, hardware budget, and current
+VRAM baseline still agree. The expanded model details show the verified fit,
+probe/cache source, and candidate offset.
+
+MoE models use load probes to find an initial `--n-cpu-moe` allocation anchor.
+That anchor is not treated as a performance boundary: expert activation during
+inference can create heavy WDDM shared-memory traffic that is invisible at
+load time. The benchmark therefore covers the anchor neighborhood, proportional
+CPU-offload points, and the CPU-heavy tail. With prefill/KV diagnostics enabled,
+the baseline sweep completes first and those heavier workloads run only on its
+empirical speed winner. Diagnostic prefill/KV curves are context-relative:
+one small micro target plus 25/50/75/90% targets, so high-context models show
+real load progression instead of a cluster of tiny prompts. Measured throughput decides the winner; shared memory
+remains diagnostic because CPU expert mapping can legitimately appear there.
+
 There is not one universal winner. The report exposes profiles:
 
 - **Speed**: highest measured `eval_tps`. It ignores spill and power.
@@ -127,6 +175,30 @@ There is not one universal winner. The report exposes profiles:
   memory. This matches the default launcher pick.
 - **Efficiency**: best tokens per watt when GPU power data is available.
 - **Overall**: weighted view across speed, safety, and efficiency.
+
+Each expanded model row shows a compact comparison panel — the selected config
+versus the untuned llama.cpp control on a radar (eval/prompt/context/VRAM/power/
+temperature/RAM) plus a prefill/KV-fill load curve. The report also includes a
+collapsed **Complete session leaderboard** that ranks each model's winner head to
+head under the selected profile — a local, at-a-glance comparison (distinct from
+the future online leaderboard noted under Direction).
+
+Each model also gets one untuned llama.cpp control run. It supplies the model
+(and a required projector, when present) but none of calibr's context, KV,
+offload, MoE, batch, thread, or fit flags. The request workload and repetition
+policy stay identical. Controls never become winners or launchers; the report
+uses them to show the selected config's absolute and percentage throughput
+uplift. If the vanilla control cannot load or complete while a calibrated
+config does, the report records that calibr made the model usable instead of
+inventing a percentage from a zero baseline. The report also shows the launch
+profile for controls and calibrated configs: requested context/cache/offload
+flags plus effective slot context, parallelism, offloaded layers, buffer sizes,
+and Flash Attention state parsed from llama-server logs when available.
+Context-primary models also get a small set of vanilla-adjacent speed probes at
+the largest valid context: ctx-only, ctx+parallel=1, and ctx+parallel=1+KV cache
+type. They are diagnostic controls, not winner candidates. Their job is to
+explain whether a vanilla/calibr speed gap comes from context, auto-parallelism,
+KV-cache precision, or calibr's remaining base runtime flags.
 
 "Safe" currently means no confirmed shared-memory spill. On Windows, that is a
 delta above `wddm_detection.shared_delta_confirm_mib` (default `500 MiB`) in
@@ -309,9 +381,10 @@ of truth for exact ids, variants, sizes, and upstream repositories.
 ## Technical details
 
 The README is intentionally product-facing. The lower-level process notes live
-in [HOW-IT-WORKS.md](HOW-IT-WORKS.md): setup details, the legacy raw engine
-path, discover/plan/bench/report stages, WDDM/GTT spill detection, and output
-layout.
+in [HOW-IT-WORKS.md](HOW-IT-WORKS.md): guided-run ownership, the TypeScript /
+PowerShell boundary, internal engine stages, streaming telemetry, WDDM/GTT
+spill detection, and output layout. Metric definitions and formulas live in
+[METRICS.md](METRICS.md).
 
 ## Known limitations
 
@@ -344,7 +417,7 @@ layout.
   generates faster, even though BF16 has higher fidelity. If you care about
   the tradeoff, look at the report's per-model table and pick by hand —
   every number is preserved. (A future opt-in quality bench is being
-  explored — see Roadmap.)
+  explored — see Direction.)
 - **No HuggingFace authentication for catalog downloads.** Models that require
   accepting a license (notably some Gemma variants) may return 401. Accept the
   license once on the website, or download those particular files with
@@ -356,39 +429,14 @@ layout.
   them. User-owned `.gguf` files use their embedded context metadata when
   available, then fall back to the global `max_context_cap` (default 262 144).
 
-## Roadmap
+## Direction
 
-Direction lives in [`AGENTS.md`](AGENTS.md) (the project pivoted from a
-strict SemVer + spec-driven backlog to a three-phase product approach:
-CLI → backend → web UI). Concrete near-term ideas being explored:
-
-- **Real-time metrics during bench**: stream CPU/GPU load + temperature,
-  system-RAM pressure, disk read/write, GPU power draw into the CLI run
-  view — and persist them on each result for the report.
-- **TTFT (time-to-first-token)** as a first-class metric alongside
-  `prompt_tps` / `eval_tps`. Free to measure, captures the felt latency
-  for chat-style use.
-- **KV-fill stub**: synthesize a long prompt to fill the KV cache to
-  25/50/75/95% before timing, so `prompt_tps` reflects the attention-scaling
-  cost at real-world context lengths instead of an empty-cache best case.
-- **Optional quality bench**: integrate a small abstention test suite
-  (the no-auth tasks only, opt-in via flag, multi-hour) and surface a
-  per-model honesty score alongside speed.
-- **Scoring profiles in the report**: weighted matrices over speed,
-  efficiency, honesty, hardware stress, etc., so the same data renders
-  multiple leaderboards.
-- **GGUF metadata parser** for user-owned models: derive `max_context` and
-  the architecture key from the binary header so the plan filter is exact
-  for any model, not just curated samples.
-- **Phase 2 — NestJS backend** that exposes the engine operations the CLI
-  invokes today. Enables clients other than the CLI and a shared online
-  leaderboard.
-- **Phase 3 — Angular UI** on top of the backend.
-- **Cross-platform support**: Windows/NVIDIA is the strongest path today;
-  Linux/NVIDIA works with clean OOM behavior; AMD/Linux uses `radeontop` GTT
-  for spill detection when installed, with experimental `amd-smi` metrics.
-  Metal detection is experimental and needs macOS validation; Android remains a
-  later direct-adapter/client track.
+The current product phase and working rules live in [`AGENTS.md`](AGENTS.md).
+Near-term work focuses on deeper load characterization (prefill sweeps and
+KV-fill), MTP-aware measurements, and an **online** leaderboard — a fuller
+community leaderboard with search, filters, and submission, distinct from the
+local Complete session leaderboard already in the report. A service or web UI is
+a later phase, started only when the shipped CLI creates a concrete need for it.
 
 ## Contributing
 

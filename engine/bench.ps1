@@ -76,6 +76,88 @@ function Resolve-FitStatus {
     return "success"
 }
 
+function Get-BenchArgValue {
+    param([string]$Args, [string[]]$Names)
+    if (-not $Args) { return $null }
+    foreach ($name in $Names) {
+        $escaped = [regex]::Escape($name)
+        $m = [regex]::Match($Args, "(?:^|\s)$escaped\s+([^\s]+)")
+        if ($m.Success) { return [string]$m.Groups[1].Value }
+    }
+    return $null
+}
+
+function Get-BenchArgInt {
+    param([string]$Args, [string[]]$Names)
+    $value = Get-BenchArgValue -Args $Args -Names $Names
+    if (-not $value) { return $null }
+    $parsed = 0
+    if ([int]::TryParse($value, [ref]$parsed)) { return $parsed }
+    return $null
+}
+
+function Update-AdaptiveSpeedSweepState {
+    # Ordered offload/MoE sweeps normally rise toward a throughput peak and
+    # then decline. Keep enough post-peak evidence to confirm the direction,
+    # but avoid spending hours tracing a tail the default product does not
+    # need. The optional full-curve policy bypasses the caller's pruning.
+    param(
+        [hashtable]$State,
+        [double]$EvalTps,
+        [string]$ConfigId,
+        [double]$DeclineTolerancePct = 0.02,
+        [int]$DescendingPointsToStop = 2
+    )
+
+    if ($null -eq $State) {
+        $State = @{
+            best_eval_tps = $null
+            best_config_id = $null
+            below_peak_count = 0
+            observations = @()
+        }
+    }
+    $tolerance = [math]::Max([double]0.0, [math]::Min([double]0.5, $DeclineTolerancePct))
+    $required = [math]::Max(1, $DescendingPointsToStop)
+    $previousBest = if ($null -ne $State.best_eval_tps) { [double]$State.best_eval_tps } else { $null }
+    $relation = 'first'
+
+    if ($null -eq $previousBest -or $EvalTps -gt $previousBest) {
+        $State.best_eval_tps = $EvalTps
+        $State.best_config_id = $ConfigId
+        $State.below_peak_count = 0
+        $relation = if ($null -eq $previousBest) { 'first' } else { 'new_peak' }
+    } else {
+        $declineBoundary = $previousBest * (1.0 - $tolerance)
+        if ($EvalTps -lt $declineBoundary) {
+            $State.below_peak_count = [int]$State.below_peak_count + 1
+            $relation = 'below_peak'
+        } else {
+            # A near tie is inside the noise band and breaks a descending
+            # sequence; it must not consume one of the two confirmation points.
+            $State.below_peak_count = 0
+            $relation = 'near_peak'
+        }
+    }
+    $State.observations += [ordered]@{
+        config_id = $ConfigId
+        eval_tps = $EvalTps
+        relation = $relation
+    }
+    return [pscustomobject]@{
+        state = $State
+        should_stop = ([int]$State.below_peak_count -ge $required)
+        relation = $relation
+    }
+}
+
+function Test-KvRescueEligibility {
+    param($Result)
+    if ($null -eq $Result -or $Result.ok) { return $false }
+    $failure = Get-RuntimeFailureFromResult -result $Result
+    return ($failure -and $failure.cause -eq 'load_oom')
+}
+
 function Resolve-TsResultCoreScript {
     if ($env:CALIBR_TS_RESULT_CORE -eq '0') { return "" }
     if ($env:CALIBR_TS_RESULT_CORE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_RESULT_CORE_SCRIPT)) {
@@ -205,6 +287,11 @@ function New-AggregatedBenchResult {
     $deliveryMedianRaw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_median_ms })
     $deliveryP95Raw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_p95_ms })
     $deliveryMaxRaw = Get-Median -values @($runs | ForEach-Object { $_.delivery_gap_max_ms })
+    $workloadPrepareRaw = Get-Median -values @($runs | ForEach-Object { $_.workload_prepare_ms })
+    $workloadPromptRaw = Get-Median -values @($runs | ForEach-Object { $_.workload_prompt_tokens })
+    $workloadErrorRaw = Get-Median -values @($runs | ForEach-Object { $_.workload_target_error_tokens })
+    $kvFillMsRaw = Get-Median -values @($runs | ForEach-Object { $_.kv_fill_ms })
+    $kvFillCachedRaw = Get-Median -values @($runs | ForEach-Object { $_.kv_fill_cached_tokens })
     $totalReqRaw   = Get-Median -values @($runs | ForEach-Object { $_.total_request_ms })
     $latReqRaw     = Get-Median -values @($runs | ForEach-Object { $_.latency_total_request_ms })
     $utilAvgMed    = [int](Get-Median   -values @($runs | ForEach-Object { $_.gpu_util_avg_pct }))
@@ -218,6 +305,8 @@ function New-AggregatedBenchResult {
     $flagSharedPos = ($sharedPeakMed -gt $confirmThresh)
 
     $result = [ordered]@{
+        # The portable PowerShell fallback does not yet emit sampled energy.
+        # CUDA runs use the TypeScript coordinator and metric schema v5.
         metric_schema_version = 4
         id              = $item.id
         label           = $item.label
@@ -226,14 +315,36 @@ function New-AggregatedBenchResult {
         series          = $item.series
         level           = $item.level
         sweep           = $item.sweep
+        workload_kind   = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+        control_kind    = $item.control_kind
+        prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
+        kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
         reasoning_mode  = $item.reasoning_mode
         template_note   = $item.template_note
         gguf_context_length = $item.gguf_context_length
         gguf_architecture = $item.gguf_architecture
+        planning_mode   = $item.planning_mode
+        calibration_id  = $item.calibration_id
+        predicted_fit_layers = $item.predicted_fit_layers
+        verified_fit_layers = $item.verified_fit_layers
+        first_spill_layers = $item.first_spill_layers
+        probe_count     = $item.probe_count
+        fit_offset      = $item.fit_offset
+        calibration_cache_hit = $item.calibration_cache_hit
+        calibration_cache_age_hours = $item.calibration_cache_age_hours
+        predicted_n_cpu_moe = $item.predicted_n_cpu_moe
+        verified_n_cpu_moe = $item.verified_n_cpu_moe
+        first_spill_n_cpu_moe = $item.first_spill_n_cpu_moe
         timestamp       = $first.timestamp
         model_path      = $item.model_path
         mmproj_path     = $item.mmproj_path
         extra_args      = $item.extra_args
+        requested_context_size = Get-BenchArgInt -Args $item.extra_args -Names @('--ctx-size', '-c')
+        requested_cache_type_k = Get-BenchArgValue -Args $item.extra_args -Names @('--cache-type-k', '-ctk')
+        requested_cache_type_v = Get-BenchArgValue -Args $item.extra_args -Names @('--cache-type-v', '-ctv')
+        requested_gpu_layers = Get-BenchArgInt -Args $item.extra_args -Names @('--gpu-layers', '-ngl')
+        requested_n_cpu_moe = Get-BenchArgInt -Args $item.extra_args -Names @('--n-cpu-moe', '-ncmoe')
+        requested_parallel = Get-BenchArgInt -Args $item.extra_args -Names @('--parallel', '-np')
 
         # Deterministic / first-run fields
         vram_before_mib  = $first.vram_before_mib
@@ -249,6 +360,10 @@ function New-AggregatedBenchResult {
         compute_cuda_mib = $first.compute_cuda_mib
         compute_host_mib = $first.compute_host_mib
         layers_offloaded = $first.layers_offloaded
+        effective_context_size = $first.effective_context_size
+        effective_parallel_slots = $first.effective_parallel_slots
+        effective_n_parallel = $first.effective_n_parallel
+        flash_attention_state = $first.flash_attention_state
         fit_status       = Resolve-FitStatus -Status $first.fit_status -Ok $true -SharedPeakMib $sharedPeakMed -SharedConfirmMib $confirmThresh
 
         # Median over runs for varying metrics
@@ -286,6 +401,11 @@ function New-AggregatedBenchResult {
         delivery_gap_median_ms = if ($null -ne $deliveryMedianRaw) { [math]::Round($deliveryMedianRaw, 2) } else { $null }
         delivery_gap_p95_ms  = if ($null -ne $deliveryP95Raw) { [math]::Round($deliveryP95Raw, 2) } else { $null }
         delivery_gap_max_ms  = if ($null -ne $deliveryMaxRaw) { [math]::Round($deliveryMaxRaw, 2) } else { $null }
+        workload_prepare_ms  = if ($null -ne $workloadPrepareRaw) { [math]::Round($workloadPrepareRaw, 2) } else { $null }
+        workload_prompt_tokens = if ($null -ne $workloadPromptRaw) { [int]$workloadPromptRaw } else { $null }
+        workload_target_error_tokens = if ($null -ne $workloadErrorRaw) { [int]$workloadErrorRaw } else { $null }
+        kv_fill_ms            = if ($null -ne $kvFillMsRaw) { [math]::Round($kvFillMsRaw, 2) } else { $null }
+        kv_fill_cached_tokens = if ($null -ne $kvFillCachedRaw) { [int]$kvFillCachedRaw } else { $null }
         total_request_ms     = if ($null -ne $totalReqRaw)  { [math]::Round($totalReqRaw, 2) } else { $null }
         latency_total_request_ms = if ($null -ne $latReqRaw) { [math]::Round($latReqRaw, 2) } else { $null }
         gpu_util_avg_pct     = $utilAvgMed
@@ -610,7 +730,11 @@ function Invoke-TsBenchRequest {
         [string]$Prompt,
         [int]$MaxTokens,
         [switch]$ReasoningOff,
-        [switch]$Warmup
+        [switch]$Warmup,
+        [ValidateSet("baseline", "prefill", "kv-fill")]
+        [string]$WorkloadKind = "baseline",
+        [int]$PrefillTargetTokens = 0,
+        [int]$KvFillTargetTokens = 0
     )
     $node   = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
     $script = $env:CALIBR_TS_BENCH_SCRIPT
@@ -624,6 +748,9 @@ function Invoke-TsBenchRequest {
         seed         = 42
         reasoningOff = [bool]$ReasoningOff
         timeoutMs    = 900000
+        workloadKind = $WorkloadKind
+        prefillTargetTokens = $PrefillTargetTokens
+        kvFillTargetTokens = $KvFillTargetTokens
     } | ConvertTo-Json -Compress -Depth 5
     # Use a UTF-8 temp file instead of stdin. Windows PowerShell can pipe
     # native-process stdin as UTF-16, which made Node read invalid JSON.
@@ -1110,6 +1237,11 @@ function Invoke-OneBenchRun {
         delivery_gap_median_ms = $null
         delivery_gap_p95_ms  = $null
         delivery_gap_max_ms  = $null
+        workload_prepare_ms  = $null
+        workload_prompt_tokens = $null
+        workload_target_error_tokens = $null
+        kv_fill_ms            = $null
+        kv_fill_cached_tokens = $null
         total_request_ms     = $null
         latency_total_request_ms = $null
         latency_error        = $null
@@ -1156,7 +1288,10 @@ function Invoke-OneBenchRun {
                     -Prompt $prompt `
                     -MaxTokens $nPred `
                     -ReasoningOff:($item.reasoning_mode -eq "off") `
-                    -Warmup:([bool]$cfg.bench.warmup -and -not [bool]$item.mmproj_path)
+                    -Warmup:([bool]$cfg.bench.warmup -and -not [bool]$item.mmproj_path) `
+                    -WorkloadKind $(if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }) `
+                    -PrefillTargetTokens $(if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }) `
+                    -KvFillTargetTokens $(if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 })
                 if (-not $resp.ok) { throw "ts bench runner: $($resp.error)" }
                 if ($null -ne $resp.total_request_ms) { $run.total_request_ms = [math]::Round([double]$resp.total_request_ms, 2) }
                 if ($null -ne $resp.ttfr_ms) { $run.ttfr_ms = [math]::Round([double]$resp.ttfr_ms, 2) }
@@ -1165,7 +1300,9 @@ function Invoke-OneBenchRun {
                     'ttfh_ms', 'stream_open_ms', 'client_ttft_ms',
                     'e2e_first_reasoning_ms', 'e2e_first_content_ms', 'reasoning_delay_ms',
                     'e2e_latency_ms', 'server_prefill_ms', 'server_ttft_ms', 'tpot_ms',
-                    'itl_p95_ms', 'delivery_gap_median_ms', 'delivery_gap_p95_ms', 'delivery_gap_max_ms'
+                    'itl_p95_ms', 'delivery_gap_median_ms', 'delivery_gap_p95_ms', 'delivery_gap_max_ms',
+                    'workload_prepare_ms', 'workload_prompt_tokens', 'workload_target_error_tokens',
+                    'kv_fill_ms', 'kv_fill_cached_tokens'
                 )) {
                     if ($null -ne $resp.$metric) { $run.$metric = [math]::Round([double]$resp.$metric, 3) }
                 }
@@ -1174,6 +1311,9 @@ function Invoke-OneBenchRun {
                 }
                 if ($resp.latency_error) { $run.latency_error = [string]$resp.latency_error }
             } else {
+                if ($item.workload_kind -and $item.workload_kind -ne 'baseline') {
+                    throw "workload '$($item.workload_kind)' requires the TypeScript benchmark runner"
+                }
                 if ($cfg.bench.warmup) {
                     try {
                         $warmupReq = @{
@@ -1318,14 +1458,21 @@ function Invoke-OneBenchRun {
             compute_cuda_mib = 'CUDA0 compute buffer size\s*=\s*([\d\.]+)'
             compute_host_mib = 'CUDA_Host compute buffer size\s*=\s*([\d\.]+)'
             layers_offloaded = 'offloaded (\d+)/(\d+) layers'
+            effective_context_size = 'new slot, n_ctx\s*=\s*(\d+)'
+            effective_parallel_slots = 'initializing slots, n_slots\s*=\s*(\d+)'
+            effective_n_parallel = 'n_parallel\s*(?:is set to auto,\s*using\s*)?n_parallel\s*=\s*(\d+)'
         }
         foreach ($k in $patterns.Keys) {
             $m = [regex]::Match($err, $patterns[$k])
             if ($m.Success) {
                 if ($k -eq 'layers_offloaded') { $run[$k] = "$($m.Groups[1].Value)/$($m.Groups[2].Value)" }
+                elseif ($k -match '^effective_') { $run[$k] = [int]$m.Groups[1].Value }
                 else { $run[$k] = [double]$m.Groups[1].Value }
             }
         }
+        if ($err -match 'Flash Attention was auto, set to disabled') { $run.flash_attention_state = 'auto-disabled' }
+        elseif ($err -match '(?i)flash attention.*disabled') { $run.flash_attention_state = 'disabled' }
+        elseif ($err -match '(?i)flash attention.*enabled') { $run.flash_attention_state = 'enabled' }
         # Trap llama.cpp builds that don't recognize a model's architecture.
         $mArch = [regex]::Match($err, "unknown model architecture: '([^']+)'")
         if ($mArch.Success) { $run.unsupported_architecture = $mArch.Groups[1].Value }
@@ -1363,6 +1510,19 @@ function Invoke-OneBench {
         [int]$cfg.wddm_detection.shared_delta_confirm_mib
     } else { 500 }
 
+    $stampCachedResult = {
+        param($cachedResult)
+        if (-not ($cachedResult.PSObject.Properties.Name -contains 'measurement_session_id')) {
+            $cachedResult | Add-Member -NotePropertyName measurement_session_id -NotePropertyValue $cachedResult.bench_session_id -Force
+            $cachedResult | Add-Member -NotePropertyName measurement_session_started_at -NotePropertyValue $cachedResult.bench_session_started_at -Force
+        }
+        $cachedResult | Add-Member -NotePropertyName bench_session_id -NotePropertyValue $(if ($script:BENCH_SESSION_ID) { $script:BENCH_SESSION_ID } else { 'unknown' }) -Force
+        $cachedResult | Add-Member -NotePropertyName bench_session_started_at -NotePropertyValue $(if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }) -Force
+        $cachedResult | Add-Member -NotePropertyName cache_reused -NotePropertyValue $true -Force
+        $cachedResult | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $jsonFile
+        return $cachedResult
+    }
+
     # Pre-flight: the model .gguf (and its mmproj, if any) must exist on disk.
     # When a model was rotated/deleted but the catalog/plan still reference it,
     # llama-server just exits with "No such file or directory" and the run
@@ -1376,6 +1536,10 @@ function Invoke-OneBench {
         $failResult = [ordered]@{
             id = $item.id; label = $item.label; model = $item.model; variant = $item.variant
             series = $item.series; level = $item.level; sweep = $item.sweep
+            workload_kind = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+            control_kind = $item.control_kind
+            prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
+            kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
             reasoning_mode = $item.reasoning_mode; template_note = $item.template_note
             gguf_context_length = $item.gguf_context_length; gguf_architecture = $item.gguf_architecture
             timestamp = (Get-Date).ToUniversalTime().ToString('o')
@@ -1388,6 +1552,12 @@ function Invoke-OneBench {
             error = "model file(s) not found on disk: " + ($missingFiles -join ', ')
             fit_status = $null; unsupported_architecture = $null
             failure_reason = 'model_missing'
+            failure = [ordered]@{
+                phase = 'preflight'; cause = 'model_missing'
+                evidence = "model file(s) not found on disk: " + ($missingFiles -join ', ')
+                action = 'skip_config_continue'; retryable = $false
+                attempts = 1; retry_exhausted = $false
+            }
             bench_session_id         = if ($script:BENCH_SESSION_ID)         { $script:BENCH_SESSION_ID }         else { 'unknown' }
             bench_session_started_at = if ($script:BENCH_SESSION_STARTED_AT) { $script:BENCH_SESSION_STARTED_AT } else { '' }
             llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
@@ -1422,16 +1592,16 @@ function Invoke-OneBench {
                 Write-Host ("[{0}] cached failure from llama-server {1}, current is {2} - re-running" -f $item.id, $cachedVer, $script:LLAMA_SERVER_VERSION) -ForegroundColor DarkYellow
             } else {
                 Write-Host ("[{0}] cached failure (use -Force to retry)" -f $item.id) -ForegroundColor DarkGray
-                return $cached
+                return (& $stampCachedResult $cached)
             }
         } else {
             if ($null -ne $cached.runs -and $cached.runs.Count -eq $N) {
                 Write-Host ("[{0}] cached N={1} (use -Force to rerun)" -f $item.id, $N) -ForegroundColor DarkGray
-                return $cached
+                return (& $stampCachedResult $cached)
             }
             if ($null -eq $cached.runs -and $N -eq 1) {
                 Write-Host ("[{0}] cached legacy N=1 (use -Force to rerun)" -f $item.id) -ForegroundColor DarkGray
-                return $cached
+                return (& $stampCachedResult $cached)
             }
             $haveN = if ($null -ne $cached.runs) { $cached.runs.Count } else { 0 }
             Write-Host ("[{0}] cache miss (have N={1}, want N={2}) - re-running" -f $item.id, $haveN, $N) -ForegroundColor DarkGray
@@ -1454,7 +1624,18 @@ function Invoke-OneBench {
         if ($N -gt 1) {
             Write-Host ("  run {0}/{1}" -f ($i + 1), $N) -ForegroundColor DarkGray
         }
-        $r = Invoke-OneBenchRun -item $item -cfg $cfg -runIndex $i -logFile $logFile
+        $maxAttempts = 3
+        $attempt = 0
+        do {
+            $attempt++
+            if ($attempt -gt 1) {
+                Write-Host ("  retry {0}/{1}" -f $attempt, $maxAttempts) -ForegroundColor DarkYellow
+            }
+            $r = Invoke-OneBenchRun -item $item -cfg $cfg -runIndex $i -logFile $logFile
+            if ($r.ok) { break }
+            $attemptFailure = Get-RuntimeFailureFromResult `
+                -result $r -item $item -attempt $attempt -maxAttempts $maxAttempts
+        } while ($attemptFailure.retryable -and -not $attemptFailure.retry_exhausted)
 
         if (-not $r.ok) {
             # Single-record failure shape (no `runs` array): definitive
@@ -1467,6 +1648,10 @@ function Invoke-OneBench {
                 series          = $item.series
                 level           = $item.level
                 sweep           = $item.sweep
+                workload_kind   = if ($item.workload_kind) { $item.workload_kind } else { 'baseline' }
+                control_kind    = $item.control_kind
+                prefill_target_tokens = if ($item.prefill_target_tokens) { [int]$item.prefill_target_tokens } else { 0 }
+                kv_fill_target_tokens = if ($item.kv_fill_target_tokens) { [int]$item.kv_fill_target_tokens } else { 0 }
                 reasoning_mode  = $item.reasoning_mode
                 template_note   = $item.template_note
                 gguf_context_length = $item.gguf_context_length
@@ -1536,6 +1721,9 @@ function Invoke-OneBench {
                 llama_server_version     = if ($script:LLAMA_SERVER_VERSION)     { $script:LLAMA_SERVER_VERSION }     else { 'unknown' }
                 llama_server_exe         = if ($cfg.llama_server_exe)            { $cfg.llama_server_exe }            else { '' }
             }
+            $fallbackFailure = Get-RuntimeFailureFromResult `
+                -result $failResult -item $item -attempt $attempt -maxAttempts $maxAttempts
+            $failResult | Add-Member -NotePropertyName failure -NotePropertyValue $fallbackFailure -Force
             $failResult | Add-Member -NotePropertyName failure_reason -NotePropertyValue (Get-FailureReason -result $failResult -sharedConfirmMib $confirmMibLocal) -Force
             $failResult | ConvertTo-Json -Depth 5 | Out-File -Encoding utf8 $jsonFile
             Write-BenchStatusLine -item $item -result $failResult
@@ -1566,44 +1754,84 @@ function Write-BenchStatusLine {
         $detail = "prompt={0,6}t/s   eval={1,5}t/s   peak={2} MiB" -f $result.prompt_tps, $result.eval_tps, $result.vram_peak_mib
         if ($result.wddm_flag_shared_pos)    { $detail += "   [WDDM: shared=+$($result.shared_peak_mib)MiB]" }
         elseif ($result.wddm_flag_high_vram) { $detail += "   [WDDM: VRAM $([int]($result.wddm_vram_saturation*100))%]" }
-    } elseif ($result.failure_reason -eq 'model_missing') {
-        $detail = "(model file missing - re-download with get-models, or run discover to drop it)"
-    } elseif ($result.unsupported_architecture) {
-        $detail = "(unsupported architecture: $($result.unsupported_architecture))"
-    } elseif (-not $result.ready) {
-        $detail = "(server didn't become ready)"
     } else {
-        $detail = "(completion failed)"
+        $failure = Get-RuntimeFailureFromResult -result $result
+        if ($failure) {
+            $detail = "({0} during {1}: {2}; action={3})" -f `
+                $failure.cause, $failure.phase, $failure.evidence, $failure.action
+        } else {
+            $detail = "($($result.error))"
+        }
     }
     Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
 }
 
-function Get-FailureReason {
-    # Classify why a bench result is not ok into one of four buckets so
-    # downstream code (rotation, abandonment, reports) can act on it
-    # without re-parsing scattered signals. Returns one of:
-    #   vram_overflow      - WDDM paged into shared memory; the model
-    #                        couldn't fit in real VRAM. fit_status said
-    #                        'failed_but_running' OR shared_peak crossed
-    #                        the confirm threshold.
-    #   server_timeout     - llama-server never became ready in time, but
-    #                        no VRAM-pressure signal fired. Build/CUDA bug,
-    #                        broken model file, port conflict, etc.
-    #   unsupported_arch   - the v1.0 short-circuit: llama.cpp doesn't
-    #                        know this architecture yet (update llama.cpp).
-    #   other              - catch-all for $result.ok=false without any
-    #                        of the above signals.
-    # Returns $null when $result.ok is true (no failure to classify).
-    param($result, [int]$sharedConfirmMib = 500)
-    if ($null -eq $result) { return $null }
-    if ($result.ok) { return $null }
-    if ($result.unsupported_architecture) { return "unsupported_arch" }
-    $shared = if ($null -ne $result.shared_peak_mib) { [int]$result.shared_peak_mib } else { 0 }
-    if ($result.fit_status -eq "failed_but_running" -or $shared -gt $sharedConfirmMib) {
-        return "vram_overflow"
+function Get-RuntimeFailureFromResult {
+    # The TypeScript coordinator is authoritative. This fallback keeps the
+    # portable/non-CUDA adapter informative until that path also moves to Node.
+    param(
+        $result,
+        $item = $null,
+        [int]$attempt = 1,
+        [int]$maxAttempts = 3
+    )
+    if ($null -eq $result -or $result.ok) { return $null }
+    if ($result.failure -and $result.failure.cause) { return $result.failure }
+
+    $errorText = [string]$result.error
+    $cause = 'unknown'; $phase = 'completion'; $action = 'retry_same_config'; $retryable = $true
+    $exhaustedAction = 'skip_config_continue'
+    $workloadKind = if ($item -and $item.workload_kind) {
+        [string]$item.workload_kind
+    } elseif ($result.workload_kind) {
+        [string]$result.workload_kind
+    } else { 'baseline' }
+    if ($result.failure_reason -eq 'model_missing' -or $errorText -match 'model file\(s\) not found') {
+        $cause = 'model_missing'; $phase = 'preflight'; $action = 'skip_config_continue'; $retryable = $false
+    } elseif ($result.unsupported_architecture) {
+        $cause = 'unsupported_architecture'; $phase = 'compatibility'; $action = 'abandon_model'; $retryable = $false
+    } elseif ($errorText -like 'llama.cpp compatibility check failed:*') {
+        $cause = 'unsupported_argument'; $phase = 'compatibility'; $action = 'abandon_profile'; $retryable = $false
+    } elseif ($errorText -match 'quantized V cache.*requires Flash Attention|cache type.*not supported') {
+        $cause = 'incompatible_cache_profile'; $phase = 'load'; $action = 'abandon_profile'; $retryable = $false
+    } elseif ($result.fit_status -eq 'failed_but_running' -or $errorText -match 'out of memory|failed to allocate|not enough memory') {
+        $cause = 'load_oom'; $phase = 'load'; $action = 'abandon_heavier'; $retryable = $false
+    } elseif ($errorText -match 'timed? ?out|operation was aborted|AbortError') {
+        $cause = 'request_timeout'; $phase = 'completion'
+        $exhaustedAction = if ($workloadKind -eq 'prefill' -or $workloadKind -eq 'kv-fill') { 'skip_larger_targets' } else { 'skip_config_continue' }
+    } elseif ($errorText -match 'fetch failed|ECONNRESET|ECONNREFUSED|socket|network') {
+        $cause = 'transport_error'; $phase = 'completion'
+    } elseif ($result.ready -eq $false) {
+        $cause = 'load_process_exit'; $phase = 'load'
+    } elseif ($errorText -match 'invalid completion|too few tokens|no readable stream') {
+        $cause = 'invalid_completion'; $phase = 'completion'
     }
-    if ($result.ready -eq $false) { return "server_timeout" }
-    return "other"
+    $retryExhausted = $retryable -and $attempt -ge $maxAttempts
+    if ($retryExhausted) { $action = $exhaustedAction }
+    return [pscustomobject]@{
+        phase = $phase; cause = $cause; evidence = $(if ($errorText) { $errorText } else { $cause })
+        action = $action; retryable = $retryable; attempts = $attempt; retry_exhausted = $retryExhausted
+    }
+}
+
+function Get-FailureReason {
+    param($result, [int]$sharedConfirmMib = 500)
+    $failure = Get-RuntimeFailureFromResult -result $result
+    if ($failure) { return [string]$failure.cause }
+    return $null
+}
+
+function Resolve-RetryExhaustedChoice {
+    param($item, $failure)
+    if ($NonInteractive -or -not $failure.retry_exhausted) { return 'skip' }
+    Write-Host ""
+    Write-Host ("Retries exhausted for {0}: {1}" -f $item.label, $failure.evidence) -ForegroundColor Yellow
+    while ($true) {
+        $choice = (Read-Host "[s] skip and continue  [r] retry three more times  [a] abort benchmark").Trim().ToLowerInvariant()
+        if (-not $choice -or $choice -eq 's' -or $choice -eq 'skip') { return 'skip' }
+        if ($choice -eq 'r' -or $choice -eq 'retry') { return 'retry' }
+        if ($choice -eq 'a' -or $choice -eq 'abort') { return 'abort' }
+    }
 }
 
 function Select-PlanForBench {
@@ -1877,8 +2105,7 @@ function Invoke-Bench {
     }
 
     # Stamp session metadata on every result this bench writes. Idempotent
-    # so 'all' (which calls Invoke-Bench in a per-sample loop) keeps one
-    # session across all its inner invocations.
+    # so the catalog workflow keeps one session across all model invocations.
     Initialize-BenchSession -LlamaServerExe $cfg.llama_server_exe
     Write-Host ("bench session {0} . llama-server {1} . started {2}" -f $script:BENCH_SESSION_ID, $script:LLAMA_SERVER_VERSION, $script:BENCH_SESSION_STARTED_AT) -ForegroundColor DarkGray
 
@@ -1932,9 +2159,12 @@ function Invoke-Bench {
     $okCount    = 0
     $failCount  = 0
     $skipCount  = 0
+    $unresolvedFailures = New-Object System.Collections.ArrayList
+    $speedSweepStates = @{}
+    $conditionalEligibility = @{}
     $i = 0
-    # Threshold used by Get-FailureReason to decide vram_overflow vs other.
-    # Mirrors the value used in Invoke-OneBenchRun / New-AggregatedBenchResult
+    # Shared-allocation threshold used by run metrics. Failure classification
+    # intentionally does not infer OOM or spill from this value alone.
     # for the WDDM flag so all three views agree.
     $confirmThresh = if ($cfg.wddm_detection -and $null -ne $cfg.wddm_detection.shared_delta_confirm_mib) {
         [int]$cfg.wddm_detection.shared_delta_confirm_mib
@@ -1964,12 +2194,64 @@ function Invoke-Bench {
     $rotatedCount = 0
     $keptCount    = 0
 
+    $getAbandonmentKey = {
+        param($planItem)
+        $pathKey = [string]$planItem.model_path
+        if ($planItem.sweep -eq 'context') {
+            $args = [string]$planItem.extra_args
+            $kvK = if ($args -match '--cache-type-k\s+(\S+)') { $Matches[1] } else { 'default' }
+            $kvV = if ($args -match '--cache-type-v\s+(\S+)') { $Matches[1] } else { 'default' }
+            return "$pathKey|context|$kvK|$kvV"
+        }
+        return "$pathKey|$($planItem.sweep)"
+    }
+    $getProfileKey = {
+        param($planItem)
+        $args = [string]$planItem.extra_args
+        $kvK = if ($args -match '--cache-type-k\s+(\S+)') { $Matches[1] } else { 'default' }
+        $kvV = if ($args -match '--cache-type-v\s+(\S+)') { $Matches[1] } else { 'default' }
+        return "$([string]$planItem.model_path)|profile|$kvK|$kvV"
+    }
+    $getWorkloadKey = {
+        param($planItem)
+        $kind = if ($planItem.workload_kind) { [string]$planItem.workload_kind } else { 'baseline' }
+        $source = if ($planItem.diagnostic_source_id) { [string]$planItem.diagnostic_source_id } else { [string]$planItem.extra_args }
+        return "$([string]$planItem.model_path)|workload|$kind|$source"
+    }
+
     foreach ($item in $filtered) {
         $i++
         $mp = $item.model_path
+        $allAbandonmentKey = "$mp|all"
+        $sweepAbandonmentKey = & $getAbandonmentKey $item
+        $profileAbandonmentKey = & $getProfileKey $item
+        $workloadAbandonmentKey = & $getWorkloadKey $item
 
-        if ($abandoned.ContainsKey($item.model)) {
-            $reason = $abandoned[$item.model]
+        if ($item.conditional_kind -eq 'kv_rescue') {
+            $sourceId = [string]$item.conditional_source_id
+            $eligible = $sourceId -and $conditionalEligibility.ContainsKey($sourceId) -and $conditionalEligibility[$sourceId]
+            if (-not $eligible) {
+                Write-Host ("[SKIP] {0,-55} (same-context KV rescue not needed)" -f $item.label) -ForegroundColor DarkGray
+                $skipCount++
+                $modelStatus[$mp].skip++
+                $modelStatus[$mp].done++
+                Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
+                continue
+            }
+            Write-Host ("[rescue] primary {0} failed for capacity; trying lower KV quality at the same context" -f $sourceId) -ForegroundColor DarkYellow
+        }
+
+        $activeAbandonmentKey = if ($abandoned.ContainsKey($allAbandonmentKey)) {
+            $allAbandonmentKey
+        } elseif ($abandoned.ContainsKey($profileAbandonmentKey)) {
+            $profileAbandonmentKey
+        } elseif ($abandoned.ContainsKey($workloadAbandonmentKey)) {
+            $workloadAbandonmentKey
+        } elseif ($abandoned.ContainsKey($sweepAbandonmentKey)) {
+            $sweepAbandonmentKey
+        } else { $null }
+        if ($activeAbandonmentKey) {
+            $reason = $abandoned[$activeAbandonmentKey]
             Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkYellow
             $skipCount++
             $modelStatus[$mp].skip++
@@ -1992,33 +2274,115 @@ function Invoke-Bench {
                        -PercentComplete $pct
 
         Write-Host ("`n[$i/$total] $($item.label)") -ForegroundColor Cyan
-        $r = Invoke-OneBench -item $item -cfg $cfg
+        $manualRetry = $false
+        do {
+            if ($manualRetry) {
+                $savedForce = $script:Force
+                $script:Force = $true
+                try {
+                    $r = Invoke-OneBench -item $item -cfg $cfg
+                } finally {
+                    $script:Force = $savedForce
+                }
+            } else {
+                $r = Invoke-OneBench -item $item -cfg $cfg
+            }
+            $failure = Get-RuntimeFailureFromResult -result $r
+            $choice = if ($failure) { Resolve-RetryExhaustedChoice -item $item -failure $failure } else { 'skip' }
+            if ($choice -eq 'abort') {
+                throw ("Benchmark aborted after retries were exhausted for '{0}': {1}" -f $item.label, $failure.evidence)
+            }
+            if ($choice -eq 'retry') {
+                $manualRetry = $true
+                continue
+            }
+            break
+        } while ($true)
         if ($r.ok) {
             $okCount++
             $modelStatus[$mp].ok++
+            $workloadKind = if ($item.workload_kind) { [string]$item.workload_kind } else { 'baseline' }
+            $isAdaptiveSpeedSweep = (
+                $workloadKind -eq 'baseline' -and
+                -not $item.control_kind -and
+                ($item.sweep -eq 'offload' -or $item.sweep -eq 'moe-cpu')
+            )
+            if ($isAdaptiveSpeedSweep -and $null -ne $r.eval_tps) {
+                $speedSettings = $cfg.planning.speed_sweep
+                $declineTolerance = if ($speedSettings -and $null -ne $speedSettings.decline_tolerance_pct) {
+                    [double]$speedSettings.decline_tolerance_pct
+                } else { 0.02 }
+                $descendingPoints = if ($speedSettings -and $speedSettings.descending_points_to_stop) {
+                    [int]$speedSettings.descending_points_to_stop
+                } else { 2 }
+                $fullCurve = ($FullSpeedCurve -or ($speedSettings -and $speedSettings.full_curve -eq $true))
+                $speedKey = "$mp|speed|$($item.sweep)"
+                $currentState = if ($speedSweepStates.ContainsKey($speedKey)) { $speedSweepStates[$speedKey] } else { $null }
+                $decision = Update-AdaptiveSpeedSweepState `
+                    -State $currentState -EvalTps ([double]$r.eval_tps) -ConfigId ([string]$item.id) `
+                    -DeclineTolerancePct $declineTolerance -DescendingPointsToStop $descendingPoints
+                $speedSweepStates[$speedKey] = $decision.state
+
+                $r | Add-Member -NotePropertyName speed_sweep_relation -NotePropertyValue $decision.relation -Force
+                $r | Add-Member -NotePropertyName speed_sweep_best_eval_tps -NotePropertyValue $decision.state.best_eval_tps -Force
+                $r | Add-Member -NotePropertyName speed_sweep_below_peak_count -NotePropertyValue $decision.state.below_peak_count -Force
+                $r | Add-Member -NotePropertyName speed_sweep_stop_triggered -NotePropertyValue ($decision.should_stop -and -not $fullCurve) -Force
+                $resultFile = Join-Path $CALIBR_RESULTS_DIR "$($item.id).json"
+                $r | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 $resultFile
+
+                if ($decision.should_stop -and -not $fullCurve) {
+                    $bestEval = [math]::Round([double]$decision.state.best_eval_tps, 2)
+                    $abandoned[$sweepAbandonmentKey] = "adaptive speed sweep passed its peak ($bestEval t/s); $descendingPoints descending points confirmed"
+                    Write-Host ("  -> adaptive stop: peak {0} t/s at {1}; later {2} configs in this sweep will be skipped" -f `
+                        $bestEval, $decision.state.best_config_id, $descendingPoints) -ForegroundColor DarkCyan
+                }
+            }
         } else {
             $failCount++
             $modelStatus[$mp].fail++
+            $failure = Get-RuntimeFailureFromResult -result $r
+            if ($failure) {
+                [void]$unresolvedFailures.Add([pscustomobject]@{
+                    id = $item.id; label = $item.label; cause = [string]$failure.cause
+                    phase = [string]$failure.phase; action = [string]$failure.action
+                    evidence = [string]$failure.evidence
+                    log = (Join-Path $CALIBR_LOGS_DIR "$($item.id).log")
+                })
+            }
         }
         $modelStatus[$mp].done++
 
-        if (-not $r.ok -and $r.unsupported_architecture) {
-            $abandoned[$item.model] = "unsupported architecture '$($r.unsupported_architecture)'"
-            Write-Host "  -> abandoning remaining tests for model '$($item.model)' (update llama.cpp to fix)" -ForegroundColor DarkYellow
+        if (-not $item.conditional_kind -and $item.sweep -eq 'context' -and
+            (-not $item.workload_kind -or $item.workload_kind -eq 'baseline')) {
+            $conditionalEligibility[[string]$item.id] = (Test-KvRescueEligibility -Result $r)
         }
 
-        # Sweep-aware abandonment on VRAM overflow. The context sweep raises
-        # ctx ascending: if the smallest ctx already pages, larger ctxs make
-        # it worse. The offload sweep raises gpu-layers ascending: if 20
-        # already pages, 24..36 push even more onto the GPU. The moe-cpu sweep
-        # raises n-cpu-moe ascending = MORE on CPU = LESS GPU pressure, so a
-        # failure on 28 (most-on-GPU) does NOT predict failure on 36;
-        # do not abandon a moe-cpu sweep on vram_overflow.
-        if (-not $r.ok -and -not $abandoned.ContainsKey($item.model)) {
-            $reason = Get-FailureReason -result $r -sharedConfirmMib $confirmThresh
-            if ($reason -eq "vram_overflow" -and ($item.sweep -eq "context" -or $item.sweep -eq "offload")) {
-                $abandoned[$item.model] = "vram overflow at smallest config in the $($item.sweep) sweep; larger configs will be worse"
-                Write-Host ("  -> abandoning remaining {0}-sweep tests for model '{1}' (vram overflow detected; bigger ctx/ngl can only worsen it)" -f $item.sweep, $item.model) -ForegroundColor DarkYellow
+        if (-not $r.ok) {
+            $failure = Get-RuntimeFailureFromResult -result $r
+            if ($failure) {
+                $message = "{0}: {1}" -f $failure.cause, $failure.evidence
+                switch ([string]$failure.action) {
+                    'abort_benchmark' {
+                        throw ("Benchmark cannot continue: {0}" -f $message)
+                    }
+                    'abandon_model' {
+                        $abandoned[$allAbandonmentKey] = $message
+                    }
+                    'abandon_profile' {
+                        $abandoned[$profileAbandonmentKey] = $message
+                    }
+                    'abandon_heavier' {
+                        if ($item.sweep -eq 'context' -or $item.sweep -eq 'offload') {
+                            $abandoned[$sweepAbandonmentKey] = $message
+                        }
+                    }
+                    'skip_larger_targets' {
+                        $abandoned[$workloadAbandonmentKey] = $message
+                    }
+                }
+                if ($failure.action -ne 'skip_config_continue' -and $failure.action -ne 'retry_same_config') {
+                    Write-Host ("  -> {0}: {1}" -f $failure.action, $message) -ForegroundColor DarkYellow
+                }
             }
         }
 
@@ -2045,9 +2409,18 @@ function Invoke-Bench {
     Write-Host (" calibr - bench completed in $durStr") -ForegroundColor Cyan
     Write-Host ("   configs: {0} ok ({1}%) - {2} fail - {3} skipped / {4}{5}" -f $okCount, $okPct, $failCount, $skipCount, $total, $runsHint)
     if ($abandoned.Count -gt 0) {
-        Write-Host ("   abandoned families: {0}" -f (($abandoned.Keys) -join ', ')) -ForegroundColor DarkYellow
+        Write-Host ("   abandoned monotonic profiles: {0}" -f $abandoned.Count) -ForegroundColor DarkYellow
         $reasons = @($abandoned.Values | Sort-Object -Unique)
         Write-Host ("   reason: {0}" -f ($reasons -join '; ')) -ForegroundColor DarkYellow
+    }
+    if ($unresolvedFailures.Count -gt 0) {
+        Write-Host ("   unresolved failures: {0}" -f $unresolvedFailures.Count) -ForegroundColor DarkYellow
+        foreach ($group in @($unresolvedFailures | Group-Object cause | Sort-Object Count -Descending)) {
+            Write-Host ("     {0}: {1}" -f $group.Name, $group.Count) -ForegroundColor DarkYellow
+        }
+        foreach ($entry in @($unresolvedFailures)) {
+            Write-Host ("     - {0}: {1} [{2}] log={3}" -f $entry.label, $entry.evidence, $entry.action, $entry.log) -ForegroundColor DarkGray
+        }
     }
     if ($rotatedCount -gt 0 -or $keptCount -gt 0) {
         Write-Host ("   files: {0} downloaded and deleted - {1} kept" -f $rotatedCount, $keptCount) -ForegroundColor DarkCyan

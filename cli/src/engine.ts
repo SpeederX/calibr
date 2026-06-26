@@ -537,6 +537,9 @@ export interface Result {
   label: string;
   level?: "low" | "middle" | "high" | "ultra" | string | null;
   sweep?: "context" | "moe-cpu" | "offload" | string | null;
+  control_kind?: "vanilla" | "vanilla-adjacent" | null;
+  conditional_kind?: "kv_rescue" | null;
+  conditional_source_id?: string | null;
   model: string;
   variant: string;
   series?: string;
@@ -549,10 +552,25 @@ export interface Result {
   shared_peak_mib?: number;
   wddm_vram_saturation?: number;
   fit_status?: string;
-  failure_reason?: "vram_overflow" | "server_timeout" | "unsupported_arch" | "model_missing" | "other" | null;
+  failure_reason?: string | null;
+  failure?: {
+    phase: string;
+    cause: string;
+    evidence: string;
+    action: string;
+    retryable: boolean;
+    attempts: number;
+    retry_exhausted: boolean;
+  } | null;
   unsupported_architecture?: string | null;
   extra_args?: string;
   timestamp?: string;
+  run_started_at?: string | null;
+  run_ended_at?: string | null;
+  run_duration_ms?: number | null;
+  run_duration_median_ms?: number | null;
+  gpu_energy_wh?: number | null;
+  gpu_energy_j?: number | null;
   // Extended metrics (v0.1.3+). Null when not collected (failure before
   // bench POST, or pre-extended-metrics legacy result JSONs).
   ttft_sec?: number | null;
@@ -574,9 +592,26 @@ export interface Result {
   delivery_gap_median_ms?: number | null;
   delivery_gap_p95_ms?: number | null;
   delivery_gap_max_ms?: number | null;
+  workload_prepare_ms?: number | null;
+  workload_prompt_tokens?: number | null;
+  workload_target_error_tokens?: number | null;
+  kv_fill_ms?: number | null;
+  kv_fill_cached_tokens?: number | null;
   total_request_ms?: number | null;
   latency_total_request_ms?: number | null;
   latency_error?: string | null;
+  planning_mode?: string | null;
+  calibration_id?: string | null;
+  predicted_fit_layers?: number | null;
+  verified_fit_layers?: number | null;
+  first_spill_layers?: number | null;
+  probe_count?: number | null;
+  fit_offset?: number | null;
+  calibration_cache_hit?: boolean | null;
+  calibration_cache_age_hours?: number | null;
+  predicted_n_cpu_moe?: number | null;
+  verified_n_cpu_moe?: number | null;
+  first_spill_n_cpu_moe?: number | null;
   gpu_power_peak_w?: number;
   gpu_temp_peak_c?: number;
   gpu_util_avg_pct?: number;
@@ -658,10 +693,13 @@ export function groupByModel(results: Result[], cfg?: Config): ModelGroup[] {
     const oks = configs.filter(c => c.ok);
     if (oks.length === 0) continue;
     const winnerMap = groupWinners(oks, "safety", { confirmMib: threshold });
-    const winner = winnerMap[model] as WinnerWithMeta<Result>;
+    const winner = (winnerMap[model] ?? oks
+      .slice()
+      .sort((a, b) => (b.eval_tps ?? -1) - (a.eval_tps ?? -1))[0]) as WinnerWithMeta<Result>;
+    if (!winnerMap[model]) winner._fallback = true;
     out.push({
       model,
-      series: winner.series,
+      series: winner.series ?? configs.find(c => c.series)?.series,
       winner,
       configs: configs.sort((a, b) => (b.eval_tps ?? -1) - (a.eval_tps ?? -1)),
       successCount: oks.length,
@@ -705,6 +743,10 @@ function buildEngineEnv(trace?: TraceContext): NodeJS.ProcessEnv {
           CALIBR_TS_RESULT_CORE_SCRIPT: join(__dirname, "resultCoreCli.js"),
           CALIBR_TS_LIFECYCLE: "1",
           CALIBR_TS_LIFECYCLE_SCRIPT: join(__dirname, "serverLifecycleCli.js"),
+          CALIBR_TS_OFFLOAD_CALIBRATION: "1",
+          CALIBR_TS_OFFLOAD_CALIBRATION_SCRIPT: join(__dirname, "offloadCalibrationCli.js"),
+          CALIBR_TS_MOE_CALIBRATION: "1",
+          CALIBR_TS_MOE_CALIBRATION_SCRIPT: join(__dirname, "moeCalibrationCli.js"),
           CALIBR_NODE: process.execPath,
         }
       : {}),
@@ -911,6 +953,95 @@ function launchDetached(cmd: string, args: string[]): boolean {
   } catch {
     return false;
   }
+}
+
+function systemOpener(target: string): [string, string[]] {
+  if (process.platform === "win32") return ["cmd", ["/c", "start", "", target]];
+  if (process.platform === "darwin") return ["open", [target]];
+  return ["xdg-open", [target]];
+}
+
+export interface BenchmarkLog {
+  name: string;
+  path: string;
+  configId: string | null;
+  kind: "config" | "campaign";
+  sizeBytes: number;
+  modifiedAt: string;
+  runCount: number;
+}
+
+export function listBenchmarkLogs(): BenchmarkLog[] {
+  if (!existsSync(CALIBR_LOGS_DIR)) return [];
+  return readdirSync(CALIBR_LOGS_DIR)
+    .filter((name) => name.endsWith(".log") && !name.startsWith("action-trace."))
+    .map((name): BenchmarkLog | null => {
+      const path = join(CALIBR_LOGS_DIR, name);
+      try {
+        const stat = statSync(path);
+        if (!stat.isFile()) return null;
+        const content = readFileSync(path, "utf8");
+        const runCount = [...content.matchAll(/^===== RUN \d+ =====$/gm)].length;
+        const isCampaign = /\.out\.log$/i.test(name);
+        return {
+          name,
+          path,
+          configId: isCampaign ? null : name.replace(/\.log$/i, ""),
+          kind: isCampaign ? "campaign" : "config",
+          sizeBytes: stat.size,
+          modifiedAt: stat.mtime.toISOString(),
+          runCount,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter((entry): entry is BenchmarkLog => entry !== null)
+    .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+}
+
+export function readBenchmarkLogTail(path: string, maxLines = 40): string[] {
+  const absolute = resolve(path);
+  const logsRoot = resolve(CALIBR_LOGS_DIR);
+  if (absolute !== logsRoot && !absolute.startsWith(`${logsRoot}${process.platform === "win32" ? "\\" : "/"}`)) {
+    return [];
+  }
+  try {
+    return readFileSync(absolute, "utf8")
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-Math.max(1, maxLines));
+  } catch {
+    return [];
+  }
+}
+
+export function openBenchmarkLog(path: string): boolean {
+  if (!existsSync(path)) return false;
+  const [cmd, args] = systemOpener(path);
+  const ok = launchDetached(cmd, args);
+  traceAction({
+    flow: "results",
+    action: "open benchmark log",
+    status: ok ? "completed" : "failed",
+    message: `results > benchmark run logs > open ${ok ? "launched" : "failed"}`,
+    details: { log: path },
+  });
+  return ok;
+}
+
+export function openBenchmarkLogsFolder(): boolean {
+  mkdirSync(CALIBR_LOGS_DIR, { recursive: true });
+  const [cmd, args] = systemOpener(CALIBR_LOGS_DIR);
+  const ok = launchDetached(cmd, args);
+  traceAction({
+    flow: "results",
+    action: "open benchmark logs folder",
+    status: ok ? "completed" : "failed",
+    message: `results > benchmark run logs > open folder ${ok ? "launched" : "failed"}`,
+    details: { folder: CALIBR_LOGS_DIR },
+  });
+  return ok;
 }
 
 /** Open a URL in the OS default browser. */

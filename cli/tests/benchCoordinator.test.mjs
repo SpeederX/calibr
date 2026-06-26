@@ -5,7 +5,7 @@ import { PassThrough } from "node:stream";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runBenchCoordinator } from "../dist/benchCoordinator.js";
+import { integrateGpuEnergyWh, runBenchCoordinator } from "../dist/benchCoordinator.js";
 
 function child() {
   const proc = new EventEmitter();
@@ -19,6 +19,37 @@ function child() {
   };
   return proc;
 }
+
+const testCapabilities = {
+  executable: "llama-server",
+  version: "test",
+  options: [
+    "-m", "--ctx-size", "--port", "--host", "--no-warmup",
+    "--cache-ram", "--slot-save-path",
+  ],
+  cacheTypesK: [],
+  cacheTypesV: [],
+  helpExitCode: 0,
+  ok: true,
+  error: null,
+};
+
+test("integrateGpuEnergyWh integrates sampled board power across elapsed time", () => {
+  const wh = integrateGpuEnergyWh([
+    { elapsed_ms: 0, gpu_power_w: 100 },
+    { elapsed_ms: 1_000, gpu_power_w: 200 },
+    { elapsed_ms: 2_000, gpu_power_w: 100 },
+  ]);
+  assert.equal(wh, 300 / 3600);
+});
+
+test("integrateGpuEnergyWh extends final sampled power to the run end", () => {
+  const wh = integrateGpuEnergyWh([
+    { elapsed_ms: 0, gpu_power_w: 50 },
+    { elapsed_ms: 1_000, gpu_power_w: 50 },
+  ], 2_000);
+  assert.equal(wh, 100 / 3600);
+});
 
 test("runBenchCoordinator repeats runs and aggregates in one process", async () => {
   const root = mkdtempSync(join(tmpdir(), "calibr-coordinator-"));
@@ -42,6 +73,7 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
       eventFile: join(root, "events.log"),
       logFile: join(root, "bench.log"),
     }, {
+      inspectLlama: () => testCapabilities,
       spawnServer: () => child(),
       waitReady: async () => ({ ready: true, loadMs: 100, reason: "ready" }),
       collectSample: async () => ({
@@ -98,7 +130,7 @@ test("runBenchCoordinator repeats runs and aggregates in one process", async () 
   }
 });
 
-test("runBenchCoordinator stops after the first failed run", async () => {
+test("runBenchCoordinator retries a failed measured run without aggregating failed attempts", async () => {
   const root = mkdtempSync(join(tmpdir(), "calibr-coordinator-fail-"));
   let httpCalls = 0;
   try {
@@ -115,6 +147,7 @@ test("runBenchCoordinator stops after the first failed run", async () => {
       eventFile: join(root, "events.log"),
       logFile: join(root, "bench.log"),
     }, {
+      inspectLlama: () => testCapabilities,
       spawnServer: () => child(),
       waitReady: async () => ({ ready: true, loadMs: 100, reason: "ready" }),
       collectSample: async () => ({
@@ -145,8 +178,48 @@ test("runBenchCoordinator stops after the first failed run", async () => {
       sleep: async () => {},
     });
     assert.equal(out.ok, false);
-    assert.equal(out.runs.length, 1);
-    assert.equal(httpCalls, 1);
+    assert.equal(out.runs.length, 0);
+    assert.equal(out.attempts.length, 3);
+    assert.equal(httpCalls, 3);
+    assert.equal(out.failure?.cause, "unknown");
+    assert.equal(out.failure?.retry_exhausted, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runBenchCoordinator rejects unsupported sweep arguments before spawning llama-server", async () => {
+  const root = mkdtempSync(join(tmpdir(), "calibr-coordinator-compat-"));
+  let spawned = false;
+  try {
+    const out = await runBenchCoordinator({
+      item: {
+        id: "x",
+        model: "X",
+        model_path: "x.gguf",
+        extra_args: "--ctx-size 16 --n-cpu-moe 4",
+      },
+      cfg: {
+        llama_server_exe: "llama-server",
+        bench: { port: 18080 },
+      },
+      runs: 1,
+      eventFile: join(root, "events.log"),
+      logFile: join(root, "bench.log"),
+    }, {
+      inspectLlama: () => ({
+        ...testCapabilities,
+        options: testCapabilities.options.filter((option) => option !== "--n-cpu-moe"),
+      }),
+      spawnServer: () => {
+        spawned = true;
+        return child();
+      },
+    });
+    assert.equal(out.ok, false);
+    assert.equal(spawned, false);
+    assert.equal(out.result.failure_reason, "unsupported_argument");
+    assert.match(out.error, /--n-cpu-moe/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

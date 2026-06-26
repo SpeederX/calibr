@@ -1,3 +1,5 @@
+import { deriveMemoryPolicies } from "./memoryPolicy.js";
+
 export interface BenchItem {
   id?: string;
   label?: string;
@@ -6,10 +8,26 @@ export interface BenchItem {
   series?: string;
   level?: string;
   sweep?: string;
+  workload_kind?: "baseline" | "prefill" | "kv-fill";
+  control_kind?: "vanilla" | "vanilla-adjacent" | null;
+  prefill_target_tokens?: number;
+  kv_fill_target_tokens?: number;
   reasoning_mode?: string | null;
   template_note?: string | null;
   gguf_context_length?: number | null;
   gguf_architecture?: string | null;
+  planning_mode?: string | null;
+  calibration_id?: string | null;
+  predicted_fit_layers?: number | null;
+  verified_fit_layers?: number | null;
+  first_spill_layers?: number | null;
+  probe_count?: number | null;
+  fit_offset?: number | null;
+  calibration_cache_hit?: boolean | null;
+  calibration_cache_age_hours?: number | null;
+  predicted_n_cpu_moe?: number | null;
+  verified_n_cpu_moe?: number | null;
+  first_spill_n_cpu_moe?: number | null;
   model_path?: string;
   mmproj_path?: string | null;
   extra_args?: string;
@@ -33,6 +51,11 @@ export interface BenchRun {
   [key: string]: unknown;
   run_index?: number;
   timestamp?: string;
+  run_started_at?: string;
+  run_ended_at?: string;
+  run_duration_ms?: number | null;
+  gpu_energy_wh?: number | null;
+  gpu_energy_j?: number | null;
   vram_before_mib?: number | null;
   vram_peak_mib?: number | null;
   vram_baseline_mib?: number | null;
@@ -56,7 +79,12 @@ export interface BenchRun {
   compute_cuda_mib?: number | null;
   compute_host_mib?: number | null;
   layers_offloaded?: string | null;
+  effective_context_size?: number | null;
+  effective_parallel_slots?: number | null;
+  effective_n_parallel?: number | null;
+  flash_attention_state?: "enabled" | "disabled" | "auto-disabled" | "unknown" | null;
   fit_status?: string | null;
+  fit_status_source?: "llama.cpp" | "inferred" | null;
   unsupported_architecture?: string | null;
   ttft_sec?: number | null;
   prompt_ms?: number | null;
@@ -76,6 +104,11 @@ export interface BenchRun {
   delivery_gap_median_ms?: number | null;
   delivery_gap_p95_ms?: number | null;
   delivery_gap_max_ms?: number | null;
+  workload_prepare_ms?: number | null;
+  workload_prompt_tokens?: number | null;
+  workload_target_error_tokens?: number | null;
+  kv_fill_ms?: number | null;
+  kv_fill_cached_tokens?: number | null;
   total_request_ms?: number | null;
   latency_total_request_ms?: number | null;
   latency_error?: string | null;
@@ -87,11 +120,12 @@ export interface BenchRun {
   ram_used_peak_mib?: number | null;
   disk_read_peak_mb_s?: number | null;
   telemetry?: BenchTelemetryPoint[];
+  failure?: import("./failurePolicy.js").RuntimeFailure | null;
 }
 
 export interface BenchTelemetryPoint {
   elapsed_ms: number;
-  phase: "warmup" | "throughput" | "latency_prompt" | "latency_eval" | "latency_reasoning" | "latency_answer";
+  phase: "warmup" | "kv_fill" | "throughput" | "latency_prompt" | "latency_eval" | "latency_reasoning" | "latency_answer";
   token_index?: number | null;
   rolling_tps?: number | null;
   event_index?: number | null;
@@ -110,6 +144,7 @@ export interface BenchTelemetryPoint {
   shared_mib: number;
   gpu_util_pct: number | null;
   cpu_util_pct: number | null;
+  gpu_power_w?: number | null;
 }
 
 export interface ResultCoreSession {
@@ -118,7 +153,7 @@ export interface ResultCoreSession {
   llama_server_version?: string;
 }
 
-export const METRIC_SCHEMA_VERSION = 4;
+export const METRIC_SCHEMA_VERSION = 5;
 
 export const METRIC_GLOSSARY = {
   load_ms: "Process start to /v1/models readiness; model load plus backend initialization.",
@@ -144,7 +179,11 @@ export const METRIC_GLOSSARY = {
   ram_used_peak_mib: "Peak reduction in available system RAM relative to the pre-run baseline.",
   gpu_util_avg_pct: "Average GPU utilization across collected samples.",
   cpu_util_avg_pct: "Average total CPU utilization across collected samples.",
+  gpu_energy_wh: "Estimated GPU-board energy used during the measured run, integrated from sampled power over elapsed time.",
+  run_duration_ms: "Wall-clock duration from the beginning to the end of the measured llama-server run.",
   telemetry: "Time-series samples for prefill/reasoning/answer, server generation rate, delivery gaps, memory pressure, and utilization.",
+  workload_prompt_tokens: "Actual chat-templated prompt tokens prepared for the diagnostic workload.",
+  kv_fill_cached_tokens: "Prompt tokens reused from the prepared KV prefix by the measured request.",
 } as const;
 
 export interface ParsedLlamaServerStderr {
@@ -154,6 +193,10 @@ export interface ParsedLlamaServerStderr {
   compute_cuda_mib?: number;
   compute_host_mib?: number;
   layers_offloaded?: string;
+  effective_context_size?: number;
+  effective_parallel_slots?: number;
+  effective_n_parallel?: number;
+  flash_attention_state?: "enabled" | "disabled" | "auto-disabled" | "unknown";
   unsupported_architecture?: string;
   fit_status: "success" | "failed_but_running" | "unknown";
 }
@@ -216,11 +259,37 @@ export function parseLlamaServerStderr(stderr: string): ParsedLlamaServerStderr 
   }
   const layers = stderr.match(/offloaded (\d+)\/(\d+) layers/);
   if (layers) out.layers_offloaded = `${layers[1]}/${layers[2]}`;
+  const slotContext = stderr.match(/new slot, n_ctx\s*=\s*(\d+)/);
+  if (slotContext) out.effective_context_size = Number.parseInt(slotContext[1], 10);
+  const slots = stderr.match(/initializing slots, n_slots\s*=\s*(\d+)/);
+  if (slots) out.effective_parallel_slots = Number.parseInt(slots[1], 10);
+  const nParallel = stderr.match(/n_parallel\s*(?:is set to auto,\s*using\s*)?n_parallel\s*=\s*(\d+)/);
+  if (nParallel) out.effective_n_parallel = Number.parseInt(nParallel[1], 10);
+  if (/Flash Attention was auto, set to disabled/i.test(stderr)) out.flash_attention_state = "auto-disabled";
+  else if (/flash attention.*disabled/i.test(stderr)) out.flash_attention_state = "disabled";
+  else if (/flash attention.*enabled/i.test(stderr)) out.flash_attention_state = "enabled";
   const architecture = stderr.match(/unknown model architecture: '([^']+)'/);
   if (architecture) out.unsupported_architecture = architecture[1];
   if (/successfully fit params/.test(stderr)) out.fit_status = "success";
   else if (/failed to fit params/.test(stderr)) out.fit_status = "failed_but_running";
   return out;
+}
+
+function argValue(args: string | null | undefined, names: string[]): string | null {
+  if (!args) return null;
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = args.match(new RegExp(`(?:^|\\s)${escaped}\\s+([^\\s]+)`));
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function argInt(args: string | null | undefined, names: string[]): number | null {
+  const value = argValue(args, names);
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 export function finalizeBenchRun(payload: {
@@ -240,19 +309,22 @@ export function finalizeBenchRun(payload: {
     ...payload.run,
     ...parsed,
     fit_status: inferFitStatus(parsed.fit_status, payload.run.ok === true, sharedPeak, confirm),
+    fit_status_source: parsed.fit_status ? "llama.cpp" : "inferred",
     wddm_vram_saturation: round(saturation, 3),
     wddm_flag_high_vram: saturation > threshold,
     wddm_flag_shared_pos: sharedPeak > confirm,
   };
 }
 
-export function getFailureReason(result: Record<string, unknown>, sharedConfirmMib = 500): string | null {
+export function getFailureReason(result: Record<string, unknown>, _sharedConfirmMib = 500): string | null {
   if (result.ok === true) return null;
-  if (result.unsupported_architecture) return "unsupported_arch";
-  if (result.fit_status === "failed_but_running") return "vram_overflow";
-  if (int(result.shared_peak_mib) > sharedConfirmMib) return "vram_overflow";
-  if (result.ready === false) return "server_timeout";
-  return "other";
+  const structured = result.failure as { cause?: unknown } | null | undefined;
+  if (typeof structured?.cause === "string") return structured.cause;
+  if (String(result.error ?? "").startsWith("llama.cpp compatibility check failed:")) return "unsupported_argument";
+  if (result.unsupported_architecture) return "unsupported_architecture";
+  if (result.fit_status === "failed_but_running") return "load_oom";
+  if (result.ready === false) return "load_process_exit";
+  return "unknown";
 }
 
 export function contextSizeFromArgs(extraArgs: string | null | undefined): number | null {
@@ -330,6 +402,7 @@ export function buildReportRows(
     if (!current || disk > current.disk) coldByModel.set(model, { disk, loadMs });
   }
 
+  const memoryPolicies = deriveMemoryPolicies(results, vramTotalMib);
   return results.map((result) => {
     const cold = coldByModel.get(String(result.model ?? ""));
     return {
@@ -355,6 +428,11 @@ export function buildReportRows(
       delivery_gap_median_ms: num(result.delivery_gap_median_ms),
       delivery_gap_p95_ms: num(result.delivery_gap_p95_ms),
       delivery_gap_max_ms: num(result.delivery_gap_max_ms),
+      workload_prepare_ms: num(result.workload_prepare_ms),
+      workload_prompt_tokens: num(result.workload_prompt_tokens),
+      workload_target_error_tokens: num(result.workload_target_error_tokens),
+      kv_fill_ms: num(result.kv_fill_ms),
+      kv_fill_cached_tokens: num(result.kv_fill_cached_tokens),
       total_request_ms: num(result.total_request_ms),
       latency_total_request_ms: num(result.latency_total_request_ms),
       latency_error: result.latency_error ?? null,
@@ -375,6 +453,7 @@ export function buildReportRows(
       model_cold_disk_read_peak_mb_s: cold?.disk ?? null,
       ...deriveResultFields(result, vramTotalMib),
       ...runStats(result),
+      ...(memoryPolicies.get(String(result.id ?? "")) ?? {}),
     };
   });
 }
@@ -411,7 +490,13 @@ export function aggregateBenchResult(payload: {
   const totalReqMs = median(runs.map((r) => num(r.total_request_ms)));
   const latReqMs = median(runs.map((r) => num(r.latency_total_request_ms)));
   const metricMedian = (field: keyof BenchRun) => median(runs.map((run) => num(run[field])));
+  const runStartedAt = runs.map((run) => String(run.run_started_at ?? "")).filter(Boolean).sort()[0] ?? null;
+  const runEndedAt = runs.map((run) => String(run.run_ended_at ?? "")).filter(Boolean).sort().at(-1) ?? null;
+  const runDurationTotalMs = runs.reduce((sum, run) => sum + (num(run.run_duration_ms) ?? 0), 0);
+  const gpuEnergyWh = runs.reduce((sum, run) => sum + (num(run.gpu_energy_wh) ?? 0), 0);
+  const gpuEnergyJ = runs.reduce((sum, run) => sum + (num(run.gpu_energy_j) ?? 0), 0);
   const satRatio = vramTotal > 0 ? round(vramPeakMed / vramTotal, 3) : 0;
+  const extraArgs = item.extra_args ?? "";
 
   return {
     metric_schema_version: METRIC_SCHEMA_VERSION,
@@ -422,14 +507,42 @@ export function aggregateBenchResult(payload: {
     series: item.series,
     level: item.level,
     sweep: item.sweep,
+    workload_kind: item.workload_kind ?? "baseline",
+    control_kind: item.control_kind ?? null,
+    prefill_target_tokens: int(item.prefill_target_tokens),
+    kv_fill_target_tokens: int(item.kv_fill_target_tokens),
     reasoning_mode: item.reasoning_mode,
     template_note: item.template_note,
     gguf_context_length: item.gguf_context_length,
     gguf_architecture: item.gguf_architecture,
+    planning_mode: item.planning_mode,
+    calibration_id: item.calibration_id,
+    predicted_fit_layers: item.predicted_fit_layers,
+    verified_fit_layers: item.verified_fit_layers,
+    first_spill_layers: item.first_spill_layers,
+    probe_count: item.probe_count,
+    fit_offset: item.fit_offset,
+    calibration_cache_hit: item.calibration_cache_hit,
+    calibration_cache_age_hours: item.calibration_cache_age_hours,
+    predicted_n_cpu_moe: item.predicted_n_cpu_moe,
+    verified_n_cpu_moe: item.verified_n_cpu_moe,
+    first_spill_n_cpu_moe: item.first_spill_n_cpu_moe,
     timestamp: first.timestamp,
+    run_started_at: runStartedAt,
+    run_ended_at: runEndedAt,
+    run_duration_ms: round(runDurationTotalMs, 2),
+    run_duration_median_ms: roundOrNull(metricMedian("run_duration_ms"), 2),
+    gpu_energy_wh: round(gpuEnergyWh, 4),
+    gpu_energy_j: round(gpuEnergyJ, 2),
     model_path: item.model_path,
     mmproj_path: item.mmproj_path,
     extra_args: item.extra_args,
+    requested_context_size: argInt(extraArgs, ["--ctx-size", "-c"]),
+    requested_cache_type_k: argValue(extraArgs, ["--cache-type-k", "-ctk"]),
+    requested_cache_type_v: argValue(extraArgs, ["--cache-type-v", "-ctv"]),
+    requested_gpu_layers: argInt(extraArgs, ["--gpu-layers", "-ngl"]),
+    requested_n_cpu_moe: argInt(extraArgs, ["--n-cpu-moe", "-ncmoe"]),
+    requested_parallel: argInt(extraArgs, ["--parallel", "-np"]),
     vram_before_mib: first.vram_before_mib,
     vram_baseline_mib: roundOrNull(vramBaselineMed, 0),
     vram_baseline_pct: roundOrNull(vramBaselinePctMed, 4),
@@ -444,7 +557,17 @@ export function aggregateBenchResult(payload: {
     compute_cuda_mib: first.compute_cuda_mib,
     compute_host_mib: first.compute_host_mib,
     layers_offloaded: first.layers_offloaded,
-    fit_status: inferFitStatus(first.fit_status, true, sharedPeakMed, confirm),
+    effective_context_size: first.effective_context_size,
+    effective_parallel_slots: first.effective_parallel_slots,
+    effective_n_parallel: first.effective_n_parallel,
+    flash_attention_state: first.flash_attention_state,
+    fit_status: item.sweep === "moe-cpu" && first.fit_status_source !== "llama.cpp"
+      ? "success"
+      : inferFitStatus(first.fit_status, true, sharedPeakMed, confirm),
+    fit_status_source: first.fit_status_source ?? "inferred",
+    shared_memory_interpretation: item.sweep === "moe-cpu"
+      ? "cpu_expert_mapping_or_wddm_pressure"
+      : "wddm_pressure",
     vram_peak_mib: vramPeakMed,
     vram_total_peak_mib: vramTotalPeakMed,
     vram_process_peak_mib: roundOrNull(vramProcessPeakMed, 0),
@@ -471,6 +594,11 @@ export function aggregateBenchResult(payload: {
     delivery_gap_median_ms: roundOrNull(metricMedian("delivery_gap_median_ms"), 2),
     delivery_gap_p95_ms: roundOrNull(metricMedian("delivery_gap_p95_ms"), 2),
     delivery_gap_max_ms: roundOrNull(metricMedian("delivery_gap_max_ms"), 2),
+    workload_prepare_ms: roundOrNull(metricMedian("workload_prepare_ms"), 2),
+    workload_prompt_tokens: roundOrNull(metricMedian("workload_prompt_tokens"), 0),
+    workload_target_error_tokens: roundOrNull(metricMedian("workload_target_error_tokens"), 0),
+    kv_fill_ms: roundOrNull(metricMedian("kv_fill_ms"), 2),
+    kv_fill_cached_tokens: roundOrNull(metricMedian("kv_fill_cached_tokens"), 0),
     total_request_ms: roundOrNull(totalReqMs, 2),
     latency_total_request_ms: roundOrNull(latReqMs, 2),
     gpu_util_avg_pct: int(median(runs.map((r) => num(r.gpu_util_avg_pct)))),

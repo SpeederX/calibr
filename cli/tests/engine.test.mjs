@@ -13,6 +13,17 @@ test.after(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
+test("download footprint separates total transfer from peak disk working-set", () => {
+  assert.deepEqual(engine.downloadFootprintBytes([
+    { size_bytes: 2_000_000_000 },
+    { size_bytes: 5_000_000_000 },
+    { size_bytes: 3_000_000_000 },
+  ]), {
+    totalBytes: 10_000_000_000,
+    maxFileBytes: 5_000_000_000,
+  });
+});
+
 test("list/delete cached llama.cpp builds under CALIBR_DATA_DIR", () => {
   const binName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
   const flavorDir = join(dataDir, "llama-bin", "b9360", "vulkan");
@@ -64,6 +75,22 @@ test("traceAction writes JSONL and human log with redacted paths", () => {
   assert.doesNotMatch(human, new RegExp(dataDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
 
+test("listBenchmarkLogs excludes action traces and exposes per-config run counts", () => {
+  mkdirSync(engine.CALIBR_LOGS_DIR, { recursive: true });
+  writeFileSync(join(engine.CALIBR_LOGS_DIR, "config-a.log"),
+    "===== RUN 0 =====\nfirst\n===== RUN 1 =====\nsecond\n");
+  writeFileSync(join(engine.CALIBR_LOGS_DIR, "campaign.out.log"), "campaign output\n");
+  writeFileSync(join(engine.CALIBR_LOGS_DIR, "action-trace.log"), "trace\n");
+
+  const logs = engine.listBenchmarkLogs();
+  const config = logs.find((entry) => entry.name === "config-a.log");
+  assert.equal(config.runCount, 2);
+  assert.equal(config.kind, "config");
+  assert.equal(config.configId, "config-a");
+  assert.equal(logs.some((entry) => entry.name === "action-trace.log"), false);
+  assert.deepEqual(engine.readBenchmarkLogTail(config.path, 2), ["===== RUN 1 =====", "second"]);
+});
+
 test("groupByModel applies the same near-tie winner rule as the report", () => {
   const cfg = { wddm_detection: { shared_delta_confirm_mib: 500 } };
   const groups = engine.groupByModel([
@@ -91,4 +118,35 @@ test("groupByModel applies the same near-tie winner rule as the report", () => {
 
   assert.equal(groups.length, 1);
   assert.equal(groups[0].winner.id, "large-near");
+});
+
+test("groupByModel keeps rendering when a model has only controls or diagnostic workloads", () => {
+  const cfg = { wddm_detection: { shared_delta_confirm_mib: 500 } };
+  const groups = engine.groupByModel([
+    {
+      id: "vanilla",
+      model: "Gemma",
+      series: "Gemma-4",
+      variant: "Q4",
+      ok: true,
+      eval_tps: 56,
+      control_kind: "vanilla",
+      workload_kind: "baseline",
+    },
+    {
+      id: "prefill",
+      model: "Gemma",
+      series: "Gemma-4",
+      variant: "Q4",
+      ok: true,
+      eval_tps: 22,
+      workload_kind: "prefill",
+      prefill_target_tokens: 117964,
+    },
+  ], cfg);
+
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].winner.id, "vanilla");
+  assert.equal(groups[0].winner._fallback, true);
+  assert.equal(groups[0].series, "Gemma-4");
 });

@@ -115,6 +115,33 @@ Describe "Select-CatalogByPreset" {
     }
 }
 
+Describe "Select-ModelCatalog" {
+    function _filterCatalog {
+        return @(
+            @{ id = "qwen-mini"; model = "Qwen-Mini" }
+            @{ id = "qwen-9b"; model = "Qwen-9B" }
+            @{ id = "gemma-2b"; model = "Gemma-2B" }
+        )
+    }
+
+    It "combines preset, wildcard ids and model regex in one filter" {
+        $preset = @{ models = @("qwen-mini", "qwen-9b", "gemma-2b") }
+        $result = @(Select-ModelCatalog `
+            -Catalog (_filterCatalog) `
+            -Preset $preset `
+            -CatalogId "qwen*" `
+            -ModelRegex "9B")
+
+        Assert-Equal 1 $result.Count
+        Assert-Equal "qwen-9b" $result[0].id
+    }
+
+    It "accepts comma-separated catalog ids" {
+        $result = @(Select-ModelCatalog -Catalog (_filterCatalog) -CatalogId "qwen-mini,gemma*")
+        Assert-Equal 2 $result.Count
+    }
+}
+
 Describe "Download destination" {
     It "falls back to CALIBR_DATA_DIR downloaded-models, not CALIBR_ROOT" {
         $cfg = @{ scan_paths = @() }

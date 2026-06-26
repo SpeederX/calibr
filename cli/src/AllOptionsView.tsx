@@ -49,6 +49,10 @@ function readDiscoveredModelNames(): string[] {
 const ALL_RUNS_VALUES: number[] = [0, 1, 3, 5];
 const DOWNLOAD_RETENTION_VALUES = ["cleanup", "keep-all", "keep-top-3", "keep-top-1"] as const;
 export type DownloadRetention = (typeof DOWNLOAD_RETENTION_VALUES)[number];
+const WORKLOAD_SWEEP_VALUES = ["baseline", "prefill", "kv-fill", "all"] as const;
+export type WorkloadSweep = (typeof WORKLOAD_SWEEP_VALUES)[number];
+const BENCHMARK_SCOPE_VALUES = ["baseline", "load-curves", "exhaustive"] as const;
+export type BenchmarkScope = (typeof BENCHMARK_SCOPE_VALUES)[number];
 const DEFAULT_VRAM_WARNING_PCT = 10;
 const VRAM_WARNING_STEP = 5;
 
@@ -63,6 +67,31 @@ function retentionLabel(policy: DownloadRetention): string {
     case "keep-top-3": return "keep top 3 results";
     case "keep-top-1": return "keep top 1 result";
     default: return "yes (delete each downloaded model when its bench finishes)";
+  }
+}
+
+function workloadSweepLabel(mode: WorkloadSweep): string {
+  switch (mode) {
+    case "prefill": return "baseline + prefill curve";
+    case "kv-fill": return "baseline + KV-fill curve";
+    case "all": return "baseline + prefill + KV-fill (heavy)";
+    default: return "baseline only";
+  }
+}
+
+function benchmarkScopeLabel(scope: BenchmarkScope): string {
+  switch (scope) {
+    case "load-curves": return "baseline + prefill/KV load curves";
+    case "exhaustive": return "exhaustive (load curves + full speed curve)";
+    default: return "baseline (fast calibration only)";
+  }
+}
+
+export function policyForBenchmarkScope(scope: BenchmarkScope): { workloadSweep: WorkloadSweep; fullSpeedCurve: boolean } {
+  switch (scope) {
+    case "load-curves": return { workloadSweep: "all", fullSpeedCurve: false };
+    case "exhaustive": return { workloadSweep: "all", fullSpeedCurve: true };
+    default: return { workloadSweep: "baseline", fullSpeedCurve: false };
   }
 }
 
@@ -192,6 +221,8 @@ export interface AllArgsOpts {
   vramUsageWarningPct?: number | null;
   rerunAll: boolean;
   contextSizes?: number[] | null;
+  workloadSweep: WorkloadSweep;
+  fullSpeedCurve?: boolean;
 }
 
 // Pure arg builder for `all` (exported for tests). A fixed model overrides the
@@ -225,6 +256,11 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
     const csv = o.contextSizes.join(",");
     args.push("-ContextSizes", csv); parts.push(`-ContextSizes ${csv}`);
   }
+  if (o.workloadSweep !== "baseline") {
+    args.push("-WorkloadSweep", o.workloadSweep);
+    parts.push(`-WorkloadSweep ${o.workloadSweep}`);
+  }
+  if (o.fullSpeedCurve) { args.push("-FullSpeedCurve"); parts.push("-FullSpeedCurve"); }
   if (o.runs > 0)        { args.push("-Runs", String(o.runs)); parts.push(`-Runs ${o.runs}`); }
   if (o.downloadRetention !== "cleanup") {
     args.push("-DownloadRetention", o.downloadRetention);
@@ -256,7 +292,14 @@ type Phase =
   | { kind: "modelFolderInput"; error?: string }
   | { kind: "modelFolderCreate"; path: string }
   | { kind: "modelFolderSaved"; path: string; count: number; created: boolean }
-  | { kind: "gate"; required: number; available: number; entryCount: number; sufficient: boolean }
+  | {
+      kind: "gate";
+      required: number;
+      totalDownload: number;
+      available: number;
+      entryCount: number;
+      sufficient: boolean;
+    }
   | { kind: "cachePrompt" };
 
 type LlamaDecision =
@@ -270,6 +313,8 @@ export interface GuidedRunSession {
   currentPreset?: string;
   customIds?: string;
   customCtxSizes?: number[] | null;
+  workloadSweep?: WorkloadSweep;
+  benchmarkScope?: BenchmarkScope;
   runs?: number;
   downloadRetention?: DownloadRetention;
   preferSpeed?: boolean;
@@ -305,6 +350,10 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   });
   const [model, setModel] = useState<string | null>(session?.model ?? null);
   const [runs, setRuns] = useState<number>(session?.runs ?? 0);
+  const [benchmarkScope, setBenchmarkScope] = useState<BenchmarkScope>(
+    session?.benchmarkScope ?? (session?.workloadSweep && session.workloadSweep !== "baseline" ? "load-curves" : "baseline"),
+  );
+  const scopePolicy = policyForBenchmarkScope(benchmarkScope);
   const [llamaDecision, setLlamaDecision] = useState<LlamaDecision | null>(session?.llamaDecision ?? null);
   const [llamaVersionInput, setLlamaVersionInput] = useState<string>("");
   const [llamaCandidates, setLlamaCandidates] = useState<LlamaServerCandidate[]>([]);
@@ -379,6 +428,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
     { kind: "fetch"    as const, label: `source:          ${fetchCatalog ? "catalog downloads" : "local folder"}` },
     { kind: "preset"   as const, label: `scope:           ${presetLabel}`, disabled: !fetchCatalog },
     { kind: "model"    as const, label: `model:           ${model === null ? (fetchCatalog ? "all in scope" : "all local models") : model}` },
+    { kind: "scope"    as const, label: `benchmark scope: ${benchmarkScopeLabel(benchmarkScope)}` },
     { kind: "runs"     as const, label: `runs per config: ${runs === 0 ? `default (${runsDefault} from config)` : String(runs)}` },
     { kind: "rotate"   as const, label: `auto-cleanup:    ${retentionLabel(downloadRetention)}` },
     { kind: "prefer"   as const, label: `winner rule:     ${preferSpeed ? "speed   (pick the fastest config even if it spills VRAM into RAM)" : "balanced (default — prefer configs that don't spill VRAM; speed breaks ties)"}` },
@@ -397,7 +447,7 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes });
+    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes, workloadSweep: scopePolicy.workloadSweep, fullSpeedCurve: scopePolicy.fullSpeedCurve });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -425,6 +475,9 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         model,
         customIds,
         contextSizes: customCtxSizes,
+        benchmarkScope,
+        workloadSweep: scopePolicy.workloadSweep,
+        fullSpeedCurve: scopePolicy.fullSpeedCurve,
         runs,
         downloadRetention,
         preferSpeed,
@@ -465,12 +518,13 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
 
   const runGate = (pickedIds?: string) => {
     const filtered = catalogScopeForGate(pickedIds);
-    const { maxFileBytes } = downloadFootprintBytes(filtered);
+    const { totalBytes, maxFileBytes } = downloadFootprintBytes(filtered);
     const available = freeBytesOn(destination);
     const required = maxFileBytes;
     setPhase({
       kind: "gate",
       required,
+      totalDownload: totalBytes,
       available,
       entryCount: filtered.length,
       sufficient: available < 0 ? false : available >= required,
@@ -604,6 +658,13 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         const nextModel = next(modelChoices, model);
         setModel(nextModel);
         onSessionChange?.({ model: nextModel });
+        break;
+      }
+      case "scope": {
+        const nextScope = next(BENCHMARK_SCOPE_VALUES, benchmarkScope);
+        const nextPolicy = policyForBenchmarkScope(nextScope);
+        setBenchmarkScope(nextScope);
+        onSessionChange?.({ benchmarkScope: nextScope, workloadSweep: nextPolicy.workloadSweep });
         break;
       }
       case "runs": {
@@ -1004,14 +1065,16 @@ export function AllOptionsView({ onRun, onCancel, session, onSessionChange }: Pr
         <Box marginTop={1} flexDirection="column">
           <Text>destination: <Text color="cyan">{destination}</Text></Text>
           <Text>catalog entries in scope: <Text color="cyan">{phase.entryCount}</Text></Text>
-          <Text>peak working-set (largest single file): <Text color="cyan">{formatBytes(phase.required)}</Text></Text>
+          <Text>total download transfer: <Text color="cyan">{formatBytes(phase.totalDownload)}</Text></Text>
+          <Text>peak disk working-set (largest single file): <Text color="cyan">{formatBytes(phase.required)}</Text></Text>
           <Text>free on destination: <Text color={sufficient ? "green" : "red"}>{formatBytes(phase.available)}</Text></Text>
         </Box>
         <Box marginTop={1}>
           {sufficient ? (
             <Text color="yellow">
-              Rotation will hold up to {formatBytes(phase.required)} on disk at peak (one
-              model at a time). Proceed?
+              The campaign will transfer {formatBytes(phase.totalDownload)} in total.
+              Rotation will hold up to {formatBytes(phase.required)} on disk at peak
+              (one model at a time). Proceed?
             </Text>
           ) : (
             <Text color="red">

@@ -58,20 +58,66 @@
   "_comment_base": "Flags applied to every benchmark. --flash-attn auto is safer than 'on' (falls back on builds that don't support it). Thread counts are injected dynamically from hardware.cpu_cores_*.",
 
   "planning": {
-    "overhead_mib": 1200,
-    "_comment_overhead": "Approximate fixed VRAM overhead beyond model weights: compute buffers (~500), recurrent/SSM state (~50-200), mmproj (~900 if present), graph+misc (~100). Used to decide which sweep a model gets: context (fits fully) vs offload (too big).",
-    "moecpu_sweep": [28, 30, 32, 34, 36],
-    "offload_sweep": [20, 24, 28, 32, 36]
+    "speed_sweep": {
+      "full_curve": false,
+      "decline_tolerance_pct": 0.02,
+      "descending_points_to_stop": 2,
+      "_comment": "Adaptive speed sweeps stop after two consecutive measured configs fall more than 2% below the best median eval throughput seen in the ordered sweep. Set full_curve=true to retain every planned point for research/visualization."
+    },
+    "kv_rescue": {
+      "enabled": true,
+      "min_context_tokens": 65536,
+      "kv_k": "q4_0",
+      "kv_v": "q4_0",
+      "_comment": "A low-quality KV profile is planned as a conditional fallback at the SAME context target. It runs only when the primary profile exhausts retries and fails with direct capacity/OOM evidence."
+    },
+    "moe_planning": {
+      "context_size": 16384,
+      "kv_type": "q8_0",
+      "runtime_reserve_mib": 512,
+      "benchmark_offsets": [-3, -1, 0, 1, 3],
+      "benchmark_ratios": [0.5, 0.75],
+      "tail_offsets": [-3, -1, 0],
+      "max_probe_count": 4,
+      "stable_sample_count": 3,
+      "stable_tolerance_mib": 16,
+      "max_ready_samples": 8,
+      "sample_interval_ms": 200,
+      "cache_max_age_hours": 168,
+      "cache_baseline_tolerance_mib": 128,
+      "_comment": "MoE load probes provide an allocation anchor, not a performance optimum: runtime expert activation can still trigger heavy WDDM shared memory. The benchmark covers the anchor neighborhood, proportional CPU-offload points, and the CPU-heavy tail."
+    },
+    "offload_planning": {
+      "context_size": 16384,
+      "kv_type": "q8_0",
+      "runtime_reserve_mib": 512,
+      "benchmark_offsets": [-6, -3, -1, 0, 1, 3],
+      "max_probe_count": 4,
+      "stable_sample_count": 3,
+      "stable_tolerance_mib": 16,
+      "max_ready_samples": 8,
+      "sample_interval_ms": 200,
+      "cache_max_age_hours": 168,
+      "cache_baseline_tolerance_mib": 128,
+      "_comment": "Dense models are load-probed with their real run arguments. The verified highest non-spilling GPU-layer count anchors the benchmark offsets. runtime_reserve_mib is used only for the first structural estimate."
+    },
+    "workload_sweeps": {
+      "prefill_micro_tokens": [2048],
+      "prefill_ratios": [0.25, 0.5, 0.75, 0.9],
+      "kv_fill_ratios": [0.25, 0.5, 0.75, 0.9],
+      "context_reserve_tokens": 512,
+      "_comment": "Opt-in diagnostic loads use the largest valid context config for dense/context sweeps. Prefill uses one small micro-load plus adaptive context ratios; KV-fill uses the same ratios, so the report can show a real load curve instead of unrelated tiny targets. For MoE, the baseline allocation sweep completes first and diagnostics run only on its empirical speed winner. Reserve leaves room for chat-template overhead, the measured suffix, and generated tokens."
+    }
   },
 
   "context_candidates": [
     { "ctx": 16384,  "kv": "q8_0" },
     { "ctx": 32768,  "kv": "q8_0" },
     { "ctx": 65536,  "kv": "q8_0" },
-    { "ctx": 131072, "kv": "q4_0" },
-    { "ctx": 262144, "kv": "q4_0" }
+    { "ctx": 131072, "kv": "q8_0" },
+    { "ctx": 262144, "kv": "q8_0" }
   ],
-  "_comment_candidates": "Context / KV-cache-quantization combos to try for models that fully fit the GPU (the context sweep). q8_0 -> near-lossless, q4_0 -> unlocks ~2x more ctx at minor quality hit.",
+  "_comment_candidates": "Quality-first primary context policy. Every context target is attempted with q8_0/q8_0 first so context growth does not silently lower cache quality or introduce model/backend-specific Flash Attention requirements. q4_0/q4_0 is generated separately as a conditional same-context rescue and is never a default primary profile.",
 
   "max_context_cap": 262144,
   "_comment_cap": "Global sanity ceiling for the context sweep. Any context_candidates entry with ctx above this value is silently dropped at plan time. Set to 0 to disable. Today's highest sample-set model (Qwen3.5/3.6) caps at 262144, so this is a no-op for the curated samples but guards against accidentally pushing huge ctx values that no current GGUF supports.",

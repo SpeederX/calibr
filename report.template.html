@@ -81,7 +81,7 @@
   .model-row .config-list { padding: 0 14px 12px 42px; }
   .model-load-info { margin: 0 0 8px; color: var(--c-muted); font-size: 11px; }
   .model-row .config-list table { margin-top: 0; font-size: 11px; }
-  .model-row .config-list th { background: transparent; border-bottom: 1px solid var(--c-border); color: var(--c-muted); font-weight: 400; }
+  .model-row .config-list th { background: transparent; border-bottom: 1px solid var(--c-border); color: var(--c-muted); font-weight: 400; position: static; }
   .model-row .config-list tr.is-winner { background: var(--c-win-bg); }
   .model-row .config-list tr.is-winner td:first-child::before { content: '★ '; color: var(--c-win); }
 
@@ -164,6 +164,59 @@
   .bar-model-heading { display: flex; align-items: center; gap: 8px; margin: 0 0 5px;
                        color: var(--c-text); font-weight: 700; font-size: 12px; }
   .bar-model-heading .meta { margin: 0; font-weight: 400; }
+  .planning-summary { margin:6px 0 8px; color:var(--c-muted); font-size:11px; }
+  .planning-summary code { color:var(--c-accent); }
+
+  /* ----- Vanilla-vs-config comparison panel (radar + load curve) ----- */
+  /* Configs card flexes to fill the row; the charts stay a controlled size. */
+  .compare-panel { display:grid; gap:12px; align-items:start; margin:2px 0 12px; }
+  .compare-panel.cols-1 { grid-template-columns:minmax(0,1fr); }
+  .compare-panel.cols-2 { grid-template-columns:minmax(0,1fr) minmax(280px,360px); }
+  .compare-panel.cols-3 { grid-template-columns:minmax(0,1fr) minmax(250px,330px) minmax(250px,330px); align-items:stretch;}
+  @media (max-width: 920px) { .compare-panel { grid-template-columns:1fr !important; } }
+  .compare-card { background:#242424; border:1px solid var(--c-border); border-radius:6px;
+                  padding:8px 10px 6px; min-width:0; display:flex; flex-direction:column; }
+  .compare-configs table { margin:0; }
+  .compare-configs th, .compare-configs td { padding:4px 6px; }
+  .compare-configs td:first-child { font-size:11px; line-height:1.35; }
+  .compare-card h4 { margin:0 0 3px; font-size:11px; color:var(--c-text); font-weight:600; }
+  .compare-card h4 .meta { font-weight:400; }
+  .compare-card svg { width:100%; height:auto; }
+  .compare-empty { color:var(--c-muted); font-size:11px; font-style:italic;
+                   padding:26px 8px; text-align:center; margin:auto 0; }
+  .radar-grid { fill:none; stroke:var(--c-border); stroke-width:1; opacity:0.4; }
+  .radar-ref  { fill:none; stroke:var(--c-muted); stroke-width:1; stroke-dasharray:3 3; opacity:0.7; }
+  .radar-spoke { stroke:var(--c-border); stroke-width:1; opacity:0.5; }
+  .radar-label { fill:var(--c-text); font:8px Consolas, monospace; }
+  .radar-ref-tag { fill:var(--c-muted); font:7px Consolas, monospace; }
+  .radar-poly-vanilla { fill:rgba(183,183,183,0.12); stroke:var(--c-muted); stroke-width:1.5; }
+  .radar-poly-config  { fill:rgba(139,92,246,0.22); stroke:var(--c-win); stroke-width:2; }
+  .radar-dot-config { fill:var(--c-win); cursor:help; }
+  .radar-dot-vanilla { fill:var(--c-muted); opacity:0.75; cursor:help; }
+  .compare-legend { display:flex; gap:6px 12px; flex-wrap:wrap; margin:6px 0 0;
+                    color:var(--c-muted); font-size:10px; }
+  .compare-cap { color:var(--c-muted); font:10px Consolas, monospace; margin:5px 0 0; }
+  .curve-axis { stroke:var(--c-border); stroke-width:1; }
+  .curve-tick { fill:var(--c-muted); font:7.5px Consolas, monospace; }
+  .curve-prefill { fill:none; stroke:#22c55e; stroke-width:2; }
+  .curve-kvfill  { fill:none; stroke:#f59e0b; stroke-width:2; }
+  .curve-dot-prefill { fill:#22c55e; }
+  .curve-dot-kvfill  { fill:#f59e0b; }
+  .diag-details { margin:8px 0 0; }
+  .diag-details > summary { cursor:pointer; color:var(--c-muted); font-size:11px;
+                            list-style:none; padding:3px 0; }
+  .diag-details > summary::-webkit-details-marker { display:none; }
+  .diag-details > summary::before { content:'\25B8 '; color:var(--c-muted); }
+  .diag-details[open] > summary::before { content:'\25BE '; }
+  .diag-bars { margin:8px 0 10px; }
+  .diag-bars .tabs { margin:0; }
+  .diag-bars .tab { padding:4px 9px; font-size:11px; }
+  .diag-bars .tab-content { padding:10px; max-height:360px; overflow:auto; }
+  /* Click a config row to re-target the comparison radar (vanilla vs that config). */
+  .model-row .config-list tr.cfg-row { cursor:pointer; }
+  .model-row .config-list tr.cfg-row:hover { background:rgba(255,255,255,0.05); }
+  .model-row .config-list tr.cfg-selected td:first-child { box-shadow: inset 3px 0 0 var(--c-win); }
+  .model-row .config-list tr.cfg-selected td:first-child::after { content:' ◂ shown'; color:var(--c-win); font-size:10px; }
 
   /* ----- Scatter (now first chart) ----- */
   .scatter-bg-ram   { fill: rgba(255,255,255,0.035); }
@@ -214,6 +267,14 @@
   /* ----- All-results table (winner-aware) ----- */
   #all tbody tr.is-winner { background: var(--c-win-bg); }
   #all tbody tr.is-winner td:first-child::before { content: '★ '; color: var(--c-win); }
+  /* Collapsible reference cards (metric glossary, all-results raw table). */
+  details.card { background: var(--c-card); border: 1px solid var(--c-border); border-radius: 6px; padding: 8px 14px; margin: 16px 0; }
+  details.card > summary { cursor: pointer; font-size: 15px; color: var(--c-text); }
+  details.card > summary .meta { font-weight: 400; }
+  .all-results-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 4px; }
+  .all-results-toolbar .tabs { margin: 0; }
+  /* Lean mode hides the deep-diagnostic columns until "+ all columns". */
+  table.all-lean .col-extra { display: none; }
 </style>
 </head>
 <body>
@@ -250,7 +311,7 @@
     <aside class="timeline-panel" id="timeline-panel">
       <h3>Run timeline</h3>
       <div class="meta" id="timeline-title"></div>
-      <p class="meta">Single measured streaming pass. Official prefill and generation throughput use llama-server's internal clock; delivery gaps use the client clock.</p>
+      <p class="meta">One measured streaming pass; KV-fill workloads first prepare a cached prefix in the same slot. Official prefill and generation throughput use llama-server's internal clock; delivery gaps use the client clock.</p>
       <div class="timeline-controls">
         <label>Run <select id="timeline-run"></select></label>
       </div>
@@ -258,6 +319,7 @@
         <span class="legend-item" style="color:#22c55e"><span class="legend-line"></span>VRAM</span>
         <span class="legend-item" style="color:#f59e0b"><span class="legend-line"></span>RAM Δ</span>
         <span class="legend-item" style="color:#8b5cf6"><span class="legend-line"></span>server generation</span>
+        <span class="legend-item"><span class="legend-box" style="background:#0f766e"></span>KV fill</span>
         <span class="legend-item"><span class="legend-box" style="background:#f59e0b"></span>prefill</span>
         <span class="legend-item"><span class="legend-box" style="background:#7c3aed"></span>reasoning</span>
         <span class="legend-item"><span class="legend-box" style="background:#2563eb"></span>answer</span>
@@ -277,6 +339,8 @@
         <tr><td><code>server_ttft_ms</code></td><td>Server-side time through prefill and first-token decode.</td><td><code>prompt_ms + predicted_ms @ token 1</code></td><td>Canonical model TTFT; available only when the server emits first-token timing.</td></tr>
         <tr><td><code>tpot_ms</code> / <code>itl_p95_ms</code></td><td>Average and p95 steady-state server inter-token latency.</td><td><code>Î” predicted_ms / Î” predicted_n</code>, excluding token 1</td><td>Exposes decode stalls hidden by average throughput.</td></tr>
         <tr><td><code>eval_tps</code></td><td>Decode throughput for generated tokens.</td><td><code>generated tokens / decode seconds</code></td><td>Main sustained generation-speed metric.</td></tr>
+        <tr><td><code>gpu_energy_wh</code></td><td>Estimated GPU-board energy used across all measured repetitions of a config.</td><td><code>sum((power[i-1] + power[i]) / 2 * elapsed hours)</code></td><td>Shows the total energy cost of benchmarking, rather than only peak power.</td></tr>
+        <tr><td><code>run_duration_ms</code></td><td>Sum of measured wall-clock run durations for a config.</td><td><code>sum(run end - run start)</code></td><td>Makes repeated-run cost and campaign duration auditable across date boundaries.</td></tr>
         <tr><td><code>ttfh_ms</code></td><td>Client time until HTTP response headers are available.</td><td><code>headers received - request start</code></td><td>Separates connection/HTTP setup from streamed model output.</td></tr>
         <tr><td><code>stream_open_ms</code></td><td>Client time until the first SSE frame, which may contain no text.</td><td><code>first SSE frame - request start</code></td><td>Diagnoses stream setup and replaces the ambiguous legacy name <code>ttfr_ms</code>.</td></tr>
         <tr><td><code>client_ttft_ms</code></td><td>Client time until the first non-empty reasoning or answer delta.</td><td><code>min(first reasoning, first answer) - request start</code></td><td>Measures when the user first receives generated text.</td></tr>
@@ -291,12 +355,8 @@
     </table>
   </details>
 
-  <h2>Models (winners per current filter)</h2>
-  <p class="meta">Each row shows the model's winning config for the selected filter. Expand a row to see all configs benched for that model. Per-config <code>.bat</code> downloads are generated on the fly; the default <code>bats/</code> directory still holds the engine's safety-first picks.</p>
-  <div class="models-list" id="models-list"></div>
-
   <div class="section-title">
-    <h2>Throughput &amp; memory</h2>
+    <h2>Models (winners per current filter)</h2>
     <span class="info-tip" tabindex="0" aria-label="VRAM and WDDM explanation">?
       <span class="tip-panel" role="tooltip">
         <p><b>A. Fully in VRAM:</b> model weights, KV cache and compute buffers fit in GPU memory. This is the clean case; eval tokens/s usually stays stable.</p>
@@ -310,49 +370,66 @@
       </span>
     </span>
   </div>
-  <div class="tabs" id="bars-tabs">
-    <div class="tab active" data-bars="eval">Eval tokens/s</div>
-    <div class="tab" data-bars="prompt">Prompt tokens/s</div>
-    <div class="tab" data-bars="throughput">Prompt + eval</div>
-    <div class="tab" data-bars="vram">VRAM peak</div>
-    <div class="tab" data-bars="memory">VRAM + RAM</div>
-    <div class="tab" data-bars="latency">Latency</div>
-  </div>
-  <div class="tab-content"><div id="bars"></div></div>
+  <p class="meta">Each row shows the model's winning config for the selected filter. Expand a row to see all configs benched for that model; open <b>diagnostics</b> inside a row for the per-config throughput &amp; memory bars. Per-config <code>.bat</code> downloads are generated on the fly; the default <code>bats/</code> directory still holds the engine's safety-first picks.</p>
+  <div class="models-list" id="models-list"></div>
 
-  <h2>WDDM paging watchlist</h2>
-  <p class="meta">Rows where shared GPU memory grew during the run (confirmed paging) or VRAM peak exceeded the saturation threshold (suspected).</p>
+  <details class="card" id="leaderboard">
+    <summary><b>Complete session leaderboard</b> <span class="meta" id="leaderboard-count"></span></summary>
+    <p class="meta">The winning config for each model under the current filter, compared head to head. Switch the metric with the tabs.</p>
+    <div class="tabs" id="leaderboard-tabs">
+      <div class="tab active" data-metric="eval">Eval tokens/s</div>
+      <div class="tab" data-metric="prompt">Prompt tokens/s</div>
+      <div class="tab" data-metric="memory">VRAM + RAM</div>
+      <div class="tab" data-metric="latency">Latency</div>
+      <div class="tab" data-metric="vram">VRAM peak</div>
+    </div>
+    <div class="tab-content"><div id="leaderboard-bars"></div></div>
+  </details>
+
+  <h2>Shared memory spillover watchlist</h2>
+  <p class="meta">Configs where GPU-addressable system memory grew during the run
+    (WDDM shared memory on Windows, GTT on AMD/Linux) or where VRAM peak crossed
+    the saturation threshold (suspected). Confirming that spillover actually
+    drops eval speed at the cliff needs the prefill/KV-fill load curves from a
+    <b>load-curve</b> or <b>exhaustive</b> run, so this list can be empty on a
+    baseline-only campaign.</p>
   <div id="wddm-list"></div>
 
-  <h2>All results</h2>
-  <div class="tabs" id="level-tabs"></div>
-  <div class="tab-content">
-    <table id="all">
+  <details class="card" id="all-results">
+    <summary class="all-results-summary"><b>All results</b> <span class="meta" id="all-count">raw table</span></summary>
+    <div class="all-results-toolbar">
+      <div class="tabs" id="level-tabs"></div>
+      <button id="all-columns-toggle" class="filter-btn" type="button">+ all columns</button>
+    </div>
+    <div class="tab-content">
+    <table id="all" class="all-lean">
       <thead><tr>
-        <th>ID <span class="th-help" title="Stable result id for this model/config combination.">?</span></th>
-        <th>Level <span class="th-help" title="Curated hardware level: low, middle, high, or ultra.">?</span></th>
+        <th class="col-extra">ID <span class="th-help" title="Stable result id for this model/config combination.">?</span></th>
+        <th class="col-extra">Level <span class="th-help" title="Curated hardware level: low, middle, high, or ultra.">?</span></th>
         <th>Model <span class="th-help" title="Model name grouped in the report winner list.">?</span></th>
         <th>Config <span class="th-help" title="llama-server flags used for this benchmark: context, GPU layers, KV cache, threads, and related settings.">?</span></th>
-        <th class="num">TTFT s <span class="th-help" title="Server TTFT when per-token timings are available; otherwise client TTFT or the legacy fallback.">?</span></th>
-        <th class="num">Stream ms <span class="th-help" title="Client time to the first SSE frame, which may contain no generated text. Legacy name: TTFR.">?</span></th>
-        <th class="num">Prompt ms <span class="th-help" title="llama.cpp prompt processing / prefill time for the input prompt.">?</span></th>
+        <th>Workload <span class="th-help" title="Baseline configs are winner-eligible. Prefill and KV-fill are diagnostic load curves and never replace the launcher winner.">?</span></th>
+        <th class="num col-extra">TTFT s <span class="th-help" title="Server TTFT when per-token timings are available; otherwise client TTFT or the legacy fallback.">?</span></th>
+        <th class="num col-extra">Stream ms <span class="th-help" title="Client time to the first SSE frame, which may contain no generated text. Legacy name: TTFR.">?</span></th>
+        <th class="num col-extra">Prompt ms <span class="th-help" title="llama.cpp prompt processing / prefill time for the input prompt.">?</span></th>
         <th class="num">Prompt t/s <span class="th-help" title="Prompt processing throughput: prompt tokens divided by prompt processing time. Higher is better.">?</span></th>
-        <th class="num">Prompt rel % <span class="th-help" title="Prompt throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
+        <th class="num col-extra">Prompt rel % <span class="th-help" title="Prompt throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
         <th class="num">Eval t/s <span class="th-help" title="Decode throughput for generated tokens. This is the main speed metric used by winner selection.">?</span></th>
-        <th class="num">Eval rel % <span class="th-help" title="Eval throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
+        <th class="num col-extra">Eval rel % <span class="th-help" title="Eval throughput normalized within the currently visible rows: (value - visible minimum) / (visible maximum - visible minimum). If all values are equal, every row is treated as 100%.">?</span></th>
         <th class="num">VRAM run <span class="th-help" title="Baseline-adjusted run VRAM: total system peak minus VRAM already used before the run. Hover for baseline and total peak.">?</span></th>
-        <th class="num">Shared spill <span class="th-help" title="WDDM shared-memory growth is shown only when it exceeds the configured confirmation threshold; smaller positive deltas are treated as counter/background noise.">?</span></th>
-        <th class="num">RAM Δ <span class="th-help" title="Peak system RAM increase observed during the run, in MiB.">?</span></th>
-        <th class="num">CPU % <span class="th-help" title="Average total CPU utilization observed while calibr was polling metrics.">?</span></th>
-        <th class="num">GPU W <span class="th-help" title="Peak GPU power draw observed during the run.">?</span></th>
-        <th class="num">GPU °C <span class="th-help" title="Peak GPU temperature observed during the run.">?</span></th>
-        <th class="num">GPU % <span class="th-help" title="Average GPU utilization observed while calibr was polling metrics.">?</span></th>
-        <th>Layers <span class="th-help" title="llama.cpp reported GPU-offloaded layers when available; otherwise the requested --gpu-layers value is shown as req N.">?</span></th>
+        <th class="num col-extra">Shared spill <span class="th-help" title="WDDM shared-memory growth is shown only when it exceeds the configured confirmation threshold; smaller positive deltas are treated as counter/background noise.">?</span></th>
+        <th class="num col-extra">RAM Δ <span class="th-help" title="Peak system RAM increase observed during the run, in MiB.">?</span></th>
+        <th class="num col-extra">CPU % <span class="th-help" title="Average total CPU utilization observed while calibr was polling metrics.">?</span></th>
+        <th class="num col-extra">GPU W <span class="th-help" title="Peak GPU power draw observed during the run.">?</span></th>
+        <th class="num col-extra">GPU °C <span class="th-help" title="Peak GPU temperature observed during the run.">?</span></th>
+        <th class="num col-extra">GPU % <span class="th-help" title="Average GPU utilization observed while calibr was polling metrics.">?</span></th>
+        <th class="col-extra">Layers <span class="th-help" title="llama.cpp reported GPU-offloaded layers when available; otherwise the requested --gpu-layers value is shown as req N.">?</span></th>
         <th>Fit <span class="th-help" title="Whether the run fit cleanly in VRAM, spilled into shared memory, or failed before completion.">?</span></th>
       </tr></thead>
       <tbody></tbody>
     </table>
-  </div>
+    </div>
+  </details>
 
 </div>
 <script>
@@ -422,10 +499,29 @@ function renderOverallStats() {
   const totalModels = modelsSet.size;
   const okModels = modelsWithSuccess.size;
   const pct = totalModels > 0 ? Math.round((okModels / totalModels) * 100) : 0;
+  const energyWh = VIEW.reduce((sum, d) => sum + (Number.isFinite(+d.gpu_energy_wh) ? +d.gpu_energy_wh : 0), 0);
+  const measuredMs = VIEW.reduce((sum, d) => sum + (Number.isFinite(+d.run_duration_ms) ? +d.run_duration_ms : 0), 0);
+  const starts = VIEW.map(d => Date.parse(d.run_started_at)).filter(Number.isFinite);
+  const ends = VIEW.map(d => Date.parse(d.run_ended_at)).filter(Number.isFinite);
+  const campaignMs = starts.length && ends.length ? Math.max(0, Math.max(...ends) - Math.min(...starts)) : 0;
+  const durationLabel = ms => {
+    const seconds = Math.round(ms / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const rest = seconds % 60;
+    return (hours ? hours + 'h ' : '') + minutes + 'm ' + rest + 's';
+  };
+  const energyLabel = energyWh >= 1000 ? (energyWh / 1000).toFixed(3) + ' kWh' : energyWh.toFixed(2) + ' Wh';
+  const telemetrySummary = energyWh > 0 || measuredMs > 0
+    ? ' Estimated GPU energy: <b>' + energyLabel + '</b>; measured run time: <b>' +
+      durationLabel(measuredMs) + '</b>' +
+      (campaignMs > 0 ? '; campaign elapsed: <b>' + durationLabel(campaignMs) + '</b>.' : '.')
+    : '';
   document.getElementById('overall-pct').innerHTML =
     '<b>' + okModels + '/' + totalModels + ' models</b> have at least one successful config ' +
     '(<b>' + pct + '%</b>). ' +
-    VIEW.length + ' bench configs in view, ' + VIEW.filter(d => d.ok).length + ' ok.';
+    VIEW.length + ' bench configs in view, ' + VIEW.filter(d => d.ok).length + ' ok.' +
+    telemetrySummary;
 }
 
 function filterByScope(data, scope) {
@@ -478,26 +574,38 @@ function ctxValue(result) {
 
 function kvQualityValue(result) {
     const args = String(result.extra_args ?? "");
-    const match = args.match(/--cache-type-k\s+(\S+)/) ?? args.match(/--cache-type-v\s+(\S+)/);
-    const kv = match ? match[1].toLowerCase() : "";
-    const numMatch = kv.match(/^q(\d+)(?:_(\d+))?/);
-    if (numMatch)
-        return Number(numMatch[1]) * 10 + Number(numMatch[2] ?? 0);
-    if (kv === "f16")
-        return 160;
-    if (kv === "bf16")
-        return 160;
-    if (kv === "f32")
-        return 320;
-    return 0;
+    const quality = (kv) => {
+        const normalized = kv.toLowerCase();
+        const numMatch = normalized.match(/^q(\d+)(?:_(\d+))?/);
+        if (numMatch)
+            return Number(numMatch[1]) * 10 + Number(numMatch[2] ?? 0);
+        if (normalized === "f16" || normalized === "bf16")
+            return 160;
+        if (normalized === "f32")
+            return 320;
+        return 0;
+    };
+    const k = quality(args.match(/--cache-type-k\s+(\S+)/)?.[1] ?? "");
+    const v = quality(args.match(/--cache-type-v\s+(\S+)/)?.[1] ?? "");
+    if (k > 0 && v > 0)
+        return 0.6 * k + 0.4 * v;
+    return Math.max(k, v);
 }
 
 function isSafe(result, confirmMib = DEFAULT_CONFIRM_MIB) {
+    if (result.sweep === "moe-cpu" && result.fit_status_source !== "llama.cpp")
+        return true;
+    if (result.fit_status === "failed_but_running")
+        return false;
     return finiteNumber(result.shared_peak_mib) <= confirmMib;
 }
 
+function isWinnerEligible(result) {
+    return !result.control_kind && (!result.workload_kind || result.workload_kind === "baseline");
+}
+
 function computeAnchors(results) {
-    const ok = results.filter((r) => r.ok);
+    const ok = results.filter((r) => r.ok && isWinnerEligible(r));
     const evalMax = Math.max(1, ...ok.map((r) => finiteNumber(r.eval_tps)));
     const effs = ok
         .filter((r) => finiteNumber(r.gpu_power_peak_w) > 0)
@@ -573,7 +681,7 @@ function groupWinners(results, profile, options = {}) {
     const byModel = {};
     const fallbacks = {};
     for (const result of results) {
-        if (!result.ok)
+        if (!result.ok || !isWinnerEligible(result))
             continue;
         const model = String(result.model ?? result.id ?? "");
         if (!model)
@@ -674,7 +782,7 @@ function rerender() {
   renderScatter();
   renderTimeline();
   renderModelsList();
-  renderBars();
+  renderLeaderboard();
   renderWddmWatchlist();
   renderLevelTabs();
   renderAllTable();
@@ -744,6 +852,19 @@ document.addEventListener('click', e => {
   if (d) downloadBat(d);
 });
 
+// Click a config row in the lean drilldown table to re-target the comparison
+// radar at that config (vanilla stays the reference). The bat link inside the
+// row keeps its own handler above, so guard against it here.
+document.addEventListener('click', e => {
+  if (e.target.closest('.bat-link')) return;
+  const row = e.target.closest('tr.cfg-row[data-select-cfg]');
+  if (!row) return;
+  selectCompareConfig(row.dataset.model, row.dataset.selectCfg);
+  const tbody = row.parentElement;
+  if (tbody) tbody.querySelectorAll('tr.cfg-selected').forEach(r => r.classList.remove('cfg-selected'));
+  row.classList.add('cfg-selected');
+});
+
 // ===========================================================================
 // Models list (replaces the old winners grid). Each model is a <details>
 // row; collapsed = winning config for current filter; expand = all configs.
@@ -752,7 +873,28 @@ function fmt1(v)  { return (v == null) ? '-' : (+v).toFixed(1); }
 function fmt0(v)  { return (v == null) ? '-' : Math.round(+v).toString(); }
 function fmt2(v)  { return (v == null) ? '-' : (+v).toFixed(2); }
 
-function winnerSummary(w) {
+function vanillaClaim(w, configs) {
+  const controls = configs
+    .filter(c => c.control_kind === 'vanilla')
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+  const control = controls.find(c =>
+    c.bench_session_started_at && c.bench_session_started_at === w.bench_session_started_at
+  ) || controls[0];
+  if (!control) return '';
+  if (!control.ok && w.ok) {
+    return '<span class="winner-stat level-low" title="The untuned llama.cpp control did not complete, while the selected calibr config did.">calibr made it usable</span>';
+  }
+  const base = +control.eval_tps || 0;
+  const tuned = +w.eval_tps || 0;
+  if (base <= 0 || tuned <= 0) return '';
+  const delta = tuned - base;
+  const pct = delta / base * 100;
+  const sign = delta >= 0 ? '+' : '';
+  return '<span class="winner-stat" title="Selected config versus the untuned llama.cpp control from the same session.">' +
+    'calibr ' + sign + fmt1(pct) + '% (' + sign + fmt1(delta) + ' t/s)</span>';
+}
+
+function winnerSummary(w, configs) {
   const parts = [];
   parts.push('<span class="level-' + lvl(w) + '">[' + lvl(w) + ']</span> <span class="winner-stat">' + escapeHtml(w.label) + '</span>');
   parts.push('<span class="winner-stat"><b>' + fmt1(w.eval_tps) + '</b> t/s</span>');
@@ -769,7 +911,270 @@ function winnerSummary(w) {
   if (w._fallback) {
     parts.push('<span class="winner-stat meta" title="No config of this model qualifies for the selected filter; speed winner shown instead.">(speed fallback)</span>');
   }
+  const claim = vanillaClaim(w, configs);
+  if (claim) parts.push(claim);
   return parts.join(' · ');
+}
+
+// ===========================================================================
+// Vanilla-vs-config comparison panel: a radar/star chart (left) that scales
+// every axis against the vanilla control, plus a prefill/KV-fill load curve
+// (right) showing how throughput holds up as context fills. Both are
+// presentation over existing result fields — no metric is recomputed here.
+// ===========================================================================
+
+// A config is a real, pickable candidate (not a control, not a diagnostic
+// workload row). These are what the lean drilldown table and the radar use.
+function isRealConfig(c) {
+  return !c.control_kind && (!c.workload_kind || c.workload_kind === 'baseline');
+}
+function isVanillaAdjacent(c) { return c.control_kind === 'vanilla-adjacent'; }
+function isWorkloadRow(c) {
+  return c.workload_kind === 'prefill' || c.workload_kind === 'kv-fill';
+}
+
+// Human-friendly config description for the lean picker, instead of the raw
+// engine label. Vanilla is the baseline control; real configs read as their
+// context size + KV-cache quantization (the two knobs that actually vary).
+function configContextSize(c) {
+  if (+c.effective_context_size) return +c.effective_context_size;
+  if (+c.ctx_size) return +c.ctx_size;
+  if (+c.requested_context_size) return +c.requested_context_size;
+  const m = /ctx[=_-]?(\d+)/i.exec(c.label || c.extra_args || '');
+  return m ? +m[1] : 0;
+}
+function kvQuantLabel(c) {
+  let k = c.requested_cache_type_k, v = c.requested_cache_type_v;
+  if (!k || !v) {
+    const mk = /--cache-type-k\s+(\S+)/.exec(c.extra_args || '');
+    const mv = /--cache-type-v\s+(\S+)/.exec(c.extra_args || '');
+    k = k || (mk && mk[1]); v = v || (mv && mv[1]);
+  }
+  if (!k && !v) { const ml = /kv[=_]([a-z0-9_]+)/i.exec(c.label || ''); if (ml) k = v = ml[1]; }
+  if (!k && !v) return null;
+  k = k || v; v = v || k;
+  return k === v ? k : k + '/' + v;
+}
+// The vanilla control runs llama.cpp defaults, whose KV cache is float16; pin
+// that so the baseline row never shows an empty/parsed value.
+function kvCacheLabel(c) {
+  if (c.control_kind === 'vanilla') return 'f16';
+  return kvQuantLabel(c) || '–';
+}
+function configIdentity(c) {
+  return c.control_kind === 'vanilla' ? 'Baseline default llama.cpp configuration' : 'Calibrated';
+}
+
+// Pick the vanilla control to reference, preferring the one from the same
+// bench session as `ref` (mirrors vanillaClaim's selection).
+function vanillaControlFor(configs, ref) {
+  const controls = configs
+    .filter(c => c.control_kind === 'vanilla')
+    .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+  if (ref && ref.bench_session_started_at) {
+    const match = controls.find(c => c.bench_session_started_at === ref.bench_session_started_at);
+    if (match) return match;
+  }
+  return controls[0] || null;
+}
+
+// Radar axes. `dir:'up'` means higher is better (ratio = config/vanilla);
+// `dir:'down'` means lower is better (ratio = vanilla/config) so that a
+// better config always bulges OUTWARD past the vanilla reference ring.
+const RADAR_AXES = [
+  { key:'eval',   label:'eval t/s',   dir:'up',   unit:'t/s', get:d => +d.eval_tps || 0 },
+  { key:'prompt', label:'prompt t/s', dir:'up',   unit:'t/s', get:d => +d.prompt_tps || 0 },
+  { key:'ctx',    label:'context',    dir:'up',   unit:'tok', get:d => +d.effective_context_size || +d.ctx_size || +d.requested_context_size || 0 },
+  { key:'vram',   label:'VRAM',       dir:'down', unit:'MiB', get:d => benchmarkVramUsedMib(d) },
+  { key:'power',  label:'power',      dir:'down', unit:'W',   get:d => +d.gpu_power_peak_w || 0 },
+  { key:'temp',   label:'temp',       dir:'down', unit:'°C', get:d => +d.gpu_temp_peak_c || 0 },
+  { key:'ram',    label:'RAM',        dir:'down', unit:'MiB', get:d => +d.ram_used_peak_mib || 0 },
+];
+// Integer-ish axes (tokens, MiB) read better without a decimal.
+function radarVal(a, v) { return (a.unit === 'tok' || a.unit === 'MiB') ? fmt0(v) : fmt1(v); }
+
+function renderRadar(vanilla, config) {
+  // Keep only axes where both sides have a usable (>0) value — power/temp/RAM
+  // are often unmeasured, and a ratio needs a non-zero vanilla reference.
+  const axes = RADAR_AXES.map(ax => {
+    const vv = ax.get(vanilla), cv = ax.get(config);
+    if (!(vv > 0) || !(cv > 0)) return null;
+    const ratio = ax.dir === 'up' ? cv / vv : vv / cv;
+    return { ...ax, vv, cv, ratio };
+  }).filter(Boolean);
+  if (axes.length < 3) {
+    return '<div class="compare-empty">Not enough shared metrics between vanilla and this config to plot a radar (need 3+).</div>';
+  }
+
+  const n = axes.length, CX = 132, CY = 116, R = 84;
+  const ang = i => (-90 + i * 360 / n) * Math.PI / 180;
+  // vanilla sits on a fixed reference ring (0.5); the config scales around it
+  // on a symmetric log2 axis clamped to 0.5x..2x so a runaway ratio can't
+  // shoot off the chart.
+  const REF = 0.5;
+  const frac = r => REF + Math.max(-1, Math.min(1, Math.log2(r))) * 0.46;
+  const pt = (i, f) => [
+    (CX + Math.cos(ang(i)) * R * Math.max(0.02, Math.min(1, f))).toFixed(1),
+    (CY + Math.sin(ang(i)) * R * Math.max(0.02, Math.min(1, f))).toFixed(1),
+  ];
+  const poly = f => axes.map((a, i) => pt(i, typeof f === 'function' ? f(a) : f).join(',')).join(' ');
+
+  let svg = '<svg viewBox="0 0 264 232" role="img" aria-label="vanilla versus selected config radar">';
+  // grid: outer ring + the vanilla reference ring
+  svg += '<polygon class="radar-grid" points="' + poly(1) + '"/>';
+  svg += '<polygon class="radar-ref" points="' + poly(REF) + '"/>';
+  // spokes + axis labels
+  axes.forEach((a, i) => {
+    const [sx, sy] = pt(i, 1);
+    svg += '<line class="radar-spoke" x1="' + CX + '" y1="' + CY + '" x2="' + sx + '" y2="' + sy + '"/>';
+    const [lx, ly] = pt(i, 1.16);
+    const c = Math.cos(ang(i));
+    const anchor = Math.abs(c) < 0.3 ? 'middle' : (c > 0 ? 'start' : 'end');
+    const dy = Math.sin(ang(i)) < -0.5 ? -2 : (Math.sin(ang(i)) > 0.5 ? 8 : 3);
+    svg += '<text class="radar-label" x="' + lx + '" y="' + (+ly + dy) + '" text-anchor="' + anchor + '">' + escapeHtml(a.label) + '</text>';
+  });
+  // vanilla polygon (reference), then config polygon on top
+  svg += '<polygon class="radar-poly-vanilla" points="' + poly(REF) + '"/>';
+  svg += '<polygon class="radar-poly-config" points="' + poly(a => frac(a.ratio)) + '"/>';
+  // Hoverable vertices: vanilla reference value, then the config's actual value
+  // and its delta vs vanilla (× form when the gap is large, e.g. context).
+  axes.forEach((a, i) => {
+    const [vx, vy] = pt(i, REF);
+    svg += '<circle class="radar-dot-vanilla" cx="' + vx + '" cy="' + vy + '" r="1.8"><title>' +
+      escapeHtml('vanilla · ' + a.label + ': ' + radarVal(a, a.vv) + ' ' + a.unit) + '</title></circle>';
+  });
+  axes.forEach((a, i) => {
+    const [dx, dy] = pt(i, frac(a.ratio));
+    const big = a.ratio >= 1.95 || a.ratio <= 0.51;
+    const pct = (a.ratio - 1) * 100;
+    const cmp = big ? a.ratio.toFixed(1) + '× vanilla'
+                    : ((pct >= 0 ? '+' : '') + fmt0(pct) + '% ' + (pct >= 0 ? 'better' : 'worse'));
+    const title = 'selected · ' + a.label + ': ' + radarVal(a, a.cv) + ' ' + a.unit +
+                  ' (vanilla ' + radarVal(a, a.vv) + ' ' + a.unit + ', ' + cmp + ')';
+    svg += '<circle class="radar-dot-config" cx="' + dx + '" cy="' + dy + '" r="2.6"><title>' + escapeHtml(title) + '</title></circle>';
+  });
+  svg += '<text class="radar-ref-tag" x="' + CX + '" y="' + (CY - R * REF - 3).toFixed(1) + '" text-anchor="middle">vanilla</text>';
+  svg += '</svg>';
+
+  svg += '<div class="compare-legend">' +
+    '<span class="legend-item"><span class="legend-box" style="background:rgba(183,183,183,.45);border-color:var(--c-muted)"></span>vanilla (reference)</span>' +
+    '<span class="legend-item"><span class="legend-box" style="background:rgba(139,92,246,.5);border-color:var(--c-win)"></span>selected config</span>' +
+    '<span class="legend-item">outward = better: eval/prompt/context higher · VRAM/power/temp/RAM lower · hover a point for values</span>' +
+    '</div>';
+  return svg;
+}
+
+// Prefill and KV-fill rows share the anchor config; plot each series'
+// throughput as retention vs its own best (% kept) so the two — which live on
+// very different absolute scales — can be read on one axis as "how fast does
+// it fall off as context fills?". Absolute values stay in the point tooltips.
+function renderLoadCurve(configs) {
+  const usable = c => c.ok !== false;
+  const prefill = configs.filter(c => c.workload_kind === 'prefill' && usable(c))
+    .map(c => ({ tok: +(c.workload_prompt_tokens ?? c.prefill_target_tokens) || 0, tps: +c.prompt_tps || 0 }))
+    .filter(p => p.tok > 0 && p.tps > 0).sort((a, b) => a.tok - b.tok);
+  const kv = configs.filter(c => c.workload_kind === 'kv-fill' && usable(c))
+    .map(c => ({ tok: +(c.kv_fill_cached_tokens ?? c.kv_fill_target_tokens ?? c.workload_prompt_tokens) || 0, tps: +c.eval_tps || 0 }))
+    .filter(p => p.tok > 0 && p.tps > 0).sort((a, b) => a.tok - b.tok);
+  if (!prefill.length && !kv.length) {
+    return '<div class="compare-empty">Run a <b>load-curve</b> or <b>exhaustive</b> scope to chart prefill / KV-fill as context fills.</div>';
+  }
+
+  const ctx = Math.max(0, ...configs.map(c => +c.ctx_size || 0));
+  const maxTok = Math.max(1, ...prefill.map(p => p.tok), ...kv.map(p => p.tok));
+  const W = 264, H = 200, L = 30, Rm = 8, T = 10, B = 28;
+  const px = tok => (L + (W - L - Rm) * (tok / maxTok)).toFixed(1);
+  const py = rel => (T + (H - T - B) * (1 - rel)).toFixed(1);
+  const base = s => Math.max(...s.map(p => p.tps), 1);
+
+  const series = (s, cls, dotCls, metricName) => {
+    if (!s.length) return '';
+    const b = base(s);
+    const line = '<polyline class="' + cls + '" points="' +
+      s.map(p => px(p.tok) + ',' + py(p.tps / b)).join(' ') + '"/>';
+    const dots = s.map(p => {
+      const pctCtx = ctx > 0 ? ' (' + Math.round(p.tok / ctx * 100) + '% ctx)' : '';
+      const title = metricName + ' @ ' + p.tok + ' tok' + pctCtx + ': ' + fmt1(p.tps) + ' t/s';
+      return '<circle class="' + dotCls + '" cx="' + px(p.tok) + '" cy="' + py(p.tps / b) + '" r="2.4">' +
+        '<title>' + escapeHtml(title) + '</title></circle>';
+    }).join('');
+    return line + dots;
+  };
+
+  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="prefill and KV-fill load curve">';
+  svg += '<line class="curve-axis" x1="' + L + '" y1="' + T + '" x2="' + L + '" y2="' + (H - B) + '"/>';
+  svg += '<line class="curve-axis" x1="' + L + '" y1="' + (H - B) + '" x2="' + (W - Rm) + '" y2="' + (H - B) + '"/>';
+  // y gridline at 100% (full retention) and 50%
+  [1, 0.5].forEach(r => {
+    svg += '<line class="curve-axis" style="opacity:.3" x1="' + L + '" y1="' + py(r) + '" x2="' + (W - Rm) + '" y2="' + py(r) + '"/>';
+    svg += '<text class="curve-tick" x="' + (L - 3) + '" y="' + (+py(r) + 3) + '" text-anchor="end">' + Math.round(r * 100) + '%</text>';
+  });
+  // x ticks at 0 and max (and ctx-relative label)
+  svg += '<text class="curve-tick" x="' + L + '" y="' + (H - B + 12) + '" text-anchor="middle">0</text>';
+  svg += '<text class="curve-tick" x="' + (W - Rm) + '" y="' + (H - B + 12) + '" text-anchor="end">' +
+    (maxTok >= 1024 ? Math.round(maxTok / 1024) + 'k' : maxTok) + ' tok' +
+    (ctx > 0 ? ' (' + Math.round(maxTok / ctx * 100) + '% ctx)' : '') + '</text>';
+  svg += series(prefill, 'curve-prefill', 'curve-dot-prefill', 'prefill');
+  svg += series(kv, 'curve-kvfill', 'curve-dot-kvfill', 'KV-fill');
+  svg += '</svg>';
+
+  const cap = [];
+  if (prefill.length) cap.push('prefill best ' + fmt1(base(prefill)) + ' t/s');
+  if (kv.length) cap.push('KV-fill best ' + fmt1(base(kv)) + ' t/s');
+  svg += '<div class="compare-legend">' +
+    (prefill.length ? '<span class="legend-item"><span class="legend-line" style="color:#22c55e"></span>prefill (prompt t/s)</span>' : '') +
+    (kv.length ? '<span class="legend-item"><span class="legend-line" style="color:#f59e0b"></span>KV-fill (eval t/s)</span>' : '') +
+    '<span class="legend-item">y = throughput retained vs each series’ best</span>' +
+    '</div>';
+  svg += '<div class="compare-cap">' + cap.join(' · ') + '</div>';
+  return svg;
+}
+
+// Default config the radar targets: the winner if it is a real config, else
+// the fastest real config.
+function defaultCompareConfig(configs, winner) {
+  return winner && isRealConfig(winner)
+    ? winner
+    : configs.filter(isRealConfig).sort((a, b) => (+b.eval_tps || 0) - (+a.eval_tps || 0))[0];
+}
+
+// Stable id so a row click can re-render just one model's radar card.
+function radarCardId(model) { return 'cmp-radar-' + String(model).replace(/[^\w]/g, '_'); }
+
+// Inner of the radar card (title + chart). Re-rendered on row selection.
+function radarCardInner(vanilla, selected) {
+  const label = selected ? selected.label : 'config';
+  const body = (vanilla && selected)
+    ? renderRadar(vanilla, selected)
+    : '<div class="compare-empty">No vanilla control in this run — nothing to compare against.</div>';
+  return '<h4>vanilla vs <span class="meta">' + escapeHtml(label) + '</span></h4>' + body;
+}
+
+// Single-row panel: configs (left) · radar (middle, vs vanilla) · load curve
+// (right, only when load-curve data exists). `configsCardHtml` is the lean
+// picker built by renderModelsList. The radar drops out when there is no
+// vanilla control to reference.
+function comparisonPanel(model, configs, selected, configsCardHtml) {
+  const vanilla = vanillaControlFor(configs, selected);
+  const hasCurve = configs.some(isWorkloadRow);
+  const cards = [configsCardHtml];
+  if (vanilla && selected) {
+    cards.push('<div class="compare-card" id="' + radarCardId(model) + '">' + radarCardInner(vanilla, selected) + '</div>');
+  }
+  if (hasCurve) {
+    cards.push('<div class="compare-card"><h4>Load curve <span class="meta">prefill vs KV-fill</span></h4>' + renderLoadCurve(configs) + '</div>');
+  }
+  return '<div class="compare-panel cols-' + cards.length + '">' + cards.join('') + '</div>';
+}
+
+// Row-click handler target: re-point the radar at `configId` for `model`.
+// The load curve is per-model (anchor config), so only the radar updates.
+function selectCompareConfig(model, configId) {
+  const configs = VIEW.filter(c => c.model === model);
+  const selected = configs.find(c => c.id === configId && isRealConfig(c));
+  if (!selected) return;
+  const card = document.getElementById(radarCardId(model));
+  if (card) card.innerHTML = radarCardInner(vanillaControlFor(configs, selected), selected);
 }
 
 function renderModelsList() {
@@ -796,7 +1201,7 @@ function renderModelsList() {
     const allFailed = !w;
     const summaryHtml = w
       ? '<span class="model-name">' + escapeHtml(model) + '</span>' +
-        '<span class="winner-summary">' + winnerSummary(w) + '</span>' +
+        '<span class="winner-summary">' + winnerSummary(w, configs) + '</span>' +
         '<span class="winner-actions">' +
           (WINNERS_BY_MODEL[model] ? '<a class="bat-link" href="bats/' + WINNERS_BY_MODEL[model].bat + '" title="Pre-generated by the engine (safety-first pick)">default bat</a>' : '') +
           ' <a class="bat-link" href="#" data-cfg-id="' + w.id + '" title="Generate a .bat for this exact config (client-side)">&darr; bat</a>' +
@@ -805,24 +1210,79 @@ function renderModelsList() {
         '<span class="fail-summary">' + noWinnerSummary(configs) + '</span>' +
         '<span></span>';
 
-    // Per-model sub-table: every config benched, winner highlighted.
+    // Split the dense config dump into a lean, pickable table (real configs +
+    // the vanilla control) and a collapsed diagnostics view (vanilla-adjacent
+    // probes + prefill/KV-fill workload rows). The probes/workload rows are
+    // what made the old single table "complete no sense"; the multi-metric
+    // detail now lives in the comparison radar, the curves in the load chart.
+    const tableConfigs = configs.filter(c => !isVanillaAdjacent(c) && !isWorkloadRow(c));
+    const diagConfigs  = configs.filter(c => isVanillaAdjacent(c) || isWorkloadRow(c));
+
+    // The radar compares vanilla against the selected config (default = winner
+    // or fastest real config); clicking another real row re-targets it.
+    const selected = defaultCompareConfig(configs, w);
+    const selectedId = selected ? selected.id : null;
+
+    // Lean picker with context + KV as their own columns, plus prompt/eval t/s
+    // and fit. Level and per-config VRAM are dropped — level is in the model
+    // header and the raw numbers live in the diagnostics drilldown. Clicking a
+    // row re-targets the radar.
     let rows = '';
-    for (const c of configs) {
+    for (const c of tableConfigs) {
       const isWin = w && c.id === w.id;
+      const selectable = isRealConfig(c);
+      const cls = [isWin ? 'is-winner' : '', selectable ? 'cfg-row' : '', (selectable && c.id === selectedId) ? 'cfg-selected' : ''].filter(Boolean).join(' ');
+      const ctx = configContextSize(c);
+      rows += '<tr' + (cls ? ' class="' + cls + '"' : '') +
+              (selectable ? ' data-select-cfg="' + escapeHtml(c.id) + '" data-model="' + escapeHtml(model) + '"' : '') + '>' +
+              '<td>' + configIdentity(c) +
+                (c.control_kind === 'vanilla' ? ' <span class="meta">control</span>' : '') + '</td>' +
+              '<td class="num">' + (ctx ? ctx : '–') + '</td>' +
+              '<td class="num">' + kvCacheLabel(c) + '</td>' +
+              '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
+              '<td class="num"><b>' + fmt1(c.eval_tps) + '</b></td>' +
+              '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
+              '<td>' + ((!c.control_kind && (!c.workload_kind || c.workload_kind === 'baseline')) ? '<a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a>' : '') + '</td>' +
+              '</tr>';
+    }
+    const configsCard =
+      '<div class="compare-card compare-configs"><h4>Configs</h4>' +
+        '<table><thead><tr>' +
+          '<th>Configuration</th><th class="num">Context size</th><th class="num">Key/Value</th>' +
+          '<th class="num">Prompt t/s</th><th class="num">Eval t/s</th><th>Fit</th><th></th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+
+    // Diagnostics audit table: keeps the probes/workload rows reachable with
+    // the launch profile that explains why vanilla and calibr differ.
+    let diagRows = '';
+    for (const c of diagConfigs) {
       const wddm = confirmedSharedMib(c) > 0 ? '<span class="wddm">+' + confirmedSharedMib(c) + '</span>' : '-';
-      rows += '<tr' + (isWin ? ' class="is-winner"' : '') + '>' +
+      diagRows += '<tr>' +
               '<td><code>' + escapeHtml(c.label) + '</code></td>' +
-              '<td class="level-' + lvl(c) + '">' + lvl(c) + '</td>' +
+              '<td title="' + escapeHtml(workloadTitle(c)) + '">' + (isVanillaAdjacent(c) ? 'vanilla-adjacent' : workloadLabel(c)) + '</td>' +
+              '<td title="' + escapeHtml(launchProfileTitle(c)) + '">' + launchProfileLabel(c) + '</td>' +
               '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
               '<td class="num" title="' + vramCellTitle(c) + '">' + benchmarkVramUsedMib(c) + '</td>' +
               '<td class="num">' + wddm + '</td>' +
-              '<td class="num">' + fmt2(c.ttft_sec) + '</td>' +
-              '<td class="num">' + ((+c.gpu_power_peak_w > 0) ? fmt0(c.gpu_power_peak_w) + ' W' : '-') + '</td>' +
               '<td class="' + fitClass(c) + '">' + fitLabel(c) + '</td>' +
-              '<td><a class="bat-link" href="#" data-cfg-id="' + c.id + '">&darr; bat</a></td>' +
               '</tr>';
     }
+    const auditTable = diagConfigs.length
+      ? '<table><thead><tr>' +
+          '<th>Config</th><th>Workload</th><th>Launch profile</th>' +
+          '<th class="num">Prompt t/s</th><th class="num">Eval t/s</th>' +
+          '<th class="num">VRAM run</th><th class="num">Shared spill</th><th>Fit</th>' +
+        '</tr></thead><tbody>' + diagRows + '</tbody></table>'
+      : '';
+    // Per-config throughput & memory bars (folded in from the old global
+    // section), plus the vanilla-adjacent / load-curve audit rows.
+    const diagBars = modelDiagnosticBars(model, tableConfigs);
+    const diagHtml = (diagBars || auditTable)
+      ? '<details class="diag-details"><summary>diagnostics · per-config throughput &amp; memory bars' +
+          (diagConfigs.length ? ' · ' + diagConfigs.length + ' vanilla-adjacent / load-curve row' + (diagConfigs.length === 1 ? '' : 's') + ' (excluded from winner selection)' : '') +
+          '</summary>' + diagBars + auditTable + '</details>'
+      : '';
 
     el.insertAdjacentHTML('beforeend',
       '<details class="model-row' + (allFailed ? ' is-failed' : '') + '">' +
@@ -832,18 +1292,9 @@ function renderModelsList() {
         '</summary>' +
         '<div class="config-list">' +
           coldLoadSummary(w || configs[0]) +
-          '<table>' +
-            '<thead><tr>' +
-              '<th>Config</th><th>Level</th>' +
-              '<th class="num">Prompt t/s</th>' +
-              '<th class="num">Eval t/s</th>' +
-              '<th class="num">VRAM run</th><th class="num">Shared spill</th>' +
-              '<th class="num">TTFT s</th>' +
-              '<th class="num">GPU W</th>' +
-              '<th>Fit</th><th></th>' +
-            '</tr></thead>' +
-            '<tbody>' + rows + '</tbody>' +
-          '</table>' +
+          calibrationSummary(configs) +
+          comparisonPanel(model, configs, selected, configsCard) +
+          diagHtml +
         '</div>' +
       '</details>'
     );
@@ -1011,119 +1462,78 @@ function speedGradient(value, mode) {
   return 'linear-gradient(90deg,#ef4444 0%,#ef4444 ' + p1 + '%,#f97316 ' + p2 + '%,#22c55e ' + p3 + '%,#14532d 100%)';
 }
 
-function renderBars() {
-  const el = document.getElementById('bars');
-  el.innerHTML = '';
-  const okData = VIEW.filter(d => d.ok);
-  if (okData.length === 0) {
-    el.innerHTML = '<p class="meta">No ok runs to display.</p>';
-    return;
-  }
+// Per-config bar metrics, folded into each model's diagnostics drilldown
+// (the old global "Throughput & memory" tabs). `dir:'asc'` sorts smaller-is-
+// better (memory/latency); 'desc' sorts faster-is-better (throughput).
+const BAR_METRICS = [
+  { key:'eval',    label:'Eval tokens/s', unit:'t/s', dir:'desc', fillClass:'',       grad:'eval',   valueOf:d => +d.eval_tps || 0,    annotate:evalRunNote },
+  { key:'prompt',  label:'Prompt tokens/s', unit:'t/s', dir:'desc', fillClass:'',     grad:'prompt', valueOf:d => +d.prompt_tps || 0,  annotate:d => metricChip('eval', fmt1(d.eval_tps) + 't/s') },
+  { key:'memory',  label:'VRAM + RAM', unit:'MiB', dir:'asc', fillClass:'memory',     grad:null,     valueOf:totalMemoryUsedMib,        annotate:memoryUsageNote },
+  { key:'latency', label:'Latency', unit:'ms', dir:'asc', fillClass:'memory',         grad:null,     valueOf:latencyMs,                 annotate:latencyNote },
+  { key:'vram',    label:'VRAM peak', unit:'MiB', dir:'asc', fillClass:'memory',      grad:null,     valueOf:benchmarkVramUsedMib,      annotate:vramUsageNote, capToVram:true },
+];
 
-  let sorted, field, maxv, unit, annotate, valueOf, pctOf, fillClass, fillStyleOf;
-  if (STATE.bars === 'eval') {
-    field = 'eval_tps'; unit = 't/s'; annotate = evalRunNote; fillClass = '';
-    valueOf = d => +d.eval_tps || 0;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = d => 'background:' + speedGradient(valueOf(d), 'eval') + ';';
-    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
-  } else if (STATE.bars === 'prompt') {
-    field = 'prompt_tps'; unit = 't/s'; annotate = d => metricChip('eval', fmt1(d.eval_tps) + 't/s'); fillClass = '';
-    valueOf = d => +d.prompt_tps || 0;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = d => 'background:' + speedGradient(valueOf(d), 'prompt') + ';';
-    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
-  } else if (STATE.bars === 'throughput') {
-    field = 'throughput_total_tps'; unit = 't/s'; annotate = throughputNote; fillClass = '';
-    valueOf = totalThroughput;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = d => 'background:' + speedGradient(valueOf(d), 'prompt') + ';';
-    sorted = okData.slice().sort((a, b) => valueOf(b) - valueOf(a));
-  } else if (STATE.bars === 'memory') {
-    field = 'memory_total_mib'; unit = 'MiB'; annotate = memoryUsageNote; fillClass = 'memory';
-    valueOf = totalMemoryUsedMib;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = () => '';
-    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
-  } else if (STATE.bars === 'latency') {
-    field = 'server_ttft_ms'; unit = 'ms'; annotate = latencyNote; fillClass = 'memory';
-    valueOf = latencyMs;
-    maxv = Math.max(1, Math.ceil(Math.max(...okData.map(valueOf)) * 1.05));
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = () => '';
-    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
-  } else { // vram
-    field = 'vram_peak_mib'; unit = 'MiB'; annotate = vramUsageNote; fillClass = 'memory';
-    valueOf = benchmarkVramUsedMib;
-    maxv = (CFG.hardware && CFG.hardware.vram_total_mib) || 8192;
-    pctOf = d => Math.min(100, (valueOf(d) / maxv) * 100);
-    fillStyleOf = () => '';
-    sorted = okData.slice().sort((a, b) => valueOf(a) - valueOf(b));
-  }
-
-  const rowHtml = (d) => {
-    const value = valueOf(d);
-    const pctVal = pctOf(d);
-    const fillClasses = fillClass;
-    const fillStyle = 'width:' + pctVal + '%;' + fillStyleOf(d);
-    const modeCls = ' mode-' + STATE.bars;
+function metricBars(configs, m, labelFn) {
+  const ok = configs.filter(d => d.ok);
+  const vals = ok.map(m.valueOf).filter(v => v > 0);
+  if (!vals.length) return '<p class="meta">No data for this metric.</p>';
+  const maxv = m.capToVram
+    ? ((CFG.hardware && CFG.hardware.vram_total_mib) || Math.max(1, ...vals))
+    : Math.max(1, Math.ceil(Math.max(...vals) * 1.05));
+  const sorted = ok.slice().sort((a, b) => m.dir === 'asc'
+    ? m.valueOf(a) - m.valueOf(b)
+    : m.valueOf(b) - m.valueOf(a));
+  const name = labelFn || (d => '<span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.label));
+  return sorted.map(d => {
+    const value = m.valueOf(d);
+    const pct = Math.min(100, (value / maxv) * 100);
+    const fillStyle = 'width:' + pct + '%;' + (m.grad ? 'background:' + speedGradient(value, m.grad) + ';' : '');
     const badge = d.wddm_flag_shared_pos ? ' <span class="wddm">[WDDM +' + d.shared_peak_mib + 'MiB]</span>' :
-                  d.wddm_flag_high_vram  ? ' <span class="wddm">[VRAM ' + Math.round(d.wddm_vram_saturation*100) + '%]</span>' : '';
-    const annHtml = annotate ? '<div class="ann">' + annotate(d) + '</div>' : '';
+                  d.wddm_flag_high_vram  ? ' <span class="wddm">[VRAM ' + Math.round(d.wddm_vram_saturation * 100) + '%]</span>' : '';
+    const annHtml = m.annotate ? '<div class="ann">' + m.annotate(d) + '</div>' : '';
     const winCls = isWinnerId(d.id) ? ' is-winner' : '';
-    return (
-      '<div class="bar-row' + modeCls + (annotate ? ' bar-row-ann' : '') + winCls + '">' +
-        '<div class="name"><span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.label) + badge + '</div>' +
-        '<div class="track"><div class="fill ' + fillClasses + '" style="' + fillStyle + '"></div></div>' +
-        '<div class="val">' + value.toFixed(1) + ' ' + unit + '</div>' +
+    return '<div class="bar-row mode-' + m.key + (m.annotate ? ' bar-row-ann' : '') + winCls + '">' +
+        '<div class="name">' + name(d) + badge + '</div>' +
+        '<div class="track"><div class="fill ' + m.fillClass + '" style="' + fillStyle + '"></div></div>' +
+        '<div class="val">' + value.toFixed(1) + ' ' + m.unit + '</div>' +
         annHtml +
-      '</div>'
-    );
-  };
-
-  if (STATE.bars === 'disk') {
-    const byModel = {};
-    for (const d of sorted) (byModel[d.model] = byModel[d.model] || []).push(d);
-    const groups = Object.entries(byModel).sort((a, b) => {
-      const aMax = Math.max(...a[1].map(valueOf));
-      const bMax = Math.max(...b[1].map(valueOf));
-      return aMax - bMax || a[0].localeCompare(b[0]);
-    });
-    for (const [model, rows] of groups) {
-      const maxDisk = Math.max(...rows.map(valueOf));
-      const bestEval = Math.max(...rows.map(d => +d.eval_tps || 0));
-      el.insertAdjacentHTML('beforeend',
-        '<div class="bar-model-group">' +
-          '<div class="bar-model-heading">' +
-            '<span>' + escapeHtml(model) + '</span>' +
-            '<span class="meta">' + rows.length + ' config' + (rows.length === 1 ? '' : 's') +
-              ' · peak disk ' + fmt1(maxDisk) + ' MB/s' +
-              ' · best eval ' + fmt1(bestEval) + ' t/s</span>' +
-          '</div>' +
-          rows.map(rowHtml).join('') +
-        '</div>'
-      );
-    }
-    return;
-  }
-
-  for (const d of sorted) {
-    el.insertAdjacentHTML('beforeend', rowHtml(d));
-  }
+      '</div>';
+  }).join('');
 }
 
-document.getElementById('bars-tabs').querySelectorAll('.tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.getElementById('bars-tabs').querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    STATE.bars = tab.dataset.bars;
-    renderBars();
-  });
-});
+// Metric tab strip shared by the per-model diagnostics and the leaderboard.
+function barMetricTabs(activeKey, cls, attrs) {
+  return '<div class="tabs ' + cls + '"' + (attrs || '') + '>' +
+    BAR_METRICS.map(m => '<div class="tab' + (m.key === activeKey ? ' active' : '') +
+      '" data-metric="' + m.key + '">' + escapeHtml(m.label) + '</div>').join('') +
+    '</div>';
+}
+function diagBarsId(model) { return 'diag-bars-' + String(model).replace(/[^\w]/g, '_'); }
+
+// Per-config throughput & memory bars for one model, as a tabbed widget inside
+// diagnostics (one metric shown at a time; tabs switch the metric).
+function modelDiagnosticBars(model, configs) {
+  if (!configs.some(d => d.ok)) return '';
+  const def = BAR_METRICS[0];
+  return '<div class="diag-bars">' +
+    barMetricTabs(def.key, 'diag-bars-tabs', ' data-model="' + escapeHtml(model) + '"') +
+    '<div class="tab-content"><div id="' + diagBarsId(model) + '">' + metricBars(configs, def) + '</div></div>' +
+    '</div>';
+}
+
+// Global "Complete session leaderboard": one bar per model (its winner under
+// the current filter), compared head to head. Same metric tabs as diagnostics.
+function renderLeaderboard() {
+  const el = document.getElementById('leaderboard-bars');
+  if (!el) return;
+  const winners = Object.values(currentWinners).filter(Boolean);
+  const m = BAR_METRICS.find(x => x.key === STATE.bars) || BAR_METRICS[0];
+  el.innerHTML = winners.length
+    ? metricBars(winners, m, d => '<span class="level-' + lvl(d) + '">[' + lvl(d) + ']</span> ' + escapeHtml(d.model))
+    : '<p class="meta">No winners for the current filter.</p>';
+  const count = document.getElementById('leaderboard-count');
+  if (count) count.textContent = winners.length + ' models · winner each';
+}
 
 // ===========================================================================
 // Scatter (now the first chart). Winner dots get a thicker outline so the
@@ -1144,7 +1554,10 @@ function renderScatter() {
   const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
   const cap = (CFG.hardware && CFG.hardware.vram_total_mib) ? CFG.hardware.vram_total_mib : 8192;
   const ramTotal = (CFG.hardware && CFG.hardware.system_ram_total_mib) ? CFG.hardware.system_ram_total_mib : 0;
-  const pts = VIEW.filter(d => d.ok && d.time_total_sec != null).map(d => ({
+  // Prefill / KV-fill diagnostic rows share the anchor config's footprint at
+  // varying times, which only adds a chaotic cluster here; keep the scatter to
+  // baseline/real configs and the vanilla control.
+  const pts = VIEW.filter(d => d.ok && d.time_total_sec != null && !isWorkloadRow(d)).map(d => ({
     d: d,
     x: d.time_total_sec,
     y: effectiveMemoryUsedMib(d, STATE.adjustScatterBaseline)
@@ -1236,6 +1649,17 @@ function telemetryRuns(d) {
   return Array.isArray(d?.runs) ? d.runs.filter(r => Array.isArray(r.telemetry) && r.telemetry.length > 0) : [];
 }
 
+// Short centered moving average for the noisy per-token generation rate.
+function smoothSeries(vals, win) {
+  if (!Array.isArray(vals) || vals.length <= 2 || win <= 1) return Array.isArray(vals) ? vals.slice() : [];
+  const half = Math.floor(win / 2);
+  return vals.map((_, i) => {
+    let sum = 0, n = 0;
+    for (let j = Math.max(0, i - half); j <= Math.min(vals.length - 1, i + half); j++) { sum += vals[j]; n++; }
+    return sum / n;
+  });
+}
+
 function renderTimeline() {
   const svg = document.getElementById('timeline');
   if (!STATE.timelineConfigId) {
@@ -1266,21 +1690,28 @@ function renderTimeline() {
     ? runs.map((run, index) => ({ run, index }))
     : [{ run: runs[+STATE.timelineRunIndex], index: +STATE.timelineRunIndex }];
   const series = chosenRuns.map(({ run, index }) => {
-    const latency = run.telemetry.filter(p => p.phase === 'latency_prompt' || p.phase === 'latency_eval' ||
+    const latency = run.telemetry.filter(p => p.phase === 'kv_fill' || p.phase === 'latency_prompt' || p.phase === 'latency_eval' ||
       p.phase === 'latency_reasoning' || p.phase === 'latency_answer')
       .slice().sort((a, b) => (+a.elapsed_ms || 0) - (+b.elapsed_ms || 0));
     const start = latency.length > 0 ? (+latency[0].elapsed_ms || 0) : 0;
     const relative = latency.map(p => ({ ...p, plot_ms: Math.max(0, (+p.elapsed_ms || 0) - start) }));
+    const hasKvFill = relative.some(p => p.phase === 'kv_fill');
+    const firstPrompt = relative.find(p => p.phase === 'latency_prompt')?.plot_ms ?? 0;
     const firstEval = relative.find(p => p.phase === 'latency_eval' || p.phase === 'latency_reasoning' || p.phase === 'latency_answer')?.plot_ms ?? 0;
     const end = Math.max(firstEval + 1, ...relative.map(p => +p.plot_ms || 0));
+    const kvEnd = hasKvFill ? 0.18 : 0;
+    const promptEnd = hasKvFill ? 0.32 : 0.12;
     return {
       index,
+      has_kv_fill: hasKvFill,
       eval_duration_ms: Math.max(1, end - firstEval),
       points: relative.map(p => ({
         ...p,
-        plot_x: p.phase === 'latency_prompt'
-          ? 0.12 * (firstEval > 0 ? p.plot_ms / firstEval : 0)
-          : 0.12 + 0.88 * Math.max(0, p.plot_ms - firstEval) / Math.max(1, end - firstEval)
+        plot_x: p.phase === 'kv_fill'
+          ? kvEnd * (firstPrompt > 0 ? p.plot_ms / firstPrompt : 0)
+          : p.phase === 'latency_prompt'
+            ? kvEnd + (promptEnd - kvEnd) * Math.max(0, p.plot_ms - firstPrompt) / Math.max(1, firstEval - firstPrompt)
+            : promptEnd + (1 - promptEnd) * Math.max(0, p.plot_ms - firstEval) / Math.max(1, end - firstEval)
       }))
     };
   }).filter(item => item.points.length > 0);
@@ -1292,6 +1723,9 @@ function renderTimeline() {
   const W = 1000, H = 340, M = { l: 62, r: 62, t: 28, b: 38 };
   const innerW = W - M.l - M.r, innerH = H - M.t - M.b;
   const allPoints = series.flatMap(item => item.points);
+  const hasKvFill = series.some(item => item.has_kv_fill);
+  const kvEnd = hasKvFill ? 0.18 : 0;
+  const promptEnd = hasKvFill ? 0.32 : 0.12;
   const maxEvalDuration = Math.max(1, ...series.map(item => item.eval_duration_ms));
   const memoryValues = allPoints.flatMap(p => [+p.vram_total_mib || 0, +p.ram_used_mib || 0]);
   const memoryMinRaw = Math.min(...memoryValues);
@@ -1300,13 +1734,20 @@ function renderTimeline() {
   const memoryMin = Math.max(0, memoryMinRaw - memoryPad);
   const memoryMax = Math.max(memoryMin + 256, memoryMaxRaw + memoryPad);
   const speedOf = p => p.server_tps != null ? +p.server_tps : (p.rolling_tps != null ? +p.rolling_tps : null);
-  const speedPoints = allPoints.filter(p => speedOf(p) != null && speedOf(p) >= 0);
-  const speedValues = speedPoints.map(p => speedOf(p) || 0);
-  const speedMinRaw = speedValues.length ? Math.min(...speedValues) : 0;
-  const speedMaxRaw = speedValues.length ? Math.max(...speedValues) : 1;
-  const speedPad = Math.max(1, (speedMaxRaw - speedMinRaw) * 0.12);
-  const speedMin = Math.max(0, speedMinRaw - speedPad);
-  const speedMax = Math.max(speedMin + 2, speedMaxRaw + speedPad);
+  // Instantaneous per-token server tok/s is very noisy; smooth each run with a
+  // short centered moving average and anchor the axis at 0 so the generation
+  // line reads as a trend rather than a jagged band. Raw values stay in tooltips.
+  const speedSeries = series.map(item => {
+    const sp = item.points.filter(p => speedOf(p) != null && speedOf(p) >= 0);
+    const win = Math.max(5, Math.round(sp.length / 6));
+    const sm = smoothSeries(sp.map(p => speedOf(p) || 0), win);
+    return { index: item.index, points: sp.map((p, i) => ({ point: p, raw: speedOf(p) || 0, smooth: sm[i] != null ? sm[i] : (speedOf(p) || 0) })) };
+  });
+  const speedByIndex = new Map(speedSeries.map(s => [s.index, s.points]));
+  const smoothedVals = speedSeries.flatMap(s => s.points.map(p => p.smooth));
+  const speedMaxRaw = smoothedVals.length ? Math.max(...smoothedVals) : 1;
+  const speedMin = 0;
+  const speedMax = Math.max(speedMin + 2, speedMaxRaw * 1.12);
   const xs = v => M.l + v * innerW;
   const ym = v => M.t + innerH - ((v - memoryMin) / (memoryMax - memoryMin)) * innerH;
   const ys = v => M.t + innerH - ((v - speedMin) / (speedMax - speedMin)) * innerH;
@@ -1315,16 +1756,18 @@ function renderTimeline() {
   ).join(' ');
 
   const out = [];
-  out.push('<rect class="timeline-phase" x="' + M.l + '" y="' + M.t + '" width="' + (innerW * 0.12) + '" height="' + innerH + '" fill="#f59e0b"><title>prefill</title></rect>');
-  out.push('<rect class="timeline-phase" x="' + xs(0.12) + '" y="' + M.t + '" width="' + (innerW * 0.88) + '" height="' + innerH + '" fill="#2563eb"><title>generated output</title></rect>');
+  if (hasKvFill) out.push('<rect class="timeline-phase" x="' + M.l + '" y="' + M.t + '" width="' + (innerW * kvEnd) + '" height="' + innerH + '" fill="#0f766e"><title>KV fill</title></rect>');
+  out.push('<rect class="timeline-phase" x="' + xs(kvEnd) + '" y="' + M.t + '" width="' + (innerW * (promptEnd - kvEnd)) + '" height="' + innerH + '" fill="#f59e0b"><title>measured prefill</title></rect>');
+  out.push('<rect class="timeline-phase" x="' + xs(promptEnd) + '" y="' + M.t + '" width="' + (innerW * (1 - promptEnd)) + '" height="' + innerH + '" fill="#2563eb"><title>generated output</title></rect>');
   out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + (M.t + innerH) + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
   out.push('<line class="scatter-axis" x1="' + M.l + '" y1="' + M.t + '" x2="' + M.l + '" y2="' + (M.t + innerH) + '"/>');
   out.push('<line class="scatter-axis" x1="' + (M.l + innerW) + '" y1="' + M.t + '" x2="' + (M.l + innerW) + '" y2="' + (M.t + innerH) + '"/>');
-  out.push('<text class="scatter-tick" x="' + xs(0.06) + '" y="' + (H - 12) + '" text-anchor="middle">prefill</text>');
-  out.push('<text class="scatter-tick" x="' + xs(0.12) + '" y="' + (H - 12) + '" text-anchor="middle">TTFT</text>');
+  if (hasKvFill) out.push('<text class="scatter-tick" x="' + xs(kvEnd / 2) + '" y="' + (H - 12) + '" text-anchor="middle">KV fill</text>');
+  out.push('<text class="scatter-tick" x="' + xs(kvEnd + (promptEnd - kvEnd) / 2) + '" y="' + (H - 12) + '" text-anchor="middle">prefill</text>');
+  out.push('<text class="scatter-tick" x="' + xs(promptEnd) + '" y="' + (H - 12) + '" text-anchor="middle">TTFT</text>');
   for (let i = 0; i <= 4; i++) {
     const evalFraction = i / 4;
-    const x = 0.12 + 0.88 * evalFraction;
+    const x = promptEnd + (1 - promptEnd) * evalFraction;
     const evalSeconds = maxEvalDuration * evalFraction / 1000;
     if (i > 0) out.push('<text class="scatter-tick" x="' + xs(x) + '" y="' + (H - 12) + '" text-anchor="middle">+' + evalSeconds.toFixed(evalSeconds < 1 ? 2 : 1) + 's</text>');
     const memoryTick = memoryMin + (memoryMax - memoryMin) * i / 4;
@@ -1340,17 +1783,21 @@ function renderTimeline() {
     const style = 'stroke-dasharray:' + dash + ';stroke-opacity:' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + ';';
     out.push('<path class="timeline-vram" style="' + style + '" d="' + line(item.points, p => +p.vram_total_mib || 0, ym) + '"><title>Run ' + (item.index + 1) + ' VRAM</title></path>');
     out.push('<path class="timeline-ram" style="' + style + '" d="' + line(item.points, p => +p.ram_used_mib || 0, ym) + '"><title>Run ' + (item.index + 1) + ' RAM delta</title></path>');
-    const runSpeed = item.points.filter(p => speedOf(p) != null && speedOf(p) >= 0);
-    if (runSpeed.length > 0) out.push('<path class="timeline-speed" style="' + style + '" d="' + line(runSpeed, p => speedOf(p) || 0, ys) + '"><title>Run ' + (item.index + 1) + ' server generation rate</title></path>');
-    runSpeed.forEach(p => {
-      const phase = p.event_kind || p.phase || 'generation';
-      const gap = p.delivery_gap_ms != null ? ' · delivery gap ' + fmt1(p.delivery_gap_ms) + ' ms' : '';
-      const tip = 'run ' + (item.index + 1) + ' · t=' + ((+p.plot_ms || 0) / 1000).toFixed(2) + 's · ' + phase +
-        ' · server ' + fmt1(speedOf(p)) + ' tok/s' + gap + ' · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib + ' MiB';
-      const fill = phase === 'reasoning' ? '#7c3aed' : phase === 'answer' ? '#2563eb' : 'var(--c-accent)';
-      out.push('<circle class="timeline-point" cx="' + xs(+p.plot_x || 0) + '" cy="' + ys(speedOf(p) || 0) +
-        '" r="3" fill="' + fill + '" stroke="#fff" opacity="' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + '"><title>' + tip + '</title></circle>');
-    });
+    const runSpeed = speedByIndex.get(item.index) || [];
+    if (runSpeed.length > 0) {
+      const speedRows = runSpeed.map(x => ({ plot_x: +x.point.plot_x || 0, v: x.smooth }));
+      out.push('<path class="timeline-speed" style="' + style + '" d="' + line(speedRows, r => r.v, ys) + '"><title>Run ' + (item.index + 1) + ' server generation rate (smoothed)</title></path>');
+      runSpeed.forEach(x => {
+        const p = x.point;
+        const phase = p.event_kind || p.phase || 'generation';
+        const gap = p.delivery_gap_ms != null ? ' · delivery gap ' + fmt1(p.delivery_gap_ms) + ' ms' : '';
+        const tip = 'run ' + (item.index + 1) + ' · t=' + ((+p.plot_ms || 0) / 1000).toFixed(2) + 's · ' + phase +
+          ' · server ' + fmt1(x.raw) + ' tok/s (smoothed ' + fmt1(x.smooth) + ')' + gap + ' · VRAM ' + p.vram_total_mib + ' MiB · RAM ' + p.ram_used_mib + ' MiB';
+        const fill = phase === 'reasoning' ? '#7c3aed' : phase === 'answer' ? '#2563eb' : 'var(--c-accent)';
+        out.push('<circle class="timeline-point" cx="' + xs(+p.plot_x || 0) + '" cy="' + ys(x.smooth) +
+          '" r="3" fill="' + fill + '" stroke="#fff" opacity="' + (STATE.timelineRunIndex === 'all' ? 0.72 : 1) + '"><title>' + tip + '</title></circle>');
+      });
+    }
   });
   timelineRunLegend.innerHTML = series.map(item => {
     const dash = dashPatterns[item.index % dashPatterns.length];
@@ -1371,7 +1818,7 @@ function renderWddmWatchlist() {
   const flagged = VIEW.filter(d => d.ok && (d.wddm_flag_shared_pos || d.wddm_flag_high_vram));
   const wddmEl = document.getElementById('wddm-list');
   if (flagged.length === 0) {
-    wddmEl.innerHTML = '<p class="meta">None. No WDDM paging detected in the visible scope.</p>';
+    wddmEl.innerHTML = '<p class="meta">None. No shared-memory spillover detected in the visible scope.</p>';
     return;
   }
   let html = '<table><thead><tr><th>ID</th><th>Label</th><th class="num">VRAM</th><th class="num">Shared</th><th class="num">Sat.</th><th class="num">Eval t/s</th></tr></thead><tbody>';
@@ -1389,12 +1836,16 @@ function renderWddmWatchlist() {
 // All-results table (winner-aware)
 // ===========================================================================
 // Friendly label for the Fit column. Takes the FULL config object (not just
-// fit_status) because failed runs need failure_reason / unsupported_arch
+// fit_status) because failed runs need failure_reason / unsupported architecture
 // info to be informative — without that, every failure shows the engine's
 // fallback fit_status='unknown', which the user reads as "wasn't executed".
 function fitLabel(c) {
   if (!c) return '-';
   if (c.ok) {
+    if (c.memory_state === 'spill_correlated_degradation') return 'spill + degradation';
+    if (c.memory_state === 'spill_risk') return 'might spill at high context';
+    if (c.memory_state === 'moe_shared_ambiguous') return 'MoE shared: ambiguous';
+    if (c.memory_state === 'saturated') return 'fits · VRAM saturated';
     switch (c.fit_status) {
       case 'success':            return 'fits OK';
       case 'failed_but_running': return 'vram overflow';
@@ -1402,15 +1853,30 @@ function fitLabel(c) {
       default:                   return c.fit_status || '-';
     }
   }
-  // Failed run: surface failure_reason. The engine writes the architecture
-  // name on unsupported_arch failures so we can suggest exactly what's missing.
+  // Failed run: surface the structured cause. Legacy aliases remain readable
+  // so reports generated from older result JSONs do not lose meaning.
   switch (c.failure_reason) {
+    case 'unsupported_architecture':
     case 'unsupported_arch':
       return c.unsupported_architecture
         ? 'unsupported arch: ' + c.unsupported_architecture
         : 'unsupported architecture';
+    case 'unsupported_argument':
+    case 'unsupported_llama_args': return 'unsupported llama.cpp arguments';
+    case 'incompatible_cache_profile': return 'incompatible cache profile';
+    case 'load_oom':
     case 'vram_overflow':  return 'vram overflow on load';
+    case 'load_process_exit': return 'llama-server exited during load';
+    case 'readiness_timeout':
     case 'server_timeout': return 'llama-server timeout';
+    case 'request_timeout': return 'request timed out';
+    case 'transport_error': return 'transport error';
+    case 'invalid_completion': return 'invalid completion';
+    case 'model_missing': return 'model file missing';
+    case 'engine_unavailable': return 'llama.cpp backend unavailable';
+    case 'persistence_error': return 'could not persist benchmark data';
+    case 'user_cancelled': return 'cancelled by user';
+    case 'unknown':
     case 'other':          return 'load failed';
     default:
       // Legacy result JSONs (pre-failure_reason) — best-effort guess.
@@ -1432,9 +1898,24 @@ function fitClass(c) {
 // summary so the user sees WHY before expanding.
 function failureLabel(reason) {
   switch (reason) {
+    case 'unsupported_architecture':
     case 'unsupported_arch': return 'unsupported architecture (needs newer llama.cpp build)';
+    case 'unsupported_argument':
+    case 'unsupported_llama_args': return 'selected llama.cpp build does not support required arguments';
+    case 'incompatible_cache_profile': return 'selected cache profile is incompatible with this llama.cpp build';
+    case 'load_oom':
     case 'vram_overflow':    return 'ran out of VRAM on load';
+    case 'load_process_exit': return 'llama-server exited while loading';
+    case 'readiness_timeout':
     case 'server_timeout':   return 'llama-server never became ready';
+    case 'request_timeout':   return 'benchmark request timed out';
+    case 'transport_error':   return 'connection to llama-server failed';
+    case 'invalid_completion': return 'llama-server returned an invalid completion';
+    case 'model_missing':     return 'model file is missing';
+    case 'engine_unavailable': return 'llama.cpp backend is unavailable';
+    case 'persistence_error': return 'benchmark data could not be saved';
+    case 'user_cancelled':    return 'benchmark was cancelled';
+    case 'unknown':
     case 'other':            return 'load failed';
     default:                 return reason || 'unknown';
   }
@@ -1442,7 +1923,7 @@ function failureLabel(reason) {
 
 // Summarize the failure(s) across a model's configs for the collapsed row.
 // If every failure shares a single reason, name it; if mixed, list them.
-// Surfaces the architecture name on unsupported_arch so the user knows
+// Surfaces the architecture name on unsupported-architecture failures
 // which one to look up.
 function noWinnerSummary(configs) {
   const reasons = new Set();
@@ -1456,7 +1937,7 @@ function noWinnerSummary(configs) {
   if (reasons.size === 1) {
     const reason = [...reasons][0];
     let txt = failureLabel(reason);
-    if (reason === 'unsupported_arch' && archs.size > 0) {
+    if ((reason === 'unsupported_architecture' || reason === 'unsupported_arch') && archs.size > 0) {
       txt = 'unsupported architecture <span class="fail-arch">[' + [...archs].join(', ') + ']</span> — update llama.cpp';
     }
     return txt;
@@ -1474,6 +1955,81 @@ function layersLabel(d) {
   if (d.layers_offloaded) return d.layers_offloaded;
   const m = String(d.extra_args || '').match(/--gpu-layers\s+(\d+)/);
   return m ? 'req ' + m[1] : '-';
+}
+
+function workloadLabel(d) {
+  if (d.control_kind === 'vanilla') return 'vanilla control';
+  const kind = d.workload_kind || 'baseline';
+  if (kind === 'prefill') return 'prefill ' + (d.workload_prompt_tokens ?? d.prefill_target_tokens ?? '?') + ' tok';
+  if (kind === 'kv-fill') {
+    const cached = d.kv_fill_cached_tokens != null ? ' · ' + d.kv_fill_cached_tokens + ' cached' : '';
+    return 'KV-fill ' + (d.workload_prompt_tokens ?? d.kv_fill_target_tokens ?? '?') + ' tok' + cached;
+  }
+  return 'baseline';
+}
+
+function workloadTitle(d) {
+  if (d.control_kind === 'vanilla') return 'Untuned llama.cpp control. Only model/support assets and benchmark harness networking are supplied.';
+  const kind = d.workload_kind || 'baseline';
+  if (kind === 'baseline') return 'Standard measured request.';
+  const parts = [
+    'Prepared in ' + (d.workload_prepare_ms ?? '?') + ' ms',
+    'token target error ' + (d.workload_target_error_tokens ?? '?')
+  ];
+  if (kind === 'kv-fill') parts.push('KV fill ' + (d.kv_fill_ms ?? '?') + ' ms');
+  return parts.join(' · ');
+}
+
+function requestedOrDefault(v) {
+  return v == null || v === '' ? 'default' : String(v);
+}
+
+function launchProfileLabel(d) {
+  const reqCtx = requestedOrDefault(d.requested_context_size);
+  const effCtx = d.effective_context_size != null ? String(d.effective_context_size) : '?';
+  const k = requestedOrDefault(d.requested_cache_type_k);
+  const v = requestedOrDefault(d.requested_cache_type_v);
+  const cache = k === v ? k : k + '/' + v;
+  const layers = d.layers_offloaded || (d.requested_gpu_layers != null ? 'req ' + d.requested_gpu_layers : 'default');
+  const slots = d.effective_parallel_slots != null ? ' Â· slots ' + d.effective_parallel_slots : '';
+  return 'ctx ' + reqCtx + '→' + effCtx + ' Â· cache ' + cache + ' Â· ' + layers + slots;
+}
+
+function launchProfileTitle(d) {
+  const parts = [
+    'requested ctx: ' + requestedOrDefault(d.requested_context_size),
+    'effective ctx per slot: ' + requestedOrDefault(d.effective_context_size),
+    'requested cache K/V: ' + requestedOrDefault(d.requested_cache_type_k) + '/' + requestedOrDefault(d.requested_cache_type_v),
+    'requested GPU layers: ' + requestedOrDefault(d.requested_gpu_layers),
+    'llama.cpp offloaded layers: ' + requestedOrDefault(d.layers_offloaded),
+    'effective slots: ' + requestedOrDefault(d.effective_parallel_slots),
+    'effective n_parallel: ' + requestedOrDefault(d.effective_n_parallel),
+    'flash attention: ' + requestedOrDefault(d.flash_attention_state)
+  ];
+  if (d.control_kind === 'vanilla') {
+    parts.push('vanilla uses llama.cpp defaults; compare throughput with calibrated configs only after checking this profile');
+  }
+  return parts.join(' Â· ');
+}
+
+function calibrationSummary(configs) {
+  const calibrated = configs.find(c => c.planning_mode === 'adaptive-offload' || c.planning_mode === 'adaptive-moe');
+  if (!calibrated) return '';
+  const source = calibrated.calibration_cache_hit
+    ? 'cached' + (calibrated.calibration_cache_age_hours != null ? ' ' + calibrated.calibration_cache_age_hours + 'h' : '')
+    : (calibrated.probe_count ?? '?') + ' load probes';
+  if (calibrated.planning_mode === 'adaptive-moe') {
+    const spill = calibrated.first_spill_n_cpu_moe != null
+      ? ' · first spilling n-cpu-moe ' + calibrated.first_spill_n_cpu_moe
+      : '';
+    return '<div class="planning-summary">planner: <code>adaptive MoE</code> · load-fit anchor <code>n-cpu-moe ' +
+      escapeHtml(calibrated.verified_n_cpu_moe ?? '?') + '</code> · ' + escapeHtml(source) + spill + '</div>';
+  }
+  const spill = calibrated.first_spill_layers != null
+    ? ' · first spill ' + calibrated.first_spill_layers
+    : ' · full fit or spill not reached';
+  return '<div class="planning-summary">planner: <code>adaptive offload</code> · verified fit ' +
+    escapeHtml(calibrated.verified_fit_layers ?? '?') + ' layers · ' + escapeHtml(source) + spill + '</div>';
 }
 
 // Level tabs are recomputed per rerender so counts reflect the current
@@ -1496,6 +2052,8 @@ function renderLevelTabs() {
 function renderAllTable() {
   const tb = document.querySelector('#all tbody');
   tb.innerHTML = '';
+  const allCount = document.getElementById('all-count');
+  if (allCount) allCount.textContent = VIEW.length + ' configs · ' + new Set(VIEW.map(d => d.model)).size + ' models · raw table';
   const rows = VIEW.filter(d => STATE.levelTab === 'all' || lvl(d) === STATE.levelTab);
   const promptExtent = metricExtent(rows, d => +d.prompt_tps);
   const evalExtent = metricExtent(rows, d => +d.eval_tps);
@@ -1506,25 +2064,26 @@ function renderAllTable() {
     const evalRel = normalizedPct(+d.eval_tps, evalExtent);
     tb.insertAdjacentHTML('beforeend',
       '<tr' + winCls + '>' +
-        '<td><code>' + d.id + '</code></td>' +
-        '<td class="level-' + lvl(d) + '">' + lvl(d) + '</td>' +
+        '<td class="col-extra"><code>' + d.id + '</code></td>' +
+        '<td class="level-' + lvl(d) + ' col-extra">' + lvl(d) + '</td>' +
         '<td>' + escapeHtml(d.model) + '</td>' +
         '<td style="max-width:280px;font-size:11px;color:var(--c-muted)">' + escapeHtml(d.extra_args) + '</td>' +
-        '<td class="num">' + (latencyMs(d) > 0 ? (latencyMs(d) / 1000).toFixed(2) : '-') + '</td>' +
-        '<td class="num">' + ((d.stream_open_ms ?? d.ttfr_ms) != null ? (+(d.stream_open_ms ?? d.ttfr_ms)).toFixed(1) : '-') + '</td>' +
-        '<td class="num">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +
+        '<td title="' + escapeHtml(workloadTitle(d)) + '">' + workloadLabel(d) + '</td>' +
+        '<td class="num col-extra">' + (latencyMs(d) > 0 ? (latencyMs(d) / 1000).toFixed(2) : '-') + '</td>' +
+        '<td class="num col-extra">' + ((d.stream_open_ms ?? d.ttfr_ms) != null ? (+(d.stream_open_ms ?? d.ttfr_ms)).toFixed(1) : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.prompt_ms != null ? (+d.prompt_ms).toFixed(1) : '-') + '</td>' +
         '<td class="num">' + (d.prompt_tps ? (+d.prompt_tps).toFixed(1) : '-') + '</td>' +
-        '<td class="num">' + fmtPct(promptRel) + '</td>' +
+        '<td class="num col-extra">' + fmtPct(promptRel) + '</td>' +
         '<td class="num"><b>' + (d.eval_tps ? (+d.eval_tps).toFixed(1) : '-') + '</b></td>' +
-        '<td class="num">' + fmtPct(evalRel) + '</td>' +
+        '<td class="num col-extra">' + fmtPct(evalRel) + '</td>' +
         '<td class="num" title="' + vramCellTitle(d) + '">' + benchmarkVramUsedMib(d) + '</td>' +
-        '<td class="num">' + wddm + '</td>' +
-        '<td class="num">' + (d.ram_used_peak_mib != null ? d.ram_used_peak_mib : '-') + '</td>' +
-        '<td class="num">' + (d.cpu_util_avg_pct != null && d.cpu_util_avg_pct >= 0 ? d.cpu_util_avg_pct + '%' : '-') + '</td>' +
-        '<td class="num">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? (+d.gpu_power_peak_w).toFixed(0) : '-') + '</td>' +
-        '<td class="num">' + (d.gpu_temp_peak_c != null && d.gpu_temp_peak_c > 0 ? d.gpu_temp_peak_c : '-') + '</td>' +
-        '<td class="num">' + (d.gpu_util_avg_pct != null && d.gpu_util_avg_pct > 0 ? d.gpu_util_avg_pct + '%' : '-') + '</td>' +
-        '<td>' + layersLabel(d) + '</td>' +
+        '<td class="num col-extra">' + wddm + '</td>' +
+        '<td class="num col-extra">' + (d.ram_used_peak_mib != null ? d.ram_used_peak_mib : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.cpu_util_avg_pct != null && d.cpu_util_avg_pct >= 0 ? d.cpu_util_avg_pct + '%' : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.gpu_power_peak_w != null && d.gpu_power_peak_w > 0 ? (+d.gpu_power_peak_w).toFixed(0) : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.gpu_temp_peak_c != null && d.gpu_temp_peak_c > 0 ? d.gpu_temp_peak_c : '-') + '</td>' +
+        '<td class="num col-extra">' + (d.gpu_util_avg_pct != null && d.gpu_util_avg_pct > 0 ? d.gpu_util_avg_pct + '%' : '-') + '</td>' +
+        '<td class="col-extra">' + layersLabel(d) + '</td>' +
         '<td class="' + fitClass(d) + '">' + fitLabel(d) + '</td>' +
       '</tr>'
     );
@@ -1541,6 +2100,39 @@ tabsEl.addEventListener('click', e => {
   STATE.levelTab = tab.dataset.level;
   renderLevelTabs();
   renderAllTable();
+});
+
+// All-results column tier toggle: lean default set vs the full raw set.
+const allColsBtn = document.getElementById('all-columns-toggle');
+if (allColsBtn) allColsBtn.addEventListener('click', () => {
+  const lean = document.getElementById('all').classList.toggle('all-lean');
+  allColsBtn.textContent = lean ? '+ all columns' : '− fewer columns';
+});
+
+// Leaderboard metric tabs (static element, bound once).
+const lbTabs = document.getElementById('leaderboard-tabs');
+if (lbTabs) lbTabs.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    lbTabs.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    STATE.bars = tab.dataset.metric;
+    renderLeaderboard();
+  });
+});
+
+// Per-model diagnostics metric tabs (delegated; the rows render dynamically
+// inside each model row, so one document-level handler covers them all).
+document.addEventListener('click', e => {
+  const tab = e.target.closest('.diag-bars-tabs .tab[data-metric]');
+  if (!tab) return;
+  const tabsEl = tab.closest('.diag-bars-tabs');
+  tabsEl.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  tab.classList.add('active');
+  const model = tabsEl.dataset.model;
+  const m = BAR_METRICS.find(x => x.key === tab.dataset.metric) || BAR_METRICS[0];
+  const configs = VIEW.filter(c => c.model === model && !isVanillaAdjacent(c) && !isWorkloadRow(c));
+  const content = document.getElementById(diagBarsId(model));
+  if (content) content.innerHTML = metricBars(configs, m);
 });
 
 // Data-scope buttons (latest session / all sessions).

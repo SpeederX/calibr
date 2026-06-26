@@ -1,5 +1,9 @@
 # UX flow: config management
 
+> Guided preferences are the primary user surface. The commands below describe
+> the advanced raw-engine interface used for maintenance, diagnosis, and
+> automation.
+
 The user wants to inspect, change, or auto-detect configuration without
 opening `config.json` in an editor.
 

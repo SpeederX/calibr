@@ -4,10 +4,66 @@
 # ============================================================================
 # SUBCOMMAND: discover
 # ============================================================================
+function Get-GgufShardIdentity {
+    param([string]$FileName)
+    if ($FileName -match '^(?<base>.+)-(?<index>\d{5})-of-(?<total>\d{5})\.gguf$') {
+        return @{
+            base = $Matches.base
+            index = [int]$Matches.index
+            total = [int]$Matches.total
+        }
+    }
+    return $null
+}
+
+function Merge-GgufShardMetadata {
+    param([object[]]$ShardFiles)
+    $merged = @{
+        architecture = $null
+        context_length = $null
+        block_count = $null
+        tensor_count = 0
+        tensor_data_offset = $null
+        tensor_bytes = 0
+        global_tensor_bytes = 0
+        expert_tensor_bytes = 0
+        block_tensor_bytes = @()
+    }
+    $blocks = @{}
+    foreach ($shard in @($ShardFiles)) {
+        $part = Get-GgufHeaderMetadata -Path $shard.FullName
+        if (-not $merged.architecture -and $part.architecture) { $merged.architecture = $part.architecture }
+        if (-not $merged.context_length -and $part.context_length) { $merged.context_length = $part.context_length }
+        if (-not $merged.block_count -and $part.block_count) { $merged.block_count = $part.block_count }
+        if (-not $merged.tensor_data_offset -and $part.tensor_data_offset) { $merged.tensor_data_offset = $part.tensor_data_offset }
+        $merged.tensor_count += [int]$part.tensor_count
+        $merged.tensor_bytes += [int64]$(if ($part.tensor_bytes) { $part.tensor_bytes } else { 0 })
+        $merged.global_tensor_bytes += [int64]$(if ($part.global_tensor_bytes) { $part.global_tensor_bytes } else { 0 })
+        $merged.expert_tensor_bytes += [int64]$(if ($part.expert_tensor_bytes) { $part.expert_tensor_bytes } else { 0 })
+        foreach ($entry in @($part.block_tensor_bytes)) {
+            $key = [int]$entry.block
+            if (-not $blocks.ContainsKey($key)) { $blocks[$key] = @{ bytes = [int64]0; expert_bytes = [int64]0 } }
+            $blocks[$key].bytes += [int64]$entry.bytes
+            $blocks[$key].expert_bytes += [int64]$entry.expert_bytes
+        }
+    }
+    $merged.block_tensor_bytes = @($blocks.Keys | Sort-Object | ForEach-Object {
+        @{ block = [int]$_; bytes = [int64]$blocks[$_].bytes; expert_bytes = [int64]$blocks[$_].expert_bytes }
+    })
+    return $merged
+}
+
+function Test-GgufMetadataIsMoe {
+    param($Metadata)
+    return ([int64]$(if ($Metadata.expert_tensor_bytes) { $Metadata.expert_tensor_bytes } else { 0 }) -gt 0)
+}
+
 function Get-ModelMetadata {
-    param([string]$path)
+    param([string]$path, [object[]]$ShardFiles = @())
     $file = Get-Item -LiteralPath $path
-    $fname = $file.BaseName
+    $shards = if ($ShardFiles.Count -gt 0) { @($ShardFiles | Sort-Object Name) } else { @($file) }
+    $shardIdentity = Get-GgufShardIdentity -FileName $file.Name
+    $fname = if ($shardIdentity) { $shardIdentity.base } else { $file.BaseName }
 
     $variant = "unknown"
     $model   = $fname
@@ -17,8 +73,8 @@ function Get-ModelMetadata {
         '^(?<m>.+?)[\.\-](?<v>UD-Q\d+_K_S)$',
         '^(?<m>.+?)[\.\-](?<v>Q\d+_K_[A-Z]+)$',
         '^(?<m>.+?)[\.\-](?<v>Q\d+_\d+)$',
-        '^(?<m>.+?)[\.\-](?<v>IQ\d+_[A-Z_]+)$',
-        '^(?<m>.+?)[\.\-](?<v>BF16|F16|F32)$'
+        '^(?<m>.+?)[\.\-](?<v>IQ\d+_[A-Z0-9_-]+)$',
+        '^(?<m>.+?)[\.\-](?<v>BF16|F16|F32|(?i:MXFP4))$'
     )
     foreach ($p in $variantPatterns) {
         if ($fname -match $p) { $model = $Matches.m; $variant = $Matches.v; break }
@@ -50,15 +106,25 @@ function Get-ModelMetadata {
         $mmproj = $pref.FullName
     }
 
-    $gguf = Get-GgufHeaderMetadata -Path $file.FullName
+    $gguf = if ($shards.Count -gt 1) {
+        Merge-GgufShardMetadata -ShardFiles $shards
+    } else {
+        Get-GgufHeaderMetadata -Path $file.FullName
+    }
+    if (Test-GgufMetadataIsMoe -Metadata $gguf) {
+        $is_moe = $true
+    }
     $curated = Get-CuratedMetadataForFile -FileName $file.Name
+    [int64]$sizeBytes = ($shards | Measure-Object -Property Length -Sum).Sum
 
     return @{
         role       = "model"
         path       = $file.FullName
         name       = $file.Name
-        size_bytes = $file.Length
-        size_mib   = [int]($file.Length / 1MB)
+        size_bytes = $sizeBytes
+        size_mib   = [int]($sizeBytes / 1MB)
+        shard_count = $shards.Count
+        shard_paths = @($shards | ForEach-Object { $_.FullName })
         model      = $model
         series     = $series
         variant    = $variant
@@ -68,6 +134,13 @@ function Get-ModelMetadata {
         dir        = $file.Directory.FullName
         gguf_architecture = $gguf.architecture
         gguf_context_length = $gguf.context_length
+        gguf_block_count = $gguf.block_count
+        gguf_tensor_count = $gguf.tensor_count
+        gguf_tensor_data_offset = $gguf.tensor_data_offset
+        gguf_tensor_bytes = $gguf.tensor_bytes
+        gguf_global_tensor_bytes = $gguf.global_tensor_bytes
+        gguf_expert_tensor_bytes = $gguf.expert_tensor_bytes
+        gguf_block_tensor_bytes = $gguf.block_tensor_bytes
         reasoning_mode = $curated.reasoning_mode
         template_note = $curated.template_note
     }
@@ -102,9 +175,69 @@ function Read-GgufValue {
     }
 }
 
+function Skip-GgufValue {
+    param($Reader, [int]$Type)
+    if (-not ('CalibrGgufReader' -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+
+public static class CalibrGgufReader {
+    public static void SkipValue(BinaryReader reader, uint type) {
+        switch (type) {
+            case 0: case 1: case 7: reader.BaseStream.Seek(1, SeekOrigin.Current); return;
+            case 2: case 3: reader.BaseStream.Seek(2, SeekOrigin.Current); return;
+            case 4: case 5: case 6: reader.BaseStream.Seek(4, SeekOrigin.Current); return;
+            case 8:
+                SkipBytes(reader, reader.ReadUInt64());
+                return;
+            case 9:
+                uint itemType = reader.ReadUInt32();
+                ulong count = reader.ReadUInt64();
+                int width = FixedWidth(itemType);
+                if (width > 0) {
+                    SkipBytes(reader, checked(count * (ulong) width));
+                } else {
+                    for (ulong i = 0; i < count; i++) SkipValue(reader, itemType);
+                }
+                return;
+            case 10: case 11: case 12: reader.BaseStream.Seek(8, SeekOrigin.Current); return;
+            default: throw new InvalidDataException("Unknown GGUF value type " + type);
+        }
+    }
+
+    private static int FixedWidth(uint type) {
+        switch (type) {
+            case 0: case 1: case 7: return 1;
+            case 2: case 3: return 2;
+            case 4: case 5: case 6: return 4;
+            case 10: case 11: case 12: return 8;
+            default: return 0;
+        }
+    }
+
+    private static void SkipBytes(BinaryReader reader, ulong count) {
+        if (count > long.MaxValue) throw new InvalidDataException("GGUF value is too large");
+        reader.BaseStream.Seek((long) count, SeekOrigin.Current);
+    }
+}
+"@
+    }
+    [CalibrGgufReader]::SkipValue($Reader, [uint32]$Type)
+}
 function Get-GgufHeaderMetadata {
     param([string]$Path)
-    $out = @{ architecture = $null; context_length = $null }
+    $out = @{
+        architecture = $null
+        context_length = $null
+        block_count = $null
+        tensor_count = 0
+        tensor_data_offset = $null
+        tensor_bytes = $null
+        global_tensor_bytes = $null
+        expert_tensor_bytes = $null
+        block_tensor_bytes = @()
+    }
     $fs = $null
     $br = $null
     try {
@@ -113,17 +246,81 @@ function Get-GgufHeaderMetadata {
         $magic = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(4))
         if ($magic -ne "GGUF") { return $out }
         [void]$br.ReadUInt32() # version
-        [void]$br.ReadUInt64() # tensor_count
+        $tensorCountRaw = $br.ReadUInt64()
+        if ($tensorCountRaw -gt [int]::MaxValue) { return $out }
+        $tensorCount = [int]$tensorCountRaw
+        $out.tensor_count = $tensorCount
         $kvCount = [int]$br.ReadUInt64()
+        $alignment = 32
         for ($i = 0; $i -lt $kvCount; $i++) {
             $keyLen = [int]$br.ReadUInt64()
             $key = [System.Text.Encoding]::UTF8.GetString($br.ReadBytes($keyLen))
             $type = [int]$br.ReadUInt32()
+            $wanted = ($key -eq "general.architecture" -or $key -eq "general.alignment" -or
+                $key -match '\.context_length$' -or $key -match '\.block_count$')
+            if (-not $wanted) {
+                Skip-GgufValue -Reader $br -Type $type
+                continue
+            }
             $value = Read-GgufValue -Reader $br -Type $type
             if ($key -eq "general.architecture" -and $value) { $out.architecture = [string]$value }
             if ($key -match '\.context_length$' -and $null -ne $value) { $out.context_length = [int64]$value }
-            if ($out.architecture -and $out.context_length) { break }
+            if ($key -match '\.block_count$' -and $null -ne $value) { $out.block_count = [int]$value }
+            if ($key -eq "general.alignment" -and $null -ne $value -and [int]$value -gt 0) { $alignment = [int]$value }
         }
+
+        # Offset deltas give the stored tensor span, including alignment, and
+        # avoid duplicating ggml's evolving quantization type table.
+        $tensors = @()
+        for ($i = 0; $i -lt $tensorCount; $i++) {
+            $nameLen = [int]$br.ReadUInt64()
+            $name = [System.Text.Encoding]::UTF8.GetString($br.ReadBytes($nameLen))
+            $nDims = [int]$br.ReadUInt32()
+            for ($d = 0; $d -lt $nDims; $d++) { [void]$br.ReadUInt64() }
+            [void]$br.ReadUInt32() # ggml_type
+            $tensors += @{ name = $name; offset = [uint64]$br.ReadUInt64() }
+        }
+
+        $directoryEnd = [int64]$fs.Position
+        $padding = ($alignment - ($directoryEnd % $alignment)) % $alignment
+        $dataStart = $directoryEnd + $padding
+        if ($dataStart -gt $fs.Length) { return $out }
+        $out.tensor_data_offset = $dataStart
+
+        $ordered = @($tensors | Sort-Object { [uint64]$_.offset })
+        $blockBytes = @{}
+        $blockExpertBytes = @{}
+        [int64]$globalBytes = 0
+        [int64]$expertBytes = 0
+        [int64]$tensorBytes = 0
+        for ($i = 0; $i -lt $ordered.Count; $i++) {
+            $current = $ordered[$i]
+            [int64]$start = $dataStart + [int64]$current.offset
+            [int64]$end = if ($i + 1 -lt $ordered.Count) { $dataStart + [int64]$ordered[$i + 1].offset } else { $fs.Length }
+            if ($start -lt $dataStart -or $end -lt $start -or $end -gt $fs.Length) { continue }
+            [int64]$bytes = $end - $start
+            $tensorBytes += $bytes
+
+            $blockIndex = $null
+            if ([string]$current.name -match '(?:^|\.)blk\.(\d+)(?:\.|$)') { $blockIndex = [int]$Matches[1] }
+            $isExpert = ([string]$current.name -match '(?:ffn.*_exps|experts?)')
+            if ($null -ne $blockIndex) {
+                if (-not $blockBytes.ContainsKey($blockIndex)) { $blockBytes[$blockIndex] = [int64]0 }
+                $blockBytes[$blockIndex] = [int64]$blockBytes[$blockIndex] + $bytes
+                if ($isExpert) {
+                    if (-not $blockExpertBytes.ContainsKey($blockIndex)) { $blockExpertBytes[$blockIndex] = [int64]0 }
+                    $blockExpertBytes[$blockIndex] = [int64]$blockExpertBytes[$blockIndex] + $bytes
+                }
+            } else { $globalBytes += $bytes }
+            if ($isExpert) { $expertBytes += $bytes }
+        }
+
+        $out.tensor_bytes = $tensorBytes
+        $out.global_tensor_bytes = $globalBytes
+        $out.expert_tensor_bytes = $expertBytes
+        $out.block_tensor_bytes = @($blockBytes.Keys | Sort-Object | ForEach-Object {
+            @{ block = [int]$_; bytes = [int64]$blockBytes[$_]; expert_bytes = if ($blockExpertBytes.ContainsKey($_)) { [int64]$blockExpertBytes[$_] } else { [int64]0 } }
+        })
     } catch {
         return $out
     } finally {
@@ -181,14 +378,29 @@ function Invoke-Discover {
         if ($base -eq "." -or $base -eq ".\") {
             Write-Host "  (relative path; resolves against the current working directory)" -ForegroundColor DarkYellow
         }
-        $ggufs = Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue
+        $ggufs = @(Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue)
         foreach ($f in $ggufs) {
             $skip = $false
             foreach ($ex in $cfg.exclude_patterns) {
                 if ($f.Name -like $ex) { $skip = $true; break }
             }
             if ($skip) { continue }
-            $meta = Get-ModelMetadata $f.FullName
+            $shardIdentity = Get-GgufShardIdentity -FileName $f.Name
+            $shardFiles = @()
+            if ($shardIdentity) {
+                if ($shardIdentity.index -ne 1) { continue }
+                $escapedBase = [regex]::Escape($shardIdentity.base)
+                $escapedTotal = $shardIdentity.total.ToString('D5')
+                $shardFiles = @($ggufs | Where-Object {
+                    $_.DirectoryName -eq $f.DirectoryName -and
+                    $_.Name -match "^${escapedBase}-(\d{5})-of-${escapedTotal}\.gguf$"
+                } | Sort-Object Name)
+                if ($shardFiles.Count -ne $shardIdentity.total) {
+                    Write-Warning ("incomplete GGUF shard set for {0}: found {1}/{2}; skipping" -f $shardIdentity.base, $shardFiles.Count, $shardIdentity.total)
+                    continue
+                }
+            }
+            $meta = Get-ModelMetadata -path $f.FullName -ShardFiles $shardFiles
             $meta = Invoke-DenseOverrideFilter -meta $meta -denseOverrides $cfg.dense_overrides
             $catalog += $meta
             Write-Host ("  {0,-50} {1,8} MiB  [{2}] {3}" -f $meta.model, $meta.size_mib, $meta.variant, $(if($meta.is_moe){'MoE'}else{'dense'})) -ForegroundColor Gray

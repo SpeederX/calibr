@@ -1,5 +1,9 @@
 # VRAM safety budget and overhead estimate
 
+> **Current heuristic, historical measurements.** The budget still provides
+> planning headroom. The tier labels and RTX 2070 measurements below explain
+> its origin, not the current guided-run UX or a universal hardware boundary.
+
 ## Why
 
 Tier classification needs a heuristic for "will this model fit fully on the

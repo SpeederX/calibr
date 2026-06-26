@@ -5,6 +5,8 @@ import { readStatus, traceAction, traceSessionEnd, traceSessionStart, type Statu
 import { StatusView } from "./StatusView.js";
 import { RunView } from "./RunView.js";
 import { ResultsView } from "./ResultsView.js";
+import { ResultsMenuView } from "./ResultsMenuView.js";
+import { BenchmarkLogsView } from "./BenchmarkLogsView.js";
 import { AllOptionsView, type GuidedRunSession } from "./AllOptionsView.js";
 import { LlamaPathView } from "./LlamaPathView.js";
 import { DoctorView } from "./DoctorView.js";
@@ -18,7 +20,9 @@ type Screen =
   | { kind: "llamaPath" }
   | { kind: "preferences" }
   | { kind: "run"; args: string[]; label: string; trace?: TraceContext }
-  | { kind: "results" };
+  | { kind: "resultsMenu" }
+  | { kind: "results" }
+  | { kind: "benchmarkLogs" };
 
 type Badge = {
   text: string;
@@ -89,8 +93,8 @@ export function App() {
     {
       id: "results",
       label: "results",
-      description: "browse benchmark winners",
-      run: () => setScreen({ kind: "results" }),
+      description: "browse benchmark results and run logs",
+      run: () => setScreen({ kind: "resultsMenu" }),
     },
     {
       id: "llama-path",
@@ -180,7 +184,7 @@ export function App() {
     return (
       <Box flexDirection="column" paddingX={1} paddingY={1}>
         <ResultsView
-          onExit={() => setScreen({ kind: "menu" })}
+          onExit={() => setScreen({ kind: "resultsMenu" })}
           onRun={(args, label) => setScreen({
             kind: "run",
             args,
@@ -192,6 +196,26 @@ export function App() {
               details: { label },
             },
           })}
+        />
+      </Box>
+    );
+  }
+
+  if (screen.kind === "benchmarkLogs") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <BenchmarkLogsView onExit={() => setScreen({ kind: "resultsMenu" })} />
+      </Box>
+    );
+  }
+
+  if (screen.kind === "resultsMenu") {
+    return (
+      <Box flexDirection="column" paddingX={1} paddingY={1}>
+        <ResultsMenuView
+          onResults={() => setScreen({ kind: "results" })}
+          onLogs={() => setScreen({ kind: "benchmarkLogs" })}
+          onExit={() => setScreen({ kind: "menu" })}
         />
       </Box>
     );

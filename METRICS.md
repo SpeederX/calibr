@@ -17,6 +17,31 @@ calibr deliberately keeps two clocks separate:
 Server metrics describe inference. Client metrics describe delivery. A client
 timestamp must not be presented as token-generation time.
 
+## Vanilla control and calibr uplift
+
+Every model has one `control_kind = vanilla` run using llama.cpp defaults
+instead of calibr's launch tuning. It uses the same measured request and repeat
+policy as the optimized configs, but context and allocation may differ because
+that difference is part of the product comparison.
+
+Context-primary models may also have `control_kind = vanilla-adjacent` speed
+probes. They progressively add a requested context, `--parallel 1`, and the
+primary KV cache type while leaving the remaining runtime defaults alone. These
+probes are used to explain performance deltas; they are not used as the vanilla
+uplift baseline and never participate in winner selection.
+
+When both runs complete:
+
+`uplift_tps = winner_eval_tps - vanilla_eval_tps`
+
+`uplift_pct = uplift_tps / vanilla_eval_tps * 100`
+
+The report compares a winner with the vanilla control from the same benchmark
+session when possible. If vanilla fails to load or complete and an optimized
+config succeeds, the outcome is reported as “calibr made it usable”; no
+percentage is calculated from a missing or zero baseline. Controls are
+excluded from winner selection and launcher generation.
+
 ## Request sequence
 
 Each measured configuration runs:
@@ -182,7 +207,7 @@ measure reasoning quality.
 
 ### `e2e_latency_ms`
 
-Full client-observed duration of the streaming diagnostic request:
+Full client-observed duration of the measured streaming request:
 
 ```text
 e2e_latency_ms = stream completed - request start
@@ -204,12 +229,75 @@ arrives at the client. They are not token latency because one delta can contain
 zero, one, or multiple token pieces and several SSE events can arrive in one
 network read.
 
+## Diagnostic workload sweeps
+
+Baseline configs remain the only winner-eligible results. Prefill and KV-fill
+profiles are diagnostic curves attached to the largest valid context config for
+the model. Default targets are context-relative: one small prefill micro target
+plus 25/50/75/90% of the selected context for prefill, and the same ratios for
+KV-fill. Targets that collide with the context reserve or generated-token
+budget are dropped.
+
+### Prefill workload
+
+calibr builds deterministic text, applies llama-server's chat template, and
+uses the same server's `/tokenize` endpoint until the formatted prompt is near
+the requested token target. The measured streaming request then processes that
+prompt from an empty slot.
+
+```text
+workload_target_error_tokens =
+  workload_prompt_tokens - prefill_target_tokens
+```
+
+`prompt_ms`, `prompt_tps`, memory, utilization, and latency therefore describe
+one long-prompt prefill followed by normal generation.
+
+### KV-fill workload
+
+calibr prepares the same token-targeted prefix, submits it to the selected slot
+with prompt caching enabled, then sends the measured streaming request with the
+same prefix plus a short suffix.
+
+```text
+kv_fill_cached_tokens = measured request timings.cache_n
+```
+
+This field is the confirmation signal: it reports how much of the prepared
+prefix llama-server actually reused. `kv_fill_ms` is the unscored preparation
+request; official throughput and latency still come from the following measured
+stream.
+
+Targets are bounded by:
+
+```text
+target <= context size - context reserve - generated tokens
+```
+
+The reserve covers chat-template overhead and the measured suffix.
+
+## Launch profile fields
+
+These fields explain what was requested and what llama-server actually loaded.
+They are provenance, not ranking metrics.
+
+| Field | Formula/source | Use |
+|---|---|---|
+| `requested_context_size` | `--ctx-size` from the planned args | Shows calibr's requested context; null/default for vanilla controls. |
+| `effective_context_size` | first `new slot, n_ctx = N` log line | Shows actual context per slot chosen by llama-server. |
+| `requested_cache_type_k`, `requested_cache_type_v` | `--cache-type-k/v` from the planned args | Shows requested KV precision; null/default for vanilla controls. |
+| `requested_gpu_layers` | `--gpu-layers` / `-ngl` from planned args | Shows requested GPU offload. |
+| `layers_offloaded` | `offloaded X/Y layers` from llama-server logs | Shows actual offload reported by llama.cpp. |
+| `effective_parallel_slots`, `effective_n_parallel` | `n_slots` / `n_parallel` log lines | Explains vanilla/default runs that auto-parallelize differently from calibr's measured profile. |
+| `flash_attention_state` | Flash Attention scheduler log line, when present | Explains cache profiles that are syntactically accepted but fail because the backend disables Flash Attention. |
+
 ## Timeline phases
 
 New telemetry points use these phases:
 
 | Phase | Meaning |
 |---|---|
+| `kv_fill` | Unscored cached-prefix preparation before the measured stream |
 | `latency_prompt` | Prompt processing or stream setup before generated text |
 | `latency_reasoning` | A non-empty reasoning delta was received |
 | `latency_answer` | A non-empty final-answer delta was received |
@@ -248,7 +336,10 @@ VRAM run = system VRAM peak - pre-run VRAM baseline
 ### `shared_peak_mib`
 
 Growth in shared GPU memory above its pre-run baseline. calibr treats it as
-confirmed spill only after the configured confirmation threshold.
+confirmed spill only after the configured confirmation threshold. For
+`moe-cpu` configs, shared allocation can be intentional CPU expert mapping;
+it remains diagnostic and affects fit only when llama.cpp explicitly reports
+a fit failure. Throughput degradation remains the empirical cost signal.
 
 ### `ram_used_peak_mib`
 
@@ -262,6 +353,28 @@ RAM delta = available RAM baseline - minimum available RAM
 
 Arithmetic mean of the hardware samples collected during the run. Power,
 temperature, RAM growth, and disk throughput are retained as peaks.
+
+### `run_duration_ms`
+
+Wall-clock duration from the start of a llama-server run through process
+shutdown. Each run stores full UTC `run_started_at` and `run_ended_at`
+timestamps, so durations remain correct when a benchmark crosses midnight.
+The aggregate config value is the sum across repetitions; the median is also
+stored as `run_duration_median_ms`.
+
+### `gpu_energy_wh`
+
+Approximate GPU-board energy derived by integrating sampled `nvidia-smi` power
+over elapsed time with the trapezoidal rule:
+
+```text
+energy_Wh = sum(((power[i-1] + power[i]) / 2) * delta_hours)
+```
+
+The last observed power value is extended to the recorded run end. This is an
+estimate at the sampling frequency, not a wall-socket measurement. Config
+energy is summed across repetitions; the report sums configs in the selected
+session to show campaign energy.
 
 ## Aggregation across runs
 
@@ -277,7 +390,8 @@ temperature, RAM growth, and disk throughput use the maximum.
 
 ## Compatibility
 
-Metric schema version 4 makes one full streaming request the common source for
+Metric schema version 5 adds full run timestamps, duration, and integrated GPU
+energy. Version 4 makes one full streaming request the common source for
 throughput and latency. Version 3 introduced the server/client clock split.
 Legacy aliases remain:
 

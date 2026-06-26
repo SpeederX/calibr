@@ -1,5 +1,9 @@
 # `install` via User-scope PATH
 
+> **Archived.** This describes the former PowerShell-only installation. The
+> current product is the installable Node/Ink `calibr` command; see
+> [`../../README.md`](../../README.md).
+
 ## Why
 
 Most users want to type `calibr status` from any directory, not

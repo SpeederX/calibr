@@ -7,9 +7,14 @@ export interface WinnerPolicyResult {
   eval_tps?: number | null;
   gpu_power_peak_w?: number | null;
   shared_peak_mib?: number | null;
+  sweep?: string | null;
+  fit_status?: string | null;
+  fit_status_source?: string | null;
   vram_peak_mib?: number | null;
   ctx_size?: number | null;
   extra_args?: string | null;
+  workload_kind?: string | null;
+  control_kind?: string | null;
   [key: string]: unknown;
 }
 
@@ -44,22 +49,32 @@ export function ctxValue(result: WinnerPolicyResult): number {
 
 export function kvQualityValue(result: WinnerPolicyResult): number {
   const args = String(result.extra_args ?? "");
-  const match = args.match(/--cache-type-k\s+(\S+)/) ?? args.match(/--cache-type-v\s+(\S+)/);
-  const kv = match ? match[1].toLowerCase() : "";
-  const numMatch = kv.match(/^q(\d+)(?:_(\d+))?/);
-  if (numMatch) return Number(numMatch[1]) * 10 + Number(numMatch[2] ?? 0);
-  if (kv === "f16") return 160;
-  if (kv === "bf16") return 160;
-  if (kv === "f32") return 320;
-  return 0;
+  const quality = (kv: string): number => {
+    const normalized = kv.toLowerCase();
+    const numMatch = normalized.match(/^q(\d+)(?:_(\d+))?/);
+    if (numMatch) return Number(numMatch[1]) * 10 + Number(numMatch[2] ?? 0);
+    if (normalized === "f16" || normalized === "bf16") return 160;
+    if (normalized === "f32") return 320;
+    return 0;
+  };
+  const k = quality(args.match(/--cache-type-k\s+(\S+)/)?.[1] ?? "");
+  const v = quality(args.match(/--cache-type-v\s+(\S+)/)?.[1] ?? "");
+  if (k > 0 && v > 0) return 0.6 * k + 0.4 * v;
+  return Math.max(k, v);
 }
 
 export function isSafe(result: WinnerPolicyResult, confirmMib = DEFAULT_CONFIRM_MIB): boolean {
+  if (result.sweep === "moe-cpu" && result.fit_status_source !== "llama.cpp") return true;
+  if (result.fit_status === "failed_but_running") return false;
   return finiteNumber(result.shared_peak_mib) <= confirmMib;
 }
 
+export function isWinnerEligible(result: WinnerPolicyResult): boolean {
+  return !result.control_kind && (!result.workload_kind || result.workload_kind === "baseline");
+}
+
 export function computeAnchors(results: WinnerPolicyResult[]): WinnerPolicyAnchors {
-  const ok = results.filter((r) => r.ok);
+  const ok = results.filter((r) => r.ok && isWinnerEligible(r));
   const evalMax = Math.max(1, ...ok.map((r) => finiteNumber(r.eval_tps)));
   const effs = ok
     .filter((r) => finiteNumber(r.gpu_power_peak_w) > 0)
@@ -152,7 +167,7 @@ export function groupWinners<T extends WinnerPolicyResult>(
   const fallbacks: Record<string, WinnerWithMeta<T>> = {};
 
   for (const result of results) {
-    if (!result.ok) continue;
+    if (!result.ok || !isWinnerEligible(result)) continue;
     const model = String(result.model ?? result.id ?? "");
     if (!model) continue;
 
@@ -179,6 +194,7 @@ export function createReportWinnerPolicySource(): string {
     ctxValue,
     kvQualityValue,
     isSafe,
+    isWinnerEligible,
     computeAnchors,
     winnerScore,
     lowerMemoryTieBreak,

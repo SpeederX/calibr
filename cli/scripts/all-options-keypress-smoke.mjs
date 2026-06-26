@@ -48,12 +48,12 @@ async function press(stdin, value, delay = 25) {
 
 async function openGuidedLlamaPrompt(stdin) {
   await wait(50);
-  // Cursor starts on row 0 (`llama.cpp`). Move to row 2 (`model catalog`),
+  // Cursor starts on row 0 (`llama.cpp`). Move to row 2 (`source`),
   // toggle it off so the disk gate is skipped, then move to `start all`.
   await press(stdin, "j");
   await press(stdin, "j");
   await press(stdin, " ");
-  for (let i = 0; i < 8; i++) await press(stdin, "j", 15);
+  for (let i = 0; i < 9; i++) await press(stdin, "j", 15);
   await press(stdin, "\r", 50);
 }
 

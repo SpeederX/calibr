@@ -15,6 +15,16 @@ import {
 } from "./resultCore.js";
 import { waitForServerReady } from "./serverLifecycle.js";
 import type { StreamTelemetryEvent } from "./benchClient.js";
+import {
+  classifyRuntimeFailure,
+  type RuntimeFailure,
+} from "./failurePolicy.js";
+import {
+  inspectLlamaServer,
+  supportsOption,
+  validateLlamaArgs,
+  type LlamaCapabilities,
+} from "./llamaCompatibility.js";
 
 export interface BenchCoordinatorPayload {
   item: BenchItem;
@@ -38,7 +48,9 @@ export interface BenchCoordinatorOutput {
   ok: boolean;
   result: Record<string, unknown>;
   runs: BenchRun[];
+  attempts?: BenchRun[];
   error?: string;
+  failure?: RuntimeFailure | null;
 }
 
 export interface CoordinatorDeps {
@@ -49,13 +61,15 @@ export interface CoordinatorDeps {
   httpDeps?: BenchRunnerDeps;
   sleep?: (ms: number) => Promise<void>;
   now?: () => Date;
+  clockMs?: () => number;
+  inspectLlama?: (executable: string) => LlamaCapabilities;
 }
 
 const sleepDefault = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const activeChildren = new Set<ChildProcess>();
 
 export interface ProductionStreamState {
-  inferencePhase: "warmup" | "throughput" | "latency_prompt" | "latency_reasoning" | "latency_answer";
+  inferencePhase: "warmup" | "kv_fill" | "throughput" | "latency_prompt" | "latency_reasoning" | "latency_answer";
   previousServerN: number | null;
   previousServerMs: number | null;
 }
@@ -107,6 +121,34 @@ function round(value: number, digits: number): number {
   return Math.round(value * factor) / factor;
 }
 
+export interface PowerSample {
+  elapsed_ms: number;
+  gpu_power_w: number;
+}
+
+export function integrateGpuEnergyWh(samples: PowerSample[], durationMs?: number): number {
+  const points = samples
+    .filter((sample) => Number.isFinite(sample.elapsed_ms) && Number.isFinite(sample.gpu_power_w))
+    .map((sample) => ({
+      elapsed_ms: Math.max(0, sample.elapsed_ms),
+      gpu_power_w: Math.max(0, sample.gpu_power_w),
+    }))
+    .sort((a, b) => a.elapsed_ms - b.elapsed_ms);
+  if (points.length === 0) return 0;
+  const endMs = Math.max(points.at(-1)?.elapsed_ms ?? 0, Number(durationMs) || 0);
+  if (endMs > (points.at(-1)?.elapsed_ms ?? 0)) {
+    points.push({ elapsed_ms: endMs, gpu_power_w: points.at(-1)?.gpu_power_w ?? 0 });
+  }
+  let joules = 0;
+  for (let i = 1; i < points.length; i++) {
+    const previous = points[i - 1];
+    const current = points[i];
+    const seconds = Math.max(0, current.elapsed_ms - previous.elapsed_ms) / 1000;
+    joules += ((previous.gpu_power_w + current.gpu_power_w) / 2) * seconds;
+  }
+  return joules / 3600;
+}
+
 function emit(path: string, line: string): void {
   appendFileSync(path, `${line}\n`, "utf8");
 }
@@ -115,17 +157,17 @@ function splitArgs(value: string | undefined): string[] {
   return String(value ?? "").split(/\s+/).filter(Boolean);
 }
 
-function serverArgs(payload: BenchCoordinatorPayload): string[] {
+function serverArgs(payload: BenchCoordinatorPayload, capabilities: LlamaCapabilities): string[] {
   const port = payload.cfg.bench?.port ?? 18080;
   const slotSavePath = join(dirname(payload.logFile), "slots");
   mkdirSync(slotSavePath, { recursive: true });
   const args = ["-m", String(payload.item.model_path ?? "")];
   if (payload.item.mmproj_path) args.push("--mmproj", payload.item.mmproj_path);
   args.push(...splitArgs(payload.item.extra_args));
-  args.push(
-    "--port", String(port), "--host", "127.0.0.1", "--no-warmup",
-    "--cache-ram", "128", "--slot-save-path", slotSavePath,
-  );
+  args.push("--port", String(port), "--host", "127.0.0.1");
+  if (supportsOption(capabilities, "--no-warmup")) args.push("--no-warmup");
+  if (supportsOption(capabilities, "--cache-ram")) args.push("--cache-ram", "128");
+  if (supportsOption(capabilities, "--slot-save-path")) args.push("--slot-save-path", slotSavePath);
   return args;
 }
 
@@ -210,20 +252,34 @@ function failureResult(
 async function runOne(
   payload: BenchCoordinatorPayload,
   runIndex: number,
+  capabilities: LlamaCapabilities,
   deps: CoordinatorDeps,
+  attemptIndex = 1,
+  maxAttempts = 3,
 ): Promise<BenchRun> {
   const now = deps.now ?? (() => new Date());
+  const clockMs = deps.clockMs ?? (() => Date.now());
   const collect = deps.collectSample ?? ((pid: number) => collectMetricSample(pid, "nvidia-smi", () => new Date(), true));
   const waitReady = deps.waitReady ?? waitForServerReady;
   const runHttp = deps.runHttp ?? runFromPayload;
   const sleep = deps.sleep ?? sleepDefault;
   const executable = String(payload.cfg.llama_server_exe ?? "");
-  const args = serverArgs(payload);
+  const args = serverArgs(payload, capabilities);
   const baseUrl = `http://127.0.0.1:${payload.cfg.bench?.port ?? 18080}`;
   const timeoutMs = (payload.cfg.bench?.wait_sec_ready ?? 180) * 1000;
 
+  const runStartedDate = now();
+  const runStartedMs = clockMs();
+  const powerSamples: PowerSample[] = [];
+  const recordPower = (sample: MetricSample) => {
+    powerSamples.push({
+      elapsed_ms: Math.max(0, clockMs() - runStartedMs),
+      gpu_power_w: sample.gpu_power_w,
+    });
+  };
   emit(payload.eventFile, "[phase] loading_model");
   const baseline = await collect(0).catch(() => emptySample(now()));
+  recordPower(baseline);
   const ramBaseline = baseline.ram_avail_mib;
   const sharedBaseline = baseline.shared_mib;
   const vramTotal = payload.cfg.hardware?.vram_total_mib ?? 0;
@@ -241,7 +297,9 @@ async function runOne(
 
   const run: BenchRun = {
     run_index: runIndex,
-    timestamp: now().toISOString().slice(0, 19),
+    attempt_index: attemptIndex,
+    timestamp: runStartedDate.toISOString().slice(0, 19),
+    run_started_at: runStartedDate.toISOString(),
     vram_before_mib: baseline.gpu_mem_mib,
     vram_peak_mib: baseline.gpu_mem_mib,
     vram_baseline_mib: baseline.gpu_mem_mib,
@@ -288,7 +346,7 @@ async function runOne(
     telemetry: [],
   };
 
-  const loadStarted = Date.now();
+  const loadStarted = clockMs();
   let loadPollStopped = false;
   let utilTotal = 0;
   let utilCount = 0;
@@ -297,6 +355,7 @@ async function runOne(
   const loadPoll = async () => {
     while (!loadPollStopped && child.exitCode === null) {
       const sample = await collect(child.pid ?? 0).catch(() => emptySample(now()));
+      recordPower(sample);
       mergeSample(run, sample, ramBaseline, sharedBaseline);
       if (sample.gpu_util_pct >= 0) {
         utilTotal += sample.gpu_util_pct;
@@ -326,7 +385,7 @@ async function runOne(
     emit(payload.eventFile, "[phase] server_ready");
     emit(payload.eventFile, "[phase] sending_prompt");
     let inferenceStopped = false;
-    const inferenceStartedMs = Date.now();
+    const inferenceStartedMs = clockMs();
     const streamState: ProductionStreamState = {
       inferencePhase: "warmup",
       previousServerN: null,
@@ -334,7 +393,7 @@ async function runOne(
     };
     let lastInferenceSample = baseline;
     const appendTelemetry = (sample: MetricSample, extra: Record<string, unknown> = {}) => {
-      const elapsedMs = Math.max(0, Date.now() - inferenceStartedMs);
+      const elapsedMs = Math.max(0, clockMs() - inferenceStartedMs);
       const points = run.telemetry ?? (run.telemetry = []);
       points.push({
         elapsed_ms: elapsedMs,
@@ -346,11 +405,13 @@ async function runOne(
         shared_mib: Math.max(0, sample.shared_mib - sharedBaseline),
         gpu_util_pct: sample.gpu_util_pct >= 0 ? sample.gpu_util_pct : null,
         cpu_util_pct: sample.cpu_util_pct >= 0 ? sample.cpu_util_pct : null,
+        gpu_power_w: sample.gpu_power_w >= 0 ? sample.gpu_power_w : null,
       });
     };
     const inferencePoll = async () => {
       while (!inferenceStopped && child.exitCode === null) {
         const sample = await collect(child.pid ?? 0).catch(() => emptySample(now()));
+        recordPower(sample);
         lastInferenceSample = sample;
         mergeSample(run, sample, ramBaseline, sharedBaseline);
         appendTelemetry(sample);
@@ -376,6 +437,9 @@ async function runOne(
       baseUrl,
       prompt: payload.cfg.bench?.prompt ?? "",
       maxTokens: payload.cfg.bench?.n_predict ?? 128,
+      workloadKind: payload.item.workload_kind ?? "baseline",
+      prefillTargetTokens: payload.item.prefill_target_tokens ?? 0,
+      kvFillTargetTokens: payload.item.kv_fill_target_tokens ?? 0,
       // b9608 cannot erase slots for multimodal servers. Skip the otherwise
       // optional warmup there so the measured request still starts cold.
       warmup: (payload.cfg.bench?.warmup ?? true) && !payload.item.mmproj_path,
@@ -400,6 +464,11 @@ async function runOne(
       "server_ttft_ms", "tpot_ms", "itl_p95_ms", "delivery_gap_median_ms",
       "delivery_gap_p95_ms", "delivery_gap_max_ms",
     ] as const) run[field] = http[field];
+    run.workload_prepare_ms = http.workload_prepare_ms;
+    run.workload_prompt_tokens = http.workload_prompt_tokens;
+    run.workload_target_error_tokens = http.workload_target_error_tokens;
+    run.kv_fill_ms = http.kv_fill_ms;
+    run.kv_fill_cached_tokens = http.kv_fill_cached_tokens;
     run.latency_total_request_ms = http.latency_total_request_ms;
     run.latency_error = null;
     run.ok = http.ok;
@@ -429,6 +498,7 @@ async function runOne(
   }
 
   const finalSample = await collect(child.pid ?? 0).catch(() => emptySample(now()));
+  recordPower(finalSample);
   mergeSample(run, finalSample, ramBaseline, sharedBaseline);
   if (finalSample.gpu_util_pct >= 0) {
     utilTotal += finalSample.gpu_util_pct;
@@ -442,12 +512,32 @@ async function runOne(
   run.cpu_util_avg_pct = cpuUtilCount > 0 ? Math.trunc(cpuUtilTotal / cpuUtilCount) : 0;
   stopChild(child);
   await sleep(300);
-  run.load_sec = run.load_sec ?? round((Date.now() - loadStarted) / 1000, 2);
+  run.load_sec = run.load_sec ?? round((clockMs() - loadStarted) / 1000, 2);
+  const runEndedDate = now();
+  const runDurationMs = Math.max(0, clockMs() - runStartedMs);
+  const gpuEnergyWh = integrateGpuEnergyWh(powerSamples, runDurationMs);
+  run.run_ended_at = runEndedDate.toISOString();
+  run.run_duration_ms = round(runDurationMs, 2);
+  run.gpu_energy_wh = round(gpuEnergyWh, 4);
+  run.gpu_energy_j = round(gpuEnergyWh * 3600, 2);
 
   mkdirSync(dirname(payload.logFile), { recursive: true });
   appendFileSync(payload.logFile, `===== RUN ${runIndex} =====\n[CMD] ${executable} ${args.join(" ")}\n\n===== STDERR (run ${runIndex}) =====\n${stderr}\n`, "utf8");
   emit(payload.eventFile, "[phase] run_complete");
-  return finalizeBenchRun({ run, stderr, cfg: payload.cfg });
+  const finalized = finalizeBenchRun({ run, stderr, cfg: payload.cfg });
+  finalized.failure = classifyRuntimeFailure({
+    ok: finalized.ok,
+    ready: finalized.ready,
+    readinessReason: readiness.reason,
+    error: finalized.error,
+    stderr,
+    fitStatus: finalized.fit_status,
+    unsupportedArchitecture: finalized.unsupported_architecture,
+    workloadKind: payload.item.workload_kind,
+    attempt: attemptIndex,
+    maxAttempts,
+  });
+  return finalized;
 }
 
 export async function runBenchCoordinator(
@@ -458,18 +548,79 @@ export async function runBenchCoordinator(
   writeFileSync(payload.eventFile, "", "utf8");
   writeFileSync(payload.logFile, "", "utf8");
   const runs: BenchRun[] = [];
+  const attempts: BenchRun[] = [];
   try {
+    const executable = String(payload.cfg.llama_server_exe ?? "");
+    const capabilities = (deps.inspectLlama ?? inspectLlamaServer)(executable);
+    const compatibilityArgs = [
+      "-m", String(payload.item.model_path ?? ""),
+      ...(payload.item.mmproj_path ? ["--mmproj", payload.item.mmproj_path] : []),
+      ...splitArgs(payload.item.extra_args),
+      "--port", String(payload.cfg.bench?.port ?? 18080),
+      "--host", "127.0.0.1",
+    ];
+    const compatibilityIssues = capabilities.ok
+      ? validateLlamaArgs(compatibilityArgs, capabilities)
+      : [capabilities.error ?? "could not inspect llama-server arguments"];
+    if (compatibilityIssues.length > 0) {
+      const run: BenchRun = {
+        run_index: 0,
+        timestamp: new Date().toISOString(),
+        ready: false,
+        ok: false,
+        error: `llama.cpp compatibility check failed: ${compatibilityIssues.join("; ")}`,
+      };
+      run.failure = classifyRuntimeFailure({
+        ok: false,
+        ready: false,
+        error: run.error,
+        workloadKind: payload.item.workload_kind,
+        attempt: 1,
+        maxAttempts: 1,
+      });
+      return {
+        ok: false,
+        runs: [run],
+        attempts: [run],
+        result: failureResult(payload.item, payload.cfg, run, payload.session),
+        error: String(run.error),
+        failure: run.failure,
+      };
+    }
     const count = Math.max(1, Math.trunc(payload.runs));
+    const maxAttempts = 3;
     for (let i = 0; i < count; i++) {
       if (count > 1) emit(payload.eventFile, `  run ${i + 1}/${count}`);
-      const run = await runOne(payload, i, deps);
-      runs.push(run);
-      if (run.ok !== true) {
+      let completed = false;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (attempt > 1) emit(payload.eventFile, `  retry ${attempt}/${maxAttempts}`);
+        const run = await runOne(payload, i, capabilities, deps, attempt, maxAttempts);
+        attempts.push(run);
+        if (run.ok === true) {
+          runs.push(run);
+          completed = true;
+          break;
+        }
+        if (!run.failure?.retryable || run.failure.retry_exhausted) {
+          return {
+            ok: false,
+            runs,
+            attempts,
+            result: failureResult(payload.item, payload.cfg, run, payload.session),
+            error: typeof run.error === "string" ? run.error : "benchmark run failed",
+            failure: run.failure,
+          };
+        }
+      }
+      if (!completed) {
+        const lastAttempt = attempts.at(-1) as BenchRun;
         return {
           ok: false,
           runs,
-          result: failureResult(payload.item, payload.cfg, run, payload.session),
-          error: typeof run.error === "string" ? run.error : "benchmark run failed",
+          attempts,
+          result: failureResult(payload.item, payload.cfg, lastAttempt, payload.session),
+          error: typeof lastAttempt.error === "string" ? lastAttempt.error : "benchmark run failed",
+          failure: lastAttempt.failure ?? null,
         };
       }
     }
@@ -480,7 +631,7 @@ export async function runBenchCoordinator(
       session: payload.session,
     });
     result.failure_reason = null;
-    return { ok: true, result, runs };
+    return { ok: true, result, runs, attempts };
   } finally {
     stopActiveBenchServers();
   }
