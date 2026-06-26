@@ -55,6 +55,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@huggingface/hub": "^2.13.2",
     "ink": "^5.0.1",
     "ink-select-input": "^6.0.0",
     "ink-spinner": "^5.0.0",
