@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   buildTokenTargetPrompt,
   prepareWorkloadPrompt,
-} from "../dist/workloadPrompt.js";
+} from "../dist/engine/bench/workloadPrompt.js";
 
 function tokenizerMock() {
   return async (url, init) => {

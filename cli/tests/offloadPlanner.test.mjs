@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildOffloadBenchmarkCandidates, estimateOffloadCliff } from "../dist/offloadPlanner.js";
+import { buildOffloadBenchmarkCandidates, estimateOffloadCliff } from "../dist/engine/planning/offloadPlanner.js";
 
 const probe = (layer, vram, fit = true, actual = layer) => ({
   requested_layers: layer, offloaded_layers: actual,

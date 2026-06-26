@@ -84,7 +84,7 @@ Describe "Resolve-TsBenchRunnerScript" {
         $oldFlag = $env:CALIBR_TS_BENCH
         $oldScript = $env:CALIBR_TS_BENCH_SCRIPT
         $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-runner-test-$([Guid]::NewGuid().ToString('N'))"
-        $runner = Join-Path $tmpRoot "cli\dist\benchRunnerCli.js"
+        $runner = Join-Path $tmpRoot "cli\dist\engine\bench\benchRunnerCli.js"
         New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
         Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
         try {
@@ -141,7 +141,7 @@ Describe "Resolve-TsResultCoreScript" {
         $oldFlag = $env:CALIBR_TS_RESULT_CORE
         $oldScript = $env:CALIBR_TS_RESULT_CORE_SCRIPT
         $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-result-core-test-$([Guid]::NewGuid().ToString('N'))"
-        $runner = Join-Path $tmpRoot "cli\dist\resultCoreCli.js"
+        $runner = Join-Path $tmpRoot "cli\dist\engine\results\resultCoreCli.js"
         New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
         Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
         try {
@@ -185,7 +185,7 @@ Describe "TypeScript server lifecycle" {
         $oldFlag = $env:CALIBR_TS_LIFECYCLE
         $oldScript = $env:CALIBR_TS_LIFECYCLE_SCRIPT
         $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) "calibr-ts-lifecycle-test-$([Guid]::NewGuid().ToString('N'))"
-        $runner = Join-Path $tmpRoot "cli\dist\serverLifecycleCli.js"
+        $runner = Join-Path $tmpRoot "cli\dist\engine\bench\serverLifecycleCli.js"
         New-Item -ItemType Directory -Path (Split-Path $runner -Parent) -Force | Out-Null
         Set-Content -LiteralPath $runner -Value "stub" -Encoding UTF8
         try {

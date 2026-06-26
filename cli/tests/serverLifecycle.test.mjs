@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import {
   validateLifecyclePayload,
   waitForServerReady,
-} from "../dist/serverLifecycle.js";
+} from "../dist/engine/bench/serverLifecycle.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -109,7 +109,7 @@ test("serverLifecycleCli owns start, readiness and explicit stop", async () => {
     stderrFile,
   }), "utf8");
 
-  const supervisor = spawn(process.execPath, ["dist/serverLifecycleCli.js", "--json-file", payloadPath], {
+  const supervisor = spawn(process.execPath, ["dist/engine/bench/serverLifecycleCli.js", "--json-file", payloadPath], {
     cwd: process.cwd(),
     windowsHide: true,
   });

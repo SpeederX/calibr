@@ -2,7 +2,7 @@ import { spawn, spawnSync, ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, statfsSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
-import { groupWinners, isSafe as winnerIsSafe, type WinnerWithMeta } from "./winnerPolicy.js";
+import { groupWinners, isSafe as winnerIsSafe, type WinnerWithMeta } from "./engine/results/winnerPolicy.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 

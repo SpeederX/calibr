@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyRuntimeFailure } from "../dist/failurePolicy.js";
+import { classifyRuntimeFailure } from "../dist/engine/bench/failurePolicy.js";
 
 test("classifies quantized V / Flash Attention incompatibility as profile abandonment", () => {
   const failure = classifyRuntimeFailure({

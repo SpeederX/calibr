@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { memorySamplesStable, runLoadProbe } from "../dist/offloadProbe.js";
-import { validateLoadProbePayload } from "../dist/offloadProbeCli.js";
+import { memorySamplesStable, runLoadProbe } from "../dist/engine/planning/offloadProbe.js";
+import { validateLoadProbePayload } from "../dist/engine/planning/offloadProbeCli.js";
 
 function metric(gpu, shared = 100, processVram = 3000) {
   return {

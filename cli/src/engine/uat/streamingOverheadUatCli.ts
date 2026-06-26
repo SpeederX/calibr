@@ -11,13 +11,13 @@ import {
   type NonStreamingChatCompletionResult,
   type StreamingChatCompletionResult,
   type StreamTelemetryEvent,
-} from "./benchClient.js";
-import { collectMetricSample, type MetricSample } from "./metricsPoller.js";
-import { waitForServerReady } from "./serverLifecycle.js";
+} from "../bench/benchClient.js";
+import { collectMetricSample, type MetricSample } from "../bench/metricsPoller.js";
+import { waitForServerReady } from "../bench/serverLifecycle.js";
 import {
   createProductionStreamConsumer,
   type ProductionStreamState,
-} from "./benchCoordinator.js";
+} from "../bench/benchCoordinator.js";
 
 export type UatMode = "nonstream" | "stream_drain" | "stream_production";
 

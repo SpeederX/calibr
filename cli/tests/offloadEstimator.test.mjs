@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { estimateInitialOffload } from "../dist/offloadEstimator.js";
+import { estimateInitialOffload } from "../dist/engine/planning/offloadEstimator.js";
 
 const MiB = 1024 * 1024;
 

@@ -8,7 +8,7 @@ import {
   isSafe,
   winnerScore,
   kvQualityValue,
-} from "../dist/winnerPolicy.js";
+} from "../dist/engine/results/winnerPolicy.js";
 
 test("KV quality ranks mixed q8/q5 above the q4 rescue profile", () => {
   const standard = kvQualityValue({ extra_args: "--cache-type-k q8_0 --cache-type-v q8_0" });

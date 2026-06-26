@@ -4,7 +4,7 @@ import {
   buildBalancedOrder,
   runStreamingOverheadUat,
   summarizeStreamingOverhead,
-} from "../dist/streamingOverheadUatCli.js";
+} from "../dist/engine/uat/streamingOverheadUatCli.js";
 
 const emptyMemory = {
   gpu_mem_baseline_mib: null,

@@ -14,7 +14,7 @@ import {
   median,
   parseLlamaServerStderr,
   runStats,
-} from "../dist/resultCore.js";
+} from "../dist/engine/results/resultCore.js";
 
 function item(overrides = {}) {
   return {
@@ -333,7 +333,7 @@ test("resultCoreCli reads a JSON-file aggregate payload", () => {
   }), "utf8");
 
   try {
-    const proc = spawnSync(process.execPath, [join(process.cwd(), "dist", "resultCoreCli.js"), "--json-file", payloadPath], {
+    const proc = spawnSync(process.execPath, [join(process.cwd(), "dist", "engine", "results", "resultCoreCli.js"), "--json-file", payloadPath], {
       encoding: "utf8",
       timeout: 10000,
     });
@@ -365,7 +365,7 @@ test("resultCoreCli returns bulk report fields for existing result JSONs", () =>
   }), "utf8");
 
   try {
-    const proc = spawnSync(process.execPath, [join(process.cwd(), "dist", "resultCoreCli.js"), "--json-file", payloadPath], {
+    const proc = spawnSync(process.execPath, [join(process.cwd(), "dist", "engine", "results", "resultCoreCli.js"), "--json-file", payloadPath], {
       encoding: "utf8",
       timeout: 10000,
     });

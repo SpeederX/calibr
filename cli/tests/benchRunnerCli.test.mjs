@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { runFromPayload } from "../dist/benchRunnerCli.js";
+import { runFromPayload } from "../dist/engine/bench/benchRunnerCli.js";
 
 async function* streamParts(parts) {
   for (const part of parts) yield part;
@@ -253,7 +253,7 @@ test("CLI entrypoint reads payload from --json-file as UTF-8 JSON", () => {
   }), "utf8");
 
   try {
-    const proc = spawnSync(process.execPath, [join(process.cwd(), "dist", "benchRunnerCli.js"), "--json-file", payloadPath], {
+    const proc = spawnSync(process.execPath, [join(process.cwd(), "dist", "engine", "bench", "benchRunnerCli.js"), "--json-file", payloadPath], {
       encoding: "utf8",
       timeout: 10000,
     });

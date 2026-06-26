@@ -5,8 +5,8 @@ import {
   buildMoeProbeArgs,
   calibrateMoe,
   estimateInitialCpuMoe,
-} from "../dist/moeCalibration.js";
-import { validateMoeCalibrationPayload } from "../dist/moeCalibrationCli.js";
+} from "../dist/engine/planning/moeCalibration.js";
+import { validateMoeCalibrationPayload } from "../dist/engine/planning/moeCalibrationCli.js";
 
 const metadata = {
   size_mib: 6000,

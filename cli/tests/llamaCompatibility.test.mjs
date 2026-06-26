@@ -5,7 +5,7 @@ import {
   parseLlamaHelp,
   supportsOption,
   validateLlamaArgs,
-} from "../dist/llamaCompatibility.js";
+} from "../dist/engine/bench/llamaCompatibility.js";
 
 const help = `
 -c, --ctx-size N                     context

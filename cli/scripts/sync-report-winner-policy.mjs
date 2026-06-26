@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createReportWinnerPolicySource } from "../dist/winnerPolicy.js";
+import { createReportWinnerPolicySource } from "../dist/engine/results/winnerPolicy.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..", "..");

@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
-import { collectMetricSample, type MetricSample } from "./metricsPoller.js";
-import { parseLlamaServerStderr } from "./resultCore.js";
-import { stopProcessTree, waitForServerReady } from "./serverLifecycle.js";
+import { collectMetricSample, type MetricSample } from "../bench/metricsPoller.js";
+import { parseLlamaServerStderr } from "../results/resultCore.js";
+import { stopProcessTree, waitForServerReady } from "../bench/serverLifecycle.js";
 
 export interface LoadProbePayload {
   executable: string;

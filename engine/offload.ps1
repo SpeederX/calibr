@@ -6,8 +6,8 @@ function Resolve-TsOffloadCalibrationScript {
     if ($env:CALIBR_TS_OFFLOAD_CALIBRATION -eq '0') { return $null }
     foreach ($candidate in @(
         $env:CALIBR_TS_OFFLOAD_CALIBRATION_SCRIPT,
-        (Join-Path $script:CALIBR_ROOT "cli\dist\offloadCalibrationCli.js"),
-        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\offloadCalibrationCli.js")
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\planning\offloadCalibrationCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\planning\offloadCalibrationCli.js")
     )) {
         if ($candidate -and (Test-Path -LiteralPath $candidate)) {
             return (Resolve-Path -LiteralPath $candidate).Path
