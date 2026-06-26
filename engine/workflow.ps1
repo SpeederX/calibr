@@ -29,12 +29,12 @@ function Invoke-All {
     Write-Host ""
     Write-Host ("=== guided workflow: {0} catalog model(s), interleaved ===" -f $catalogEntries.Count) -ForegroundColor Cyan
 
-    if (-not $CatalogId -and -not $Model) {
-        Write-Host ""
-        Write-Host "--- pre-existing models ---" -ForegroundColor DarkCyan
-        Invoke-WorkflowBenchCycle -PlanningPolicy $planningPolicy
-    }
-
+    # Catalog-download mode benchmarks exactly the resolved catalog scope. The
+    # scan folder is only a download cache: Invoke-CatalogWorkflow reuses a model
+    # already present there and fetches the rest from Hugging Face, benching each
+    # entry on its own. Models in the folder that are outside the scope are not
+    # benchmarked - that is what "local folder" mode (the -not $FetchCatalog
+    # branch above) is for.
     Invoke-CatalogWorkflow -CatalogEntries $catalogEntries -PlanningPolicy $planningPolicy
 
     Write-Host ""
