@@ -164,6 +164,44 @@ export function catalogModelNamesForScope(
     .sort();
 }
 
+export function catalogEntriesForPresetScopes(
+  catalog: CatalogEntry[],
+  presets: Record<string, Preset>,
+  scopes: string[],
+): CatalogEntry[] {
+  if (scopes.includes("all")) return catalog;
+  const byId = new Map<string, CatalogEntry>();
+  for (const scope of scopes) {
+    const preset = presets[scope];
+    if (!preset) continue;
+    const entries = preset.models === "*"
+      ? catalog
+      : Array.isArray(preset.models)
+        ? filterCatalog(catalog, { catalogId: preset.models.join(",") })
+        : [];
+    for (const entry of entries) byId.set(entry.id, entry);
+  }
+  return [...byId.values()];
+}
+
+export function catalogIdsForPresetScopes(
+  catalog: CatalogEntry[],
+  presets: Record<string, Preset>,
+  scopes: string[],
+): string {
+  return catalogEntriesForPresetScopes(catalog, presets, scopes)
+    .map(e => e.id)
+    .join(",");
+}
+
+export function catalogModelNamesForCatalogIds(catalog: CatalogEntry[], catalogIds: string): string[] {
+  return [...new Set(filterCatalog(catalog, { catalogId: catalogIds })
+    .filter(e => isSelectableModelGguf(e.hf_file) && !e.model.toLowerCase().startsWith("mmproj"))
+    .map(e => e.model)
+    .filter(Boolean))]
+    .sort();
+}
+
 export function reconcileGuidedModelSelection(current: string | null, choices: string[]): string | null {
   if (current === null) return null;
   return choices.includes(current) ? current : null;
@@ -294,6 +332,7 @@ type Phase =
   | { kind: "llamaDownloadVersion"; error?: string }
   | { kind: "llamaLocalPick" }
   | { kind: "llamaNoLocal" }
+  | { kind: "scopeSelector"; cursor: number; checked: string[] }
   | { kind: "modelFolderInput"; error?: string }
   | { kind: "modelFolderCreate"; path: string }
   | { kind: "modelFolderSaved"; path: string; count: number; created: boolean }
@@ -354,6 +393,15 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     return typeof raw === "number" && Number.isFinite(raw) ? clampVramWarningPct(raw) : DEFAULT_VRAM_WARNING_PCT;
   });
   const [model, setModel] = useState<string | null>(session?.model ?? null);
+  const [selectedScopeNames, setSelectedScopeNames] = useState<string[]>(() => {
+    if (session?.customIds) return [];
+    return [session?.currentPreset ?? "low"];
+  });
+  // Custom selection (CustomScopeView or multi-tier scope selector) writes its
+  // result here; when set, buildArgs ignores the named preset and passes
+  // -CatalogId with the comma-list of picked catalog ids.
+  const [customIds, setCustomIds] = useState<string>(session?.customIds ?? "");
+  const [customCtxSizes, setCustomCtxSizes] = useState<number[] | null>(session?.customCtxSizes ?? null);
   const [runs, setRuns] = useState<number>(session?.runs ?? 0);
   const [benchmarkScope, setBenchmarkScope] = useState<BenchmarkScope>(
     session?.benchmarkScope ?? (session?.workloadSweep && session.workloadSweep !== "baseline" ? "load-curves" : "baseline"),
@@ -410,8 +458,9 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
   // In local-folder mode, it lists local .gguf models found in the selected folder.
   const models = useMemo<string[]>(() => {
     if (!fetchCatalog) return localModels;
+    if (customIds) return catalogModelNamesForCatalogIds(catalog, customIds);
     return scopedCatalogModels;
-  }, [currentPreset, fetchCatalog, localModels, scopedCatalogModels]);
+  }, [catalog, customIds, currentPreset, fetchCatalog, localModels, scopedCatalogModels]);
   const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
   useEffect(() => {
     const nextModel = reconcileGuidedModelSelection(model, models);
@@ -428,6 +477,11 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     return Array.isArray(p.models) ? p.models.length : 0;
   })();
   const presetLabel = (() => {
+    if (customIds) {
+      const count = customIds.split(",").filter(Boolean).length;
+      if (selectedScopeNames.length > 1) return `${selectedScopeNames.join(" + ")} · ${count} entries`;
+      return `custom selection · ${count} entries`;
+    }
     if (currentPreset === "custom") return "custom (pick models)";
     const p = presets[currentPreset];
     if (!p) return currentPreset;
@@ -450,12 +504,6 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     { kind: "cancel"   as const, label: "  cancel" },
   ];
 
-  // Custom selection (CustomScopeView) writes its result here; when set,
-  // buildArgs ignores the named preset and passes -CatalogId with the
-  // comma-list of picked catalog ids.
-  const [customIds, setCustomIds] = useState<string>(session?.customIds ?? "");
-  const [customCtxSizes, setCustomCtxSizes] = useState<number[] | null>(session?.customCtxSizes ?? null);
-
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
@@ -471,9 +519,11 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
           : "llama.cpp unresolved";
     const modelScope = model
       ? `model ${model}`
-      : currentPreset === "custom"
-        ? `custom picks ${customIds || "(pending)"}`
-        : `preset ${currentPreset}`;
+      : customIds
+        ? `custom picks ${customIds}`
+        : currentPreset === "custom"
+          ? `custom picks ${customIds || "(pending)"}`
+          : `preset ${currentPreset}`;
     return {
       flow: "guided run",
       action: "start",
@@ -557,6 +607,50 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
       const { args, label } = buildArgs(false, decision);
       onRun(args, label, traceForRun(false, decision));
     }
+  };
+
+  const scopeSelectorChoices = useMemo(
+    () => ["all", ...presetNames.filter(name => name !== "all" && name !== "custom")],
+    [presetNames],
+  );
+
+  const setCurrentPresetName = (name: string) => {
+    const idx = presetNames.indexOf(name);
+    if (idx >= 0) setPresetIdx(idx);
+  };
+
+  const openScopeSelector = () => {
+    const checked = customIds
+      ? selectedScopeNames
+      : [currentPreset];
+    setPhase({ kind: "scopeSelector", cursor: 0, checked: checked.length > 0 ? checked : [currentPreset] });
+  };
+
+  const applyScopeSelection = (checked: string[]) => {
+    const nextScopes = checked.length > 0 ? checked : ["all"];
+    const nextCustomIds = nextScopes.length === 1 && nextScopes[0] !== "all"
+      ? ""
+      : nextScopes[0] === "all"
+        ? ""
+        : catalogIdsForPresetScopes(catalog, presets, nextScopes);
+    const nextPreset = nextCustomIds ? "all" : (nextScopes[0] ?? "all");
+    const nextModels = nextCustomIds
+      ? catalogModelNamesForCatalogIds(catalog, nextCustomIds)
+      : catalogModelNamesForScope(catalog, presets, nextPreset);
+    const nextModel = model && nextModels.includes(model) ? model : null;
+
+    setCurrentPresetName(nextPreset);
+    setSelectedScopeNames(nextCustomIds ? nextScopes : [nextPreset]);
+    setCustomIds(nextCustomIds);
+    setCustomCtxSizes(nextCustomIds ? customCtxSizes : null);
+    setModel(nextModel);
+    onSessionChange?.({
+      currentPreset: nextPreset,
+      customIds: nextCustomIds,
+      customCtxSizes: nextCustomIds ? customCtxSizes : null,
+      model: nextModel,
+    });
+    setPhase({ kind: "form" });
   };
 
   const startRun = () => {
@@ -650,20 +744,7 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
       }
       case "preset": {
         if (!fetchCatalog) break;
-        const nextIdx = (presetIdx + 1) % presetNames.length;
-        setPresetIdx(nextIdx);
-        const nextPreset = presetNames[nextIdx] ?? "all";
-        const nextChoices = catalogModelNamesForScope(catalog, presets, nextPreset);
-        const nextModel = model && nextChoices.includes(model) ? model : null;
-        if (nextModel !== model) setModel(nextModel);
-        onSessionChange?.({ currentPreset: nextPreset, model: nextModel });
-        // Stepping off 'custom' clears any prior custom selection so
-        // subsequent runs use the named preset's expansion, not the
-        // stale picked-ids list.
-        if (nextPreset !== "custom" && customIds) {
-          setCustomIds("");
-          onSessionChange?.({ customIds: "", customCtxSizes: null });
-        }
+        openScopeSelector();
         break;
       }
       case "model": {
@@ -916,6 +997,45 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
       }
       return;
     }
+    if (phase.kind === "scopeSelector") {
+      const applyIdx = scopeSelectorChoices.length + 1;
+      const customIdx = scopeSelectorChoices.length;
+      const maxIdx = applyIdx + 1;
+      if (key.escape || input === "q") { setPhase({ kind: "form" }); return; }
+      if (key.upArrow || input === "k") {
+        setPhase({ ...phase, cursor: Math.max(0, phase.cursor - 1) });
+        return;
+      }
+      if (key.downArrow || input === "j") {
+        setPhase({ ...phase, cursor: Math.min(maxIdx, phase.cursor + 1) });
+        return;
+      }
+      if (key.return || input === " ") {
+        const idx = phase.cursor;
+        if (idx < scopeSelectorChoices.length) {
+          const picked = scopeSelectorChoices[idx]!;
+          const checked = new Set(phase.checked);
+          if (picked === "all") {
+            setPhase({ ...phase, checked: ["all"] });
+            return;
+          }
+          checked.delete("all");
+          checked.has(picked) ? checked.delete(picked) : checked.add(picked);
+          setPhase({ ...phase, checked: [...checked] });
+          return;
+        }
+        if (idx === customIdx) {
+          setPhase({ kind: "custom" });
+          return;
+        }
+        if (idx === applyIdx) {
+          applyScopeSelection(phase.checked);
+          return;
+        }
+        setPhase({ kind: "form" });
+      }
+      return;
+    }
     if (phase.kind === "gate") {
       if (key.escape || input === "q" || input === "n" || input === "N") {
         setPhase({ kind: "form" });
@@ -1104,13 +1224,58 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     );
   }
 
+  if (phase.kind === "scopeSelector") {
+    const customIdx = scopeSelectorChoices.length;
+    const applyIdx = customIdx + 1;
+    const backIdx = applyIdx + 1;
+    const checked = new Set(phase.checked);
+    return (
+      <Box flexDirection="column">
+        <Text bold color="cyan">benchmark scope</Text>
+        <Box marginTop={1} flexDirection="column">
+          <Text dimColor>Pick one or more catalog tiers, or open the exact model picker.</Text>
+          <Text dimColor>Multi-tier scopes run as an explicit -CatalogId list.</Text>
+        </Box>
+        <Box marginTop={1} flexDirection="column">
+          {scopeSelectorChoices.map((name, i) => {
+            const selected = phase.cursor === i;
+            const mark = checked.has(name) ? "[x]" : "[ ]";
+            const p = presets[name];
+            const label = name === "all"
+              ? "all catalog entries"
+              : `${name}${p?.max_ctx ? ` · max ctx ${p.max_ctx}` : ""}`;
+            return (
+              <Text key={name} color={selected ? "cyan" : undefined} inverse={selected}>
+                {selected ? "> " : "  "}{mark} {label}
+              </Text>
+            );
+          })}
+          <Text color={phase.cursor === customIdx ? "cyan" : undefined} inverse={phase.cursor === customIdx}>
+            {phase.cursor === customIdx ? "> " : "  "}{">"} custom: pick exact models × context sizes
+          </Text>
+          <Text color={phase.cursor === applyIdx ? "green" : undefined} inverse={phase.cursor === applyIdx}>
+            {phase.cursor === applyIdx ? "> " : "  "}{">"} apply selected tiers
+          </Text>
+          <Text color={phase.cursor === backIdx ? "cyan" : undefined} inverse={phase.cursor === backIdx}>
+            {phase.cursor === backIdx ? "> " : "  "}back
+          </Text>
+        </Box>
+        <Box marginTop={1}>
+          <Text dimColor>↑/↓ move · space/enter toggle/open/apply · q/esc back</Text>
+        </Box>
+      </Box>
+    );
+  }
+
   if (phase.kind === "custom") {
     return (
       <CustomScopeView
         onSubmit={(idList, ctxSizes) => {
           setCustomIds(idList);
           setCustomCtxSizes(ctxSizes && ctxSizes.length > 0 ? ctxSizes : null);
-          onSessionChange?.({ customIds: idList, customCtxSizes: ctxSizes && ctxSizes.length > 0 ? ctxSizes : null });
+          setSelectedScopeNames([]);
+          setCurrentPresetName("all");
+          onSessionChange?.({ currentPreset: "all", customIds: idList, customCtxSizes: ctxSizes && ctxSizes.length > 0 ? ctxSizes : null });
           // After picking, go straight to the disk gate; the user already
           // accepted the form's other choices when they hit '> start all'.
           runGate(idList);

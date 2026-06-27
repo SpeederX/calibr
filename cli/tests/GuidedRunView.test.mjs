@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, policyForBenchmarkScope, reconcileGuidedModelSelection, scanLocalModelNames } from "../dist/guidedRun/GuidedRunView.js";
+import { buildAllArgs, catalogIdsForPresetScopes, catalogModelNamesForCatalogIds, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, policyForBenchmarkScope, reconcileGuidedModelSelection, scanLocalModelNames } from "../dist/guidedRun/GuidedRunView.js";
 
 const base = {
   decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",
@@ -51,6 +51,22 @@ test("catalog model choices can be narrowed by preset scope", () => {
   assert.deepEqual(catalogModelNamesForScope(catalog, presets, "all"), ["High B", "Low A"]);
   assert.deepEqual(catalogModelNamesForScope(catalog, presets, "low"), ["Low A"]);
   assert.deepEqual(catalogModelNamesForScope(catalog, presets, "high"), ["High B"]);
+});
+
+test("multi-tier scope expands to an explicit catalog id list", () => {
+  const catalog = [
+    { id: "low-a-q4", model: "Low A", hf_file: "low-a-q4.gguf" },
+    { id: "middle-b-q4", model: "Middle B", hf_file: "middle-b-q4.gguf" },
+    { id: "middle-b-q8", model: "Middle B", hf_file: "middle-b-q8.gguf" },
+    { id: "high-c-q4", model: "High C", hf_file: "high-c-q4.gguf" },
+  ];
+  const presets = {
+    low: { label: "Low", models: ["low-*"] },
+    middle: { label: "Middle", models: ["middle-*"] },
+    high: { label: "High", models: ["high-*"] },
+  };
+  assert.equal(catalogIdsForPresetScopes(catalog, presets, ["low", "middle"]), "low-a-q4,middle-b-q4,middle-b-q8");
+  assert.deepEqual(catalogModelNamesForCatalogIds(catalog, "low-a-q4,middle-*"), ["Low A", "Middle B"]);
 });
 
 test("stale remembered model selection resets to all models", () => {
