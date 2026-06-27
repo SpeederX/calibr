@@ -422,9 +422,11 @@ no per-entry rescan) shipped. Next:
   request** ("file X has a bad signature — re-download? skip?") before the run.
   Needs an Ink-side gate (run the pre-pass in the CLI, prompt, pass the decision to
   the engine). Alternative: accumulate all bad files and ask once at the start.
-- **Local-folder batch reader.** `discover.ps1` (local-folder mode) still uses the
-  PowerShell GGUF parser; wire the Node batch reader (one call over the folder) and
-  retire `Get-GgufHeaderMetadata` once trusted. Perf nicety, not a fix.
+- **Local-folder batch reader follow-through.** `discover.ps1` now delegates GGUF
+  header reads to the Node `@huggingface/gguf` reader and preloads each scanned
+  folder with one batch call, so the old PowerShell GGUF parser is gone. Remaining
+  work is packaging/CI hardening for the required Node build and a real-folder UAT
+  on a small one-file folder plus a large model directory.
 
 ### CPU + RAM as first-class metrics
 
