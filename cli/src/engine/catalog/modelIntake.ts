@@ -84,11 +84,76 @@ export interface ModelMetadata {
 }
 
 export interface CatalogEntryInput {
+  id?: string;
   hf_repo: string;
   hf_file: string;
   target_dir: string;
+  /** Exact file size from the catalog (refresh-catalog-metadata.mjs). */
+  size_bytes?: number | null;
+  sha256?: string | null;
   reasoning_mode?: string | null;
   template_note?: string | null;
+}
+
+// Local, no-network cache check (the default; the remote GGUF signature is only
+// used on the telemetry path). The expected path is built from the catalog file
+// name, so identity here is size against the exact catalog size. A null catalog
+// size (e.g. gated repos we couldn't refresh) can't be size-verified, so a
+// present file is accepted as-is.
+export function lightCacheMatch(p: {
+  exists: boolean;
+  localSize: number;
+  catalogSize: number | null | undefined;
+}): { cached: boolean; reason: string } {
+  if (!p.exists) return { cached: false, reason: "missing" };
+  if (p.catalogSize == null) return { cached: true, reason: "present (size unverified)" };
+  if (p.localSize === p.catalogSize) return { cached: true, reason: "size match" };
+  return { cached: false, reason: `size mismatch (local ${p.localSize} != catalog ${p.catalogSize})` };
+}
+
+export interface IntakePlanItem {
+  id: string;
+  entry: CatalogEntryInput;
+  path: string;
+  cached: boolean;
+  reason: string;
+  transferBytes: number;
+}
+
+export interface IntakePlanSummary {
+  items: IntakePlanItem[];
+  total: number;
+  toDownload: number;
+  transferBytes: number;
+}
+
+// Upfront pre-pass over the tier's scope: how many models, how many need
+// downloading, and the total transfer - all locally, before any run starts.
+export function planCatalogIntake(
+  entries: CatalogEntryInput[],
+  destRoot: string,
+  fs: Pick<IntakeFs, "exists" | "sizeBytes" | "join">,
+): IntakePlanSummary {
+  const items = entries.map((entry) => {
+    const path = fs.join(destRoot, entry.target_dir, entry.hf_file);
+    const exists = fs.exists(path);
+    const localSize = exists ? fs.sizeBytes(path) : 0;
+    const match = lightCacheMatch({ exists, localSize, catalogSize: entry.size_bytes ?? null });
+    return {
+      id: entry.id ?? entry.hf_file,
+      entry,
+      path,
+      cached: match.cached,
+      reason: match.reason,
+      transferBytes: match.cached ? 0 : (entry.size_bytes ?? 0),
+    };
+  });
+  return {
+    items,
+    total: items.length,
+    toDownload: items.filter((i) => !i.cached).length,
+    transferBytes: items.reduce((sum, i) => sum + i.transferBytes, 0),
+  };
 }
 
 export interface IntakeFs {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseModelIdentity, intakeModel } from "../dist/engine/catalog/modelIntake.js";
+import { parseModelIdentity, intakeModel, lightCacheMatch, planCatalogIntake } from "../dist/engine/catalog/modelIntake.js";
 
 // ---- filename identity ------------------------------------------------------
 
@@ -105,6 +105,34 @@ test("intakeModel: signature mismatch blocks (wrong/tampered file)", async () =>
   assert.equal(res.ok, false);
   assert.equal(res.errorKind, "signature_mismatch");
   assert.match(res.error, /architecture/);
+});
+
+// ---- light match + pre-pass -------------------------------------------------
+
+test("lightCacheMatch: missing / size match / size mismatch / unverified", () => {
+  assert.deepEqual(lightCacheMatch({ exists: false, localSize: 0, catalogSize: 100 }), { cached: false, reason: "missing" });
+  assert.equal(lightCacheMatch({ exists: true, localSize: 100, catalogSize: 100 }).cached, true);
+  assert.equal(lightCacheMatch({ exists: true, localSize: 90, catalogSize: 100 }).cached, false);
+  assert.deepEqual(lightCacheMatch({ exists: true, localSize: 90, catalogSize: null }), { cached: true, reason: "present (size unverified)" });
+});
+
+test("planCatalogIntake summarises count + transfer over the scope", () => {
+  const entries = [
+    { id: "a", hf_repo: "r/a", hf_file: "a.gguf", target_dir: "A", size_bytes: 100 }, // present, match -> cached
+    { id: "b", hf_repo: "r/b", hf_file: "b.gguf", target_dir: "B", size_bytes: 200 }, // missing -> download
+    { id: "c", hf_repo: "r/c", hf_file: "c.gguf", target_dir: "C", size_bytes: 300 }, // present wrong size -> download
+  ];
+  const sizes = { "/m/A/a.gguf": 100, "/m/C/c.gguf": 999 };
+  const fs = {
+    join: (...p) => p.join("/"),
+    exists: (p) => p in sizes,
+    sizeBytes: (p) => sizes[p] ?? 0,
+  };
+  const plan = planCatalogIntake(entries, "/m", fs);
+  assert.equal(plan.total, 3);
+  assert.equal(plan.toDownload, 2);              // b (missing) + c (size mismatch)
+  assert.equal(plan.transferBytes, 500);         // 200 + 300
+  assert.equal(plan.items.find((i) => i.id === "a").cached, true);
 });
 
 test("intakeModel: offline remote leaves signature unverified but proceeds", async () => {
