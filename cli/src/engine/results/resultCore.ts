@@ -28,6 +28,7 @@ export interface BenchItem {
   predicted_n_cpu_moe?: number | null;
   verified_n_cpu_moe?: number | null;
   first_spill_n_cpu_moe?: number | null;
+  dynamic_plan_reason?: string | null;
   model_path?: string;
   mmproj_path?: string | null;
   extra_args?: string;
@@ -527,6 +528,7 @@ export function aggregateBenchResult(payload: {
     predicted_n_cpu_moe: item.predicted_n_cpu_moe,
     verified_n_cpu_moe: item.verified_n_cpu_moe,
     first_spill_n_cpu_moe: item.first_spill_n_cpu_moe,
+    dynamic_plan_reason: item.dynamic_plan_reason ?? null,
     timestamp: first.timestamp,
     run_started_at: runStartedAt,
     run_ended_at: runEndedAt,

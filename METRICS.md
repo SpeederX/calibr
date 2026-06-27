@@ -35,6 +35,16 @@ the report uplift claim because it avoids comparing a 32K calibrated run
 against a 126K/262K raw llama.cpp default profile. Older result files may call
 the same rows `vanilla-adjacent`; treat that value as a legacy alias.
 
+Baseline campaigns may also contain dynamic max-context comparison rows with
+`dynamic_plan_reason`. They are created after the vanilla probe, not during
+static plan expansion. If vanilla already loads the model's declared max
+context, lower context anchors are skipped and calibr adds focused max-context
+KV/parallel comparisons instead. `q5_1` KV rows force `--flash-attn on`.
+If vanilla fails with direct capacity evidence, dynamic rescue rows use
+`dynamic_plan_reason = vanilla_capacity_rescue` and represent a simple fit
+search over lower KV precision and lower context, not a throughput optimization
+claim.
+
 When both runs complete:
 
 `uplift_tps = winner_eval_tps - baseline_eval_tps`

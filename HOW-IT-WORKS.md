@@ -77,6 +77,12 @@ real llama-server loads rather than in-memory plan expansion, so large model
 sets can spend substantial time here before token generation begins.
 5. **Benchmark**
    - start llama-server and wait for readiness;
+   - after a successful raw vanilla context-primary run, inspect the effective
+     context and slot count reported by llama-server. If vanilla already loads
+     the model's declared max context, baseline mode skips lower regular
+     context anchors, keeps only max-context comparisons, adds a `q5_1` KV
+     comparison when the llama.cpp build supports it, and keeps `parallel=1`
+     controls only when vanilla actually auto-parallelized above one slot;
    - optionally warm up, then reset the KV slot;
    - issue one full-length streaming request;
    - use llama-server timings for official prefill/decode throughput;
@@ -113,6 +119,19 @@ percentage uplift claim. Result rows also carry a launch profile: requested
 context/cache/offload flags plus effective slot context, parallelism, offloaded
 layers, buffer sizes, and Flash Attention state parsed from llama-server logs
 when available.
+
+Baseline context planning is vanilla-anchored at runtime. The static plan keeps
+safe anchors, but the benchmark loop may prune them after the vanilla probe. If
+vanilla already loads the declared max context without failure, lower context
+anchors are not useful evidence for "can it run?" and are skipped in baseline
+mode. The remaining comparison focuses on max-context KV precision and
+auto-parallelism. `q5_1` KV comparisons are launched with `--flash-attn on`,
+matching llama.cpp's usual requirement for quantized V-cache profiles.
+If vanilla fails with direct capacity evidence, rescue becomes a fit search:
+calibr keeps the simple q8 context anchors and appends q4 fallbacks at the
+declared max context and at half context when those profiles are not already in
+the plan. This is intentionally not a RAM/VRAM-derived next-step formula; it is
+a predictable "try lower KV, then lower context" fallback.
 
 Adaptive offload probes reuse the TypeScript llama-server lifecycle and
 hardware sampler. They force `--fit off`, disable warmup and prompt-cache

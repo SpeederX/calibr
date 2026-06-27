@@ -78,6 +78,33 @@ Describe "Test-KvRescueEligibility" {
     }
 }
 
+Describe "Dynamic vanilla-anchored bench planning" {
+    It "builds q5_1 max-context comparisons with flash-attn on" {
+        $source = [pscustomobject]@{
+            id = "M_Q__ctx_262144_kv_q8_0"
+            model = "M"; variant = "Q"; series = "S"; level = "low"; sweep = "context"
+            model_path = "x.gguf"; mmproj_path = $null
+            reasoning_mode = $null; template_note = $null
+            gguf_context_length = 262144; gguf_architecture = "x"
+            extra_args = "--ctx-size 262144 --gpu-layers 99 --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn auto --parallel 1"
+            label = "M Q @ ctx=262144_kv=q8_0"
+            workload_kind = "baseline"; control_kind = $null
+            prefill_target_tokens = 0; kv_fill_target_tokens = 0
+        }
+
+        $item = Copy-PlanItemForDynamicContext -Source $source -ContextSize 262144 -KvType "q5_1" -Reason "test"
+
+        Assert-Equal "M_Q__ctx_262144_kv_q5_1" $item.id
+        Assert-Equal "M Q @ ctx=262144_kv=q5_1" $item.label
+        Assert-True ($item.extra_args -match "--ctx-size 262144")
+        Assert-True ($item.extra_args -match "--cache-type-k q5_1")
+        Assert-True ($item.extra_args -match "--cache-type-v q5_1")
+        Assert-True ($item.extra_args -match "--flash-attn on")
+        Assert-True ($item.extra_args -match "--parallel 1")
+        Assert-Equal "test" $item.dynamic_plan_reason
+    }
+}
+
 Describe "Resolve-TsBenchRunnerScript" {
     It "finds the local cli/dist runner for standalone repo runs" {
         $oldRoot = $script:CALIBR_ROOT

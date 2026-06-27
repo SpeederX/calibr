@@ -335,6 +335,7 @@ function New-AggregatedBenchResult {
         predicted_n_cpu_moe = $item.predicted_n_cpu_moe
         verified_n_cpu_moe = $item.verified_n_cpu_moe
         first_spill_n_cpu_moe = $item.first_spill_n_cpu_moe
+        dynamic_plan_reason = $item.dynamic_plan_reason
         timestamp       = $first.timestamp
         model_path      = $item.model_path
         mmproj_path     = $item.mmproj_path
@@ -2072,6 +2073,121 @@ function Invoke-RotationCheck {
     [void](Remove-DownloadedArtifacts -ModelPath $mp -MmprojPath $st.mmprojPath -filtered $filtered -modelStatus $modelStatus -rotatedRef $rotatedRef)
 }
 
+function Get-PlanItemContextSize {
+    param($Item)
+    $args = [string]$Item.extra_args
+    if ($args -match '--ctx-size\s+(\d+)') { return [int]$Matches[1] }
+    if ($Item.requested_context_size) { return [int]$Item.requested_context_size }
+    return 0
+}
+
+function Test-PlanItemCacheType {
+    param($Item, [string]$KvType)
+    $args = [string]$Item.extra_args
+    return (
+        $args -match "--cache-type-k\s+$([regex]::Escape($KvType))(\s|$)" -and
+        $args -match "--cache-type-v\s+$([regex]::Escape($KvType))(\s|$)"
+    )
+}
+
+function Set-PlanItemCacheType {
+    param([string]$ArgString, [string]$KvType)
+    $updated = $ArgString
+    if ($updated -match '--cache-type-k\s+\S+') {
+        $updated = [regex]::Replace($updated, '--cache-type-k\s+\S+', "--cache-type-k $KvType")
+    } else {
+        $updated += " --cache-type-k $KvType"
+    }
+    if ($updated -match '--cache-type-v\s+\S+') {
+        $updated = [regex]::Replace($updated, '--cache-type-v\s+\S+', "--cache-type-v $KvType")
+    } else {
+        $updated += " --cache-type-v $KvType"
+    }
+    return $updated
+}
+
+function Set-PlanItemFlashAttention {
+    param([string]$ArgString, [string]$Value)
+    if ($ArgString -match '--flash-attn\s+\S+') {
+        return [regex]::Replace($ArgString, '--flash-attn\s+\S+', "--flash-attn $Value")
+    }
+    return "$ArgString --flash-attn $Value"
+}
+
+function Copy-PlanItemForDynamicContext {
+    param(
+        $Source,
+        [int]$ContextSize,
+        [string]$KvType,
+        [string]$Reason
+    )
+    $clone = [ordered]@{}
+    if ($Source -is [System.Collections.IDictionary]) {
+        foreach ($key in $Source.Keys) { $clone[$key] = $Source[$key] }
+    } else {
+        foreach ($property in $Source.PSObject.Properties) { $clone[$property.Name] = $property.Value }
+    }
+    $args = [string]$clone['extra_args']
+    if ($args -match '--ctx-size\s+\d+') {
+        $args = [regex]::Replace($args, '--ctx-size\s+\d+', "--ctx-size $ContextSize")
+    } else {
+        $args = "--ctx-size $ContextSize $args"
+    }
+    $args = Set-PlanItemCacheType -ArgString $args -KvType $KvType
+    if ($KvType -eq 'q5_1') {
+        $args = Set-PlanItemFlashAttention -ArgString $args -Value 'on'
+    }
+    $labelSuffix = "ctx=${ContextSize}_kv=$KvType"
+    $sanitizedModel = ($clone['model'] + "_" + $clone['variant']) -replace '[^\w]', '_'
+    $sanitizedLabel = $labelSuffix -replace '[^\w]', '_'
+    if ($sanitizedModel.Length -gt 40) { $sanitizedModel = $sanitizedModel.Substring(0, 40) }
+    if ($sanitizedLabel.Length -gt 80) { $sanitizedLabel = $sanitizedLabel.Substring(0, 80) }
+    $clone['id'] = "{0}__{1}" -f $sanitizedModel, $sanitizedLabel
+    $clone['label'] = "$($clone['model']) $($clone['variant']) @ $labelSuffix"
+    $clone['extra_args'] = $args.Trim()
+    $clone['control_kind'] = $null
+    $clone['conditional_kind'] = $null
+    $clone['conditional_source_id'] = $null
+    $clone['workload_kind'] = 'baseline'
+    $clone['prefill_target_tokens'] = 0
+    $clone['kv_fill_target_tokens'] = 0
+    $clone['dynamic_plan_reason'] = $Reason
+    return [pscustomobject]$clone
+}
+
+function Add-DynamicPlanItem {
+    param(
+        [System.Collections.ArrayList]$Filtered,
+        [hashtable]$ModelStatus,
+        [hashtable]$KnownIds,
+        $Item
+    )
+    $id = [string]$Item.id
+    if (-not $id -or $KnownIds.ContainsKey($id)) { return $false }
+    [void]$Filtered.Add($Item)
+    $KnownIds[$id] = $true
+    $mp = [string]$Item.model_path
+    if ($ModelStatus.ContainsKey($mp)) {
+        $ModelStatus[$mp].needed++
+    }
+    return $true
+}
+
+function Test-PlanContainsContextKv {
+    param(
+        $Items,
+        [string]$ModelPath,
+        [int]$ContextSize,
+        [string]$KvType
+    )
+    foreach ($candidate in @($Items)) {
+        if ([string]$candidate.model_path -ne $ModelPath) { continue }
+        if ((Get-PlanItemContextSize -Item $candidate) -ne $ContextSize) { continue }
+        if (Test-PlanItemCacheType -Item $candidate -KvType $KvType) { return $true }
+    }
+    return $false
+}
+
 function Invoke-Bench {
     $cfg = Get-Config
     # Reconcile with disk before reading the plan: a model rotated/deleted since
@@ -2119,8 +2235,21 @@ function Invoke-Bench {
     foreach ($w in (Test-BackendHealthy -cfg $cfg -backends $backends)) {
         Write-Host "WARNING: $w" -ForegroundColor Yellow
     }
+    $llamaCapabilities = Get-LlamaArgumentCapabilities -Config $cfg
+    $supportsQ51Kv = (
+        $llamaCapabilities -and
+        @($llamaCapabilities.cacheTypesK) -contains 'q5_1' -and
+        @($llamaCapabilities.cacheTypesV) -contains 'q5_1'
+    )
+    $supportsQ40Kv = (
+        $llamaCapabilities -and
+        @($llamaCapabilities.cacheTypesK) -contains 'q4_0' -and
+        @($llamaCapabilities.cacheTypesV) -contains 'q4_0'
+    )
 
-    $filtered = Select-PlanForBench -plan $plan -ModelFilter $Model -LevelFilter $Level -IdFilter $Id
+    $selectedPlan = @(Select-PlanForBench -plan $plan -ModelFilter $Model -LevelFilter $Level -IdFilter $Id)
+    $filtered = [System.Collections.ArrayList]::new()
+    foreach ($selectedItem in $selectedPlan) { [void]$filtered.Add($selectedItem) }
     Write-Host ("{0} configs to run (filtered from {1})" -f $filtered.Count, $planCount)
 
     if ($filtered.Count -eq 0) {
@@ -2163,6 +2292,11 @@ function Invoke-Bench {
     $unresolvedFailures = New-Object System.Collections.ArrayList
     $speedSweepStates = @{}
     $conditionalEligibility = @{}
+    $dynamicSkipIds = @{}
+    $knownPlanIds = @{}
+    foreach ($known in $filtered) {
+        if ($known.id) { $knownPlanIds[[string]$known.id] = $true }
+    }
     $i = 0
     # Shared-allocation threshold used by run metrics. Failure classification
     # intentionally does not infer OOM or spill from this value alone.
@@ -2220,8 +2354,10 @@ function Invoke-Bench {
         return "$([string]$planItem.model_path)|workload|$kind|$source"
     }
 
-    foreach ($item in $filtered) {
+    while ($i -lt $filtered.Count) {
+        $item = $filtered[$i]
         $i++
+        $total = $filtered.Count
         $mp = $item.model_path
         $allAbandonmentKey = "$mp|all"
         $sweepAbandonmentKey = & $getAbandonmentKey $item
@@ -2240,6 +2376,16 @@ function Invoke-Bench {
                 continue
             }
             Write-Host ("[rescue] primary {0} failed for capacity; trying lower KV quality at the same context" -f $sourceId) -ForegroundColor DarkYellow
+        }
+
+        if ($dynamicSkipIds.ContainsKey([string]$item.id)) {
+            $reason = $dynamicSkipIds[[string]$item.id]
+            Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkGray
+            $skipCount++
+            $modelStatus[$mp].skip++
+            $modelStatus[$mp].done++
+            Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
+            continue
         }
 
         $activeAbandonmentKey = if ($abandoned.ContainsKey($allAbandonmentKey)) {
@@ -2302,6 +2448,52 @@ function Invoke-Bench {
         if ($r.ok) {
             $okCount++
             $modelStatus[$mp].ok++
+            if ($item.control_kind -eq 'vanilla' -and $item.sweep -eq 'context') {
+                $modelMaxCtx = if ($r.gguf_context_length) { [int]$r.gguf_context_length } elseif ($item.gguf_context_length) { [int]$item.gguf_context_length } else { 0 }
+                $vanillaCtx = if ($r.effective_context_size) { [int]$r.effective_context_size } else { 0 }
+                $vanillaParallel = if ($r.effective_parallel_slots) { [int]$r.effective_parallel_slots } elseif ($r.effective_n_parallel) { [int]$r.effective_n_parallel } else { 1 }
+                if ($modelMaxCtx -gt 0 -and $vanillaCtx -ge $modelMaxCtx) {
+                    $lowerSkipped = 0
+                    foreach ($candidate in @($filtered)) {
+                        if ($candidate.model_path -ne $mp) { continue }
+                        if ($candidate.control_kind) {
+                            if ($vanillaParallel -le 1 -and [string]$candidate.label -match 'parallel1') {
+                                $dynamicSkipIds[[string]$candidate.id] = "vanilla already uses one slot; parallel1 control is redundant"
+                            }
+                            continue
+                        }
+                        if ($candidate.sweep -ne 'context') { continue }
+                        $candidateCtx = Get-PlanItemContextSize -Item $candidate
+                        if ($candidateCtx -gt 0 -and $candidateCtx -lt $modelMaxCtx) {
+                            $dynamicSkipIds[[string]$candidate.id] = "vanilla already loaded model max context ($modelMaxCtx); lower context anchor skipped in baseline"
+                            $lowerSkipped++
+                        }
+                    }
+                    if ($lowerSkipped -gt 0) {
+                        Write-Host ("  -> dynamic baseline: vanilla loaded max context {0}; skipping {1} lower context anchor(s)" -f $modelMaxCtx, $lowerSkipped) -ForegroundColor DarkCyan
+                    }
+
+                    if ($supportsQ51Kv) {
+                        $q8Source = @($filtered | Where-Object {
+                            $_.model_path -eq $mp -and
+                            -not $_.control_kind -and
+                            $_.sweep -eq 'context' -and
+                            (Get-PlanItemContextSize -Item $_) -eq $modelMaxCtx -and
+                            (Test-PlanItemCacheType -Item $_ -KvType 'q8_0')
+                        } | Select-Object -First 1)
+                        if ($q8Source.Count -gt 0) {
+                            $q51 = Copy-PlanItemForDynamicContext `
+                                -Source $q8Source[0] `
+                                -ContextSize $modelMaxCtx `
+                                -KvType 'q5_1' `
+                                -Reason 'vanilla_max_context_compare_kv'
+                            if (Add-DynamicPlanItem -Filtered $filtered -ModelStatus $modelStatus -KnownIds $knownPlanIds -Item $q51) {
+                                Write-Host ("  -> dynamic baseline: added q5_1 KV comparison at ctx {0} (--flash-attn on)" -f $modelMaxCtx) -ForegroundColor DarkCyan
+                            }
+                        }
+                    }
+                }
+            }
             $workloadKind = if ($item.workload_kind) { [string]$item.workload_kind } else { 'baseline' }
             $isAdaptiveSpeedSweep = (
                 $workloadKind -eq 'baseline' -and
@@ -2342,6 +2534,33 @@ function Invoke-Bench {
             $failCount++
             $modelStatus[$mp].fail++
             $failure = Get-RuntimeFailureFromResult -result $r
+            if ($item.control_kind -eq 'vanilla' -and $item.sweep -eq 'context' -and $supportsQ40Kv -and (Test-KvRescueEligibility -Result $r)) {
+                $modelMaxCtx = if ($r.gguf_context_length) { [int]$r.gguf_context_length } elseif ($item.gguf_context_length) { [int]$item.gguf_context_length } else { 0 }
+                if ($modelMaxCtx -gt 0) {
+                    $halfCtx = [int]([math]::Max(1024, [math]::Floor($modelMaxCtx / 2)))
+                    $rescueContexts = @($modelMaxCtx, $halfCtx) | Sort-Object -Descending -Unique
+                    $templateSource = @($filtered | Where-Object {
+                        $_.model_path -eq $mp -and
+                        -not $_.control_kind -and
+                        $_.sweep -eq 'context' -and
+                        (Test-PlanItemCacheType -Item $_ -KvType 'q8_0')
+                    } | Sort-Object { [math]::Abs((Get-PlanItemContextSize -Item $_) - $modelMaxCtx) } | Select-Object -First 1)
+                    if ($templateSource.Count -gt 0) {
+                        foreach ($rescueCtx in $rescueContexts) {
+                            if (-not (Test-PlanContainsContextKv -Items $filtered -ModelPath $mp -ContextSize $rescueCtx -KvType 'q4_0')) {
+                                $q40 = Copy-PlanItemForDynamicContext `
+                                    -Source $templateSource[0] `
+                                    -ContextSize $rescueCtx `
+                                    -KvType 'q4_0' `
+                                    -Reason 'vanilla_capacity_rescue'
+                                if (Add-DynamicPlanItem -Filtered $filtered -ModelStatus $modelStatus -KnownIds $knownPlanIds -Item $q40) {
+                                    Write-Host ("  -> dynamic rescue: vanilla failed for capacity; added ctx {0} q4_0 fallback" -f $rescueCtx) -ForegroundColor DarkYellow
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if ($failure) {
                 [void]$unresolvedFailures.Add([pscustomobject]@{
                     id = $item.id; label = $item.label; cause = [string]$failure.cause

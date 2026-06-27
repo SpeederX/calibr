@@ -613,6 +613,7 @@ export interface Result {
   predicted_n_cpu_moe?: number | null;
   verified_n_cpu_moe?: number | null;
   first_spill_n_cpu_moe?: number | null;
+  dynamic_plan_reason?: string | null;
   gpu_power_peak_w?: number;
   gpu_temp_peak_c?: number;
   gpu_util_avg_pct?: number;
