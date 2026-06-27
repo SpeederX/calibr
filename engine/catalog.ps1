@@ -347,144 +347,30 @@ function Invoke-TsCatalogIntake {
 }
 
 function Invoke-HFDownload {
-    # Downloads a single file from HuggingFace using HttpWebRequest with a
-    # manual byte-counting loop, so we can emit `[dlprog]` progress markers
-    # the CLI parses for the live download bar. Invoke-WebRequest is fully
-    # synchronous in PS 5.1 with no usable per-byte progress signal (the
-    # built-in progress UI is unusably slow), hence the lower-level path.
-    # Returns $true on success/skip, $false on failure.
+    # Download one file from Hugging Face via the Node downloader (resume +
+    # integrity + atomic rename; it creates the destination dir and emits the
+    # [dlprog]/[dldone] markers). Returns $true on success/skip, $false on a
+    # download failure; throws if the Node build is missing. $ExpectedBytes is
+    # kept for signature compatibility - the Node side gets the authoritative
+    # size from Hugging Face.
     param(
         [string]$Repo,
         [string]$File,
         [string]$DestPath,
         [long]$ExpectedBytes = 0
     )
-    $url = "https://huggingface.co/$Repo/resolve/main/$File"
-    $destDir = Split-Path $DestPath -Parent
-    if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 
-    # Prefer the Node downloader: real HTTP Range resume, size+sha integrity,
-    # atomic .part -> final rename, and a skip decision based on file validity
-    # rather than $Force. Falls back to the PowerShell path below only when the
-    # Node build is unavailable (so a raw repo checkout without `npm run build`
-    # still works).
+    # Node-only download: real HTTP Range resume, size+sha integrity, atomic
+    # .part -> final rename, and a skip decision by file validity (not $Force).
+    # No PowerShell fallback by design - if the Node build is missing or the
+    # download fails, surface it (throw) instead of masking the problem.
     $tsScript = Resolve-TsModelDownloadScript
-    if ($tsScript) {
-        $tsResult = Invoke-TsModelDownload -Repo $Repo -File $File -DestPath $DestPath -Script $tsScript
-        if ($null -ne $tsResult) { return [bool]$tsResult.ok }
-        Write-Host "  [download] Node downloader unavailable; using PowerShell fallback" -ForegroundColor DarkYellow
+    if (-not $tsScript) {
+        throw "Node downloader build not found. Run 'npm run build' in cli/ (expected dist/engine/catalog/modelDownloadCli.js)."
     }
-
-    if ((Test-Path $DestPath) -and (-not $Force)) {
-        $actual = (Get-Item $DestPath).Length
-        if ($ExpectedBytes -gt 0 -and $actual -eq $ExpectedBytes) {
-            Write-Host ("  [skip] already present: $DestPath ({0})" -f (Format-HumanSize $actual)) -ForegroundColor DarkGray
-            Write-TraceEvent -Action "start > download model" -Status "skipped" `
-                -Message "start > download model skipped: file already present" `
-                -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $actual }
-            return $true
-        }
-        if ($ExpectedBytes -eq 0) {
-            Write-Host ("  [skip] already present: $DestPath ({0})" -f (Format-HumanSize $actual)) -ForegroundColor DarkGray
-            Write-TraceEvent -Action "start > download model" -Status "skipped" `
-                -Message "start > download model skipped: file already present" `
-                -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $actual }
-            return $true
-        }
-        Write-Host ("  [resume] partial file at $DestPath ({0}/{1}); -Force to restart" -f (Format-HumanSize $actual), (Format-HumanSize $ExpectedBytes)) -ForegroundColor Yellow
-    }
-
-    Write-Host "  [download] $url" -ForegroundColor Cyan
-    Write-Host "             -> $DestPath"
-    # Phase marker so the CLI switches the per-config flow widget to the
-    # download bar. Match in RunView.tsx PHASE_RE.
-    Write-Host "[phase] downloading"
-    Write-TraceEvent -Action "start > download model" -Status "started" `
-        -Message "start > download model started" `
-        -Details @{ repo = $Repo; file = $File; url = $url; path = $DestPath; expectedBytes = $ExpectedBytes }
-
-    $req = $null
-    $resp = $null
-    $rspStream = $null
-    $fileStream = $null
-    try {
-        # HF requires TLS 1.2+. PS 5.1's default SecurityProtocol is Ssl3+Tls.
-        # Without this the HttpWebRequest throws on the TLS handshake.
-        [System.Net.ServicePointManager]::SecurityProtocol = `
-            [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
-
-        $req = [System.Net.HttpWebRequest]::Create($url)
-        $req.UserAgent = "calibr/0.1 (+https://github.com/SpeederX/calibr)"
-        $req.AllowAutoRedirect = $true   # HF redirects to the CDN
-        $req.Timeout = 30000             # 30 s for connection / TLS handshake
-        $req.ReadWriteTimeout = 60000    # 60 s for any single read
-
-        $resp = $req.GetResponse()
-        $total = [long]$resp.ContentLength
-        if ($total -le 0 -and $ExpectedBytes -gt 0) { $total = $ExpectedBytes }
-
-        $rspStream = $resp.GetResponseStream()
-        $fileStream = [System.IO.File]::Create($DestPath)
-
-        $bufferSize = 65536
-        $buffer = New-Object byte[] $bufferSize
-        $totalBytes = 0L
-        $start = [System.Diagnostics.Stopwatch]::StartNew()
-        $lastEmitMs = 0L
-        $lastEmitBytes = 0L
-        $inv = [System.Globalization.CultureInfo]::InvariantCulture
-
-        while (($read = $rspStream.Read($buffer, 0, $bufferSize)) -gt 0) {
-            $fileStream.Write($buffer, 0, $read)
-            $totalBytes += $read
-
-            $nowMs = $start.ElapsedMilliseconds
-            if (($nowMs - $lastEmitMs) -ge 200) {
-                $deltaMs = $nowMs - $lastEmitMs
-                $deltaBytes = $totalBytes - $lastEmitBytes
-                # Instant MiB/s. InvariantCulture so '.' is the decimal point
-                # even on Italian Windows (Number("23,4") in JS is NaN).
-                $speed = if ($deltaMs -gt 0) { ($deltaBytes / 1048576.0) * 1000.0 / $deltaMs } else { 0.0 }
-                $speedStr = $speed.ToString("F2", $inv)
-                Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $total, $speedStr, $nowMs)
-                $lastEmitMs = $nowMs
-                $lastEmitBytes = $totalBytes
-            }
-        }
-        $fileStream.Close(); $fileStream = $null
-        $rspStream.Close(); $rspStream = $null
-        $resp.Close(); $resp = $null
-
-        # Final emit so the CLI lands on exactly 100% rather than the last
-        # interior tick. elapsed_ms is meaningful for the "avg speed" line.
-        $avgSpeed = if ($start.ElapsedMilliseconds -gt 0) {
-            ($totalBytes / 1048576.0) * 1000.0 / $start.ElapsedMilliseconds
-        } else { 0.0 }
-        $avgStr = $avgSpeed.ToString("F2", $inv)
-        Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $totalBytes, $avgStr, $start.ElapsedMilliseconds)
-        Write-Host ("[dldone] bytes={0} elapsed_ms={1} avg_mibps={2}" -f $totalBytes, $start.ElapsedMilliseconds, $avgStr)
-
-        Write-Host ("  [done]  {0} in {1}s ({2} MiB/s avg)" -f (Format-HumanSize $totalBytes), [math]::Round($start.ElapsedMilliseconds / 1000.0, 1), $avgStr) -ForegroundColor Green
-        Write-TraceEvent -Action "start > download model" -Status "completed" `
-            -Message "start > download model completed" `
-            -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $totalBytes; elapsedMs = $start.ElapsedMilliseconds; avgMibps = $avgStr }
-        return $true
-    } catch {
-        Write-Host ("  [FAIL]  {0}" -f $_.Exception.Message) -ForegroundColor Red
-        Write-TraceEvent -Action "start > download model" -Status "failed" `
-            -Message "start > download model failed" `
-            -Details @{ repo = $Repo; file = $File; url = $url; path = $DestPath; error = $_.Exception.Message }
-        # Best-effort cleanup of a partial file that the caller can't recover.
-        if ($fileStream) { try { $fileStream.Close() } catch {} }
-        if ((Test-Path $DestPath) -and (Get-Item $DestPath).Length -eq 0) {
-            Remove-Item $DestPath -Force -ErrorAction SilentlyContinue
-        }
-        return $false
-    } finally {
-        if ($fileStream) { try { $fileStream.Dispose() } catch {} }
-        if ($rspStream)  { try { $rspStream.Dispose() }  catch {} }
-        if ($resp)       { try { $resp.Close() }         catch {} }
-    }
+    $tsResult = Invoke-TsModelDownload -Repo $Repo -File $File -DestPath $DestPath -Script $tsScript
+    if ($null -eq $tsResult) { throw "Node downloader produced no result for $Repo/$File" }
+    return [bool]$tsResult.ok
 }
 
 function Invoke-FetchModels {

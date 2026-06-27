@@ -200,6 +200,13 @@ Describe "Node download wiring" {
         } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It "Invoke-HFDownload throws when the Node build is missing (no PowerShell fallback)" {
+        function Resolve-TsModelDownloadScript { return "" }
+        Assert-Throws {
+            Invoke-HFDownload -Repo "r/m" -File "m.gguf" -DestPath (Join-Path ([System.IO.Path]::GetTempPath()) "m.gguf") -ExpectedBytes 10
+        } "Node downloader build not found"
+    }
+
     It "delegates regardless of -Force and an existing file (download decoupled from benchmark -Force)" {
         $oldForce = $script:Force
         $script:tsCalled = $false

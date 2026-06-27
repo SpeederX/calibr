@@ -75,7 +75,11 @@ Describe "Workflow benchmark scope by source" {
 
 Describe "Workflow state cleanup" {
     It "restores outer catalog filters when a catalog entry fails" {
-        function Resolve-TsModelIntakeScript { return "" }   # skip the pre-pass (no node spawn)
+        # Make the workflow proceed to the loop without spawning node for the pre-pass.
+        function Resolve-TsModelIntakeScript { return "x" }
+        function Get-Config { return @{} }
+        function Get-DownloadRoot { param($cfg) return "/root" }
+        function Invoke-TsCatalogPlan { param($Entries, $DestRoot, $Script) return $null }
         function Invoke-CatalogEntry {
             $script:CatalogId = "temporary-id"
             $script:Model = "temporary-model"
@@ -96,7 +100,16 @@ Describe "Workflow state cleanup" {
     }
 }
 
-Describe "Catalog entry intake (lean) vs fallback" {
+Describe "Catalog entry intake (lean, no fallback)" {
+    It "Invoke-CatalogWorkflow throws when no Node intake build is present" {
+        function Resolve-TsModelIntakeScript { return "" }
+        Assert-Throws {
+            Invoke-CatalogWorkflow `
+                -CatalogEntries @([pscustomobject]@{ id = "e"; model = "M" }) `
+                -PlanningPolicy (New-PlanningPolicy)
+        } "Node intake build not found"
+    }
+
     It "uses Node intake and skips the per-entry discover when an intake script is present" {
         $origCatalog = $script:CALIBR_CATALOG
         $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-intake-{0}.json" -f [guid]::NewGuid().ToString('N'))
@@ -124,17 +137,17 @@ Describe "Catalog entry intake (lean) vs fallback" {
         }
     }
 
-    It "falls back to fetch+discover when no intake script is available" {
-        $script:discoverCalled = $false; $script:benchCalled = $false
-        function Invoke-FetchModels { $script:discoverCalled = $true }
-        function Invoke-Discover { $script:discoverCalled = $true }
+    It "throws (no PowerShell fallback) when intake produces no result" {
+        function Get-Config { return @{} }
+        function Get-DownloadRoot { param($cfg) return "/root" }
+        function Invoke-TsCatalogIntake { param($Entry, $DestRoot, $Script) return $null }
         function Invoke-Plan {}
-        function Invoke-Bench { $script:benchCalled = $true }
+        function Invoke-Bench {}
         function Add-MoeWorkloadDiagnostics { return 0 }
         $script:CatalogId = ""; $script:Model = ""
-        Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript ""
-        Assert-Equal $true $script:discoverCalled
-        Assert-Equal $true $script:benchCalled
+        Assert-Throws {
+            Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript "x"
+        } "intake produced no result"
     }
 
     It "skips the model (no plan/bench) when intake reports an error" {
