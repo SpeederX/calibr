@@ -257,6 +257,95 @@ function Invoke-TsModelDownload {
     }
 }
 
+function Get-DownloadRoot {
+    param($cfg)
+    if ($Destination) { return $Destination }
+    if ($cfg.scan_paths -and $cfg.scan_paths.Count -gt 0) { return $cfg.scan_paths[0] }
+    return $CALIBR_DOWNLOADED_MODELS_DIR
+}
+
+function Resolve-TsModelIntakeScript {
+    if ($env:CALIBR_TS_MODEL_INTAKE -eq '0') { return "" }
+    if ($env:CALIBR_TS_MODEL_INTAKE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_MODEL_INTAKE_SCRIPT)) {
+        return $env:CALIBR_TS_MODEL_INTAKE_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\catalog\modelIntakeCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\catalog\modelIntakeCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Invoke-TsCatalogPlan {
+    # Upfront pre-pass over the scope: returns @{ items; total; toDownload;
+    # transferBytes } or $null when the Node intake could not run.
+    param([object[]]$Entries, [string]$DestRoot, [string]$Script)
+    $payload = @{
+        entries = @($Entries | ForEach-Object {
+            @{ id = $_.id; hf_repo = $_.hf_repo; hf_file = $_.hf_file; target_dir = $_.target_dir; size_bytes = $_.size_bytes }
+        })
+        destRoot = $DestRoot
+    }
+    $payloadPath = Join-Path $script:CALIBR_DATA_DIR ("catalog-plan-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+        $out = & $node $Script --mode plan --json-file $payloadPath 2>&1
+        $json = @($out | Where-Object { $_ -and $_.ToString().TrimStart().StartsWith('{') } | Select-Object -Last 1)
+        if ($json.Count -eq 0) { return $null }
+        return ConvertTo-Hashtable -obj ($json[0] | ConvertFrom-Json)
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-TsCatalogIntake {
+    # Per-model intake (download-if-missing + read header + signature) for one
+    # catalog entry. Passes through [phase]/[dlprog]/[dldone]/[warn] markers and
+    # returns @{ ok; metadata; downloaded; errorKind; error } or $null when the
+    # Node intake could not run (caller falls back to the PowerShell path).
+    param([object]$Entry, [string]$DestRoot, [string]$Script)
+    $modelPath = Join-Path (Join-Path $DestRoot $Entry.target_dir) $Entry.hf_file
+    $payload = @{
+        entry = @{
+            id = $Entry.id
+            hf_repo = $Entry.hf_repo
+            hf_file = $Entry.hf_file
+            target_dir = $Entry.target_dir
+            size_bytes = $Entry.size_bytes
+            sha256 = $Entry.sha256
+            reasoning_mode = $Entry.reasoning_mode
+            template_note = $Entry.template_note
+        }
+        destRoot = $DestRoot
+        calibrOwned = [bool](Test-DownloadedByCalibr -Path $modelPath)
+        telemetry = $false
+    }
+    $payloadPath = Join-Path $script:CALIBR_DATA_DIR ("model-intake-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+        $lastJson = $null
+        & $node $Script --mode intake --json-file $payloadPath 2>&1 | ForEach-Object {
+            $line = $_.ToString(); $trimmed = $line.TrimStart()
+            if ($trimmed.StartsWith('[')) { Write-Host $line }
+            elseif ($trimmed.StartsWith('{')) { $lastJson = $line }
+        }
+        if (-not $lastJson) { return $null }
+        return ConvertTo-Hashtable -obj ($lastJson | ConvertFrom-Json)
+    } catch {
+        Write-Host ("  [intake] Node error: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-HFDownload {
     # Downloads a single file from HuggingFace using HttpWebRequest with a
     # manual byte-counting loop, so we can emit `[dlprog]` progress markers

@@ -75,6 +75,7 @@ Describe "Workflow benchmark scope by source" {
 
 Describe "Workflow state cleanup" {
     It "restores outer catalog filters when a catalog entry fails" {
+        function Resolve-TsModelIntakeScript { return "" }   # skip the pre-pass (no node spawn)
         function Invoke-CatalogEntry {
             $script:CatalogId = "temporary-id"
             $script:Model = "temporary-model"
@@ -92,6 +93,70 @@ Describe "Workflow state cleanup" {
 
         Assert-Equal "outer-id" $script:CatalogId
         Assert-Equal "outer-model" $script:Model
+    }
+}
+
+Describe "Catalog entry intake (lean) vs fallback" {
+    It "uses Node intake and skips the per-entry discover when an intake script is present" {
+        $origCatalog = $script:CALIBR_CATALOG
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-intake-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $script:CALIBR_CATALOG = $tmp
+        $script:discoverCalled = $false; $script:planCalled = $false; $script:benchCalled = $false
+        function Get-Config { return @{} }
+        function Get-DownloadRoot { param($cfg) return "/root" }
+        function Invoke-TsCatalogIntake { param($Entry, $DestRoot, $Script) return @{ ok = $true; downloaded = $false; metadata = @{ model = "M"; path = "/root/M/m.gguf"; size_bytes = 1; mmproj = $null } } }
+        function Invoke-Discover { $script:discoverCalled = $true }
+        function Invoke-FetchModels { $script:discoverCalled = $true }
+        function Invoke-Plan { $script:planCalled = $true }
+        function Invoke-Bench { $script:benchCalled = $true }
+        function Add-MoeWorkloadDiagnostics { return 0 }
+        $script:CatalogId = ""; $script:Model = ""
+        try {
+            Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript "x"
+            Assert-Equal $false $script:discoverCalled    # no per-entry full discover
+            Assert-Equal $true $script:planCalled
+            Assert-Equal $true $script:benchCalled
+        } finally {
+            $script:CALIBR_CATALOG = $origCatalog
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "falls back to fetch+discover when no intake script is available" {
+        $script:discoverCalled = $false; $script:benchCalled = $false
+        function Invoke-FetchModels { $script:discoverCalled = $true }
+        function Invoke-Discover { $script:discoverCalled = $true }
+        function Invoke-Plan {}
+        function Invoke-Bench { $script:benchCalled = $true }
+        function Add-MoeWorkloadDiagnostics { return 0 }
+        $script:CatalogId = ""; $script:Model = ""
+        Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript ""
+        Assert-Equal $true $script:discoverCalled
+        Assert-Equal $true $script:benchCalled
+    }
+
+    It "skips the model (no plan/bench) when intake reports an error" {
+        $origCatalog = $script:CALIBR_CATALOG
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-intake-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $script:CALIBR_CATALOG = $tmp
+        $script:planCalled = $false; $script:benchCalled = $false
+        function Get-Config { return @{} }
+        function Get-DownloadRoot { param($cfg) return "/root" }
+        function Invoke-TsCatalogIntake { param($Entry, $DestRoot, $Script) return @{ ok = $false; error = "GGUF signature mismatch" } }
+        function Invoke-Discover {}
+        function Invoke-FetchModels {}
+        function Invoke-Plan { $script:planCalled = $true }
+        function Invoke-Bench { $script:benchCalled = $true }
+        function Add-MoeWorkloadDiagnostics { return 0 }
+        $script:CatalogId = ""; $script:Model = ""
+        try {
+            Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript "x"
+            Assert-Equal $false $script:planCalled
+            Assert-Equal $false $script:benchCalled
+        } finally {
+            $script:CALIBR_CATALOG = $origCatalog
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

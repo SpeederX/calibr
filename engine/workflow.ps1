@@ -205,6 +205,20 @@ function Invoke-CatalogWorkflow {
         [hashtable]$PlanningPolicy
     )
 
+    # The lean intake path reads only the scope models (no per-entry rescan of
+    # the whole folder). When the Node intake build is missing we fall back to
+    # the per-entry discover path inside Invoke-CatalogEntry.
+    $intakeScript = Resolve-TsModelIntakeScript
+    if ($intakeScript) {
+        $root = Get-DownloadRoot -cfg (Get-Config)
+        $plan = Invoke-TsCatalogPlan -Entries $CatalogEntries -DestRoot $root -Script $intakeScript
+        if ($plan) {
+            Write-Host ""
+            Write-Host ("=== intake pre-pass: {0} model(s), {1} to download (~{2}) ===" -f `
+                $plan.total, $plan.toDownload, (Format-HumanSize ([long]$plan.transferBytes))) -ForegroundColor Cyan
+        }
+    }
+
     $savedCatalogId = $script:CatalogId
     $savedModel = $script:Model
 
@@ -214,7 +228,8 @@ function Invoke-CatalogWorkflow {
                 -Entry $CatalogEntries[$index] `
                 -Number ($index + 1) `
                 -Total $CatalogEntries.Count `
-                -PlanningPolicy $PlanningPolicy
+                -PlanningPolicy $PlanningPolicy `
+                -IntakeScript $intakeScript
         }
     } finally {
         $script:CatalogId = $savedCatalogId
@@ -227,7 +242,8 @@ function Invoke-CatalogEntry {
         [object]$Entry,
         [int]$Number,
         [int]$Total,
-        [hashtable]$PlanningPolicy
+        [hashtable]$PlanningPolicy,
+        [string]$IntakeScript = ""
     )
 
     $outerCatalogId = $script:CatalogId
@@ -236,20 +252,53 @@ function Invoke-CatalogEntry {
     Write-Host ("[sample {0}/{1}] {2}" -f $Number, $Total, $Entry.id)
     Write-Host ("--- model {0}/{1}: {2} ({3}) ---" -f $Number, $Total, $Entry.id, $Entry.model) -ForegroundColor Cyan
 
-    $script:CatalogId = $Entry.id
-    $script:Model = ""
-    Invoke-FetchModels
+    # $ready means catalog.json now holds the model(s) to plan+bench this turn.
+    $ready = $false
+    if ($IntakeScript) {
+        $root = Get-DownloadRoot -cfg (Get-Config)
+        # Fetch the paired mmproj first (via the Node downloader) so the intake's
+        # metadata picks it up; the main model is fetched by the intake itself.
+        if ($Entry.mmproj_file) {
+            $mmDest = Join-Path (Join-Path $root $Entry.target_dir) $Entry.mmproj_file
+            Invoke-HFDownload -Repo $Entry.hf_repo -File $Entry.mmproj_file -DestPath $mmDest | Out-Null
+        }
+        $result = Invoke-TsCatalogIntake -Entry $Entry -DestRoot $root -Script $IntakeScript
+        if ($null -ne $result) {
+            if (-not $result.ok) {
+                Write-Host ("  [intake] skipped {0}: {1}" -f $Entry.id, $result.error) -ForegroundColor Yellow
+                $script:CatalogId = $outerCatalogId
+                $timer.Stop()
+                return
+            }
+            # catalog.json is a runtime artifact; in catalog mode it holds just
+            # this model so Invoke-Plan plans only it (no full-folder re-plan).
+            ConvertTo-Json -InputObject @($result.metadata) -Depth 8 | Out-File -Encoding utf8 $CALIBR_CATALOG
+            if ($result.downloaded) {
+                $mmPath = if ($result.metadata.mmproj) { [string]$result.metadata.mmproj } else { "" }
+                Add-DownloadManifestEntry -CatalogId $Entry.id -Model ([string]$result.metadata.model) `
+                    -ModelPath ([string]$result.metadata.path) -MmprojPath $mmPath -SizeBytes ([long]$result.metadata.size_bytes)
+            }
+            $ready = $true
+        }
+    }
 
-    $script:CatalogId = $outerCatalogId
-    Invoke-Discover
+    if (-not $ready) {
+        # Fallback: original PowerShell intake (no Node build available).
+        $script:CatalogId = $Entry.id
+        $script:Model = ""
+        Invoke-FetchModels
+        $script:CatalogId = $outerCatalogId
+        Invoke-Discover
+    }
+
     Invoke-Plan -PlanningPolicy $PlanningPolicy
-
     $script:Model = $Entry.model
     Invoke-Bench
     if ((Add-MoeWorkloadDiagnostics -PlanningPolicy $PlanningPolicy) -gt 0) {
         Invoke-Bench
     }
 
+    $script:CatalogId = $outerCatalogId
     $timer.Stop()
     Write-Host ("[sample-done {0}/{1}] {2} elapsed_ms={3}" -f $Number, $Total, $Entry.id, $timer.ElapsedMilliseconds)
 }
