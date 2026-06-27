@@ -11,8 +11,9 @@ function Invoke-All {
         -WorkloadSweep $WorkloadSweep
 
     if (-not $FetchCatalog) {
-        Invoke-WorkflowBenchCycle -PlanningPolicy $planningPolicy
-        Invoke-Report
+        if (Invoke-WorkflowBenchCycle -PlanningPolicy $planningPolicy) {
+            Invoke-Report
+        }
         return
     }
 
@@ -74,10 +75,33 @@ function Ensure-WorkflowEngine {
 function Invoke-WorkflowBenchCycle {
     param([hashtable]$PlanningPolicy)
     Invoke-Discover
+    if ((Get-WorkflowJsonArrayCount -Path $CALIBR_CATALOG) -eq 0) {
+        Write-Host "No local GGUF models found in scan_paths. Nothing to benchmark." -ForegroundColor Yellow
+        return $false
+    }
     Invoke-Plan -PlanningPolicy $PlanningPolicy
+    if ((Get-WorkflowJsonArrayCount -Path $CALIBR_PLAN) -eq 0) {
+        Write-Host "Planning produced no runnable configs. Nothing to benchmark." -ForegroundColor Yellow
+        return $false
+    }
     Invoke-Bench
     if ((Add-MoeWorkloadDiagnostics -PlanningPolicy $PlanningPolicy) -gt 0) {
         Invoke-Bench
+    }
+    return $true
+}
+
+function Get-WorkflowJsonArrayCount {
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return 0 }
+    try {
+        $raw = Get-Content -LiteralPath $Path -Raw
+        if (-not $raw -or -not $raw.Trim()) { return 0 }
+        $json = $raw | ConvertFrom-Json
+        if ($null -eq $json) { return 0 }
+        return @($json).Count
+    } catch {
+        return 0
     }
 }
 

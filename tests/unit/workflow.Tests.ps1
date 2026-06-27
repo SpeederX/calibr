@@ -73,6 +73,68 @@ Describe "Workflow benchmark scope by source" {
     }
 }
 
+Describe "Workflow empty local-folder handling" {
+    It "bench cycle exits cleanly before plan/bench/report when discover finds no models" {
+        $origCatalog = $script:CALIBR_CATALOG
+        $origPlan = $script:CALIBR_PLAN
+        $tmpCatalog = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-empty-catalog-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $tmpPlan = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-empty-plan-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $script:CALIBR_CATALOG = $tmpCatalog
+        $script:CALIBR_PLAN = $tmpPlan
+        $script:planCalled = $false
+        $script:benchCalled = $false
+        function Invoke-Discover { "[]" | Out-File -Encoding utf8 $script:CALIBR_CATALOG }
+        function Invoke-Plan { $script:planCalled = $true }
+        function Invoke-Bench { $script:benchCalled = $true }
+        try {
+            $ran = Invoke-WorkflowBenchCycle -PlanningPolicy (New-PlanningPolicy)
+            Assert-Equal $false $ran
+            Assert-Equal $false $script:planCalled
+            Assert-Equal $false $script:benchCalled
+        } finally {
+            $script:CALIBR_CATALOG = $origCatalog
+            $script:CALIBR_PLAN = $origPlan
+            Remove-Item -LiteralPath $tmpCatalog,$tmpPlan -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "bench cycle exits cleanly before bench/report when planning yields no configs" {
+        $origCatalog = $script:CALIBR_CATALOG
+        $origPlan = $script:CALIBR_PLAN
+        $tmpCatalog = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-one-catalog-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $tmpPlan = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-empty-plan-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $script:CALIBR_CATALOG = $tmpCatalog
+        $script:CALIBR_PLAN = $tmpPlan
+        $script:benchCalled = $false
+        function Invoke-Discover { '[{"model":"M"}]' | Out-File -Encoding utf8 $script:CALIBR_CATALOG }
+        function Invoke-Plan { "[]" | Out-File -Encoding utf8 $script:CALIBR_PLAN }
+        function Invoke-Bench { $script:benchCalled = $true }
+        try {
+            $ran = Invoke-WorkflowBenchCycle -PlanningPolicy (New-PlanningPolicy)
+            Assert-Equal $false $ran
+            Assert-Equal $false $script:benchCalled
+        } finally {
+            $script:CALIBR_CATALOG = $origCatalog
+            $script:CALIBR_PLAN = $origPlan
+            Remove-Item -LiteralPath $tmpCatalog,$tmpPlan -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "local all skips report when the bench cycle has nothing to run" {
+        $script:reportCalled = $false
+        function Ensure-WorkflowEngine {}
+        function Invoke-WorkflowBenchCycle { return $false }
+        function Invoke-Report { $script:reportCalled = $true }
+        $script:FetchCatalog = $false
+        $script:ContextSizes = ""
+        $script:WorkloadSweep = "baseline"
+
+        Invoke-All
+
+        Assert-Equal $false $script:reportCalled
+    }
+}
+
 Describe "Workflow state cleanup" {
     It "restores outer catalog filters when a catalog entry fails" {
         # Make the workflow proceed to the loop without spawning node for the pre-pass.
