@@ -94,7 +94,7 @@ export interface PlanItem {
   gguf_context_length: number | null | undefined;
   gguf_architecture: string | null | undefined;
   workload_kind: "baseline" | "prefill" | "kv-fill";
-  control_kind?: "vanilla" | "vanilla-adjacent" | null;
+  control_kind?: "vanilla" | "vanilla-matched" | "vanilla-adjacent" | null;
   conditional_kind?: "kv_rescue" | null;
   conditional_source_id?: string | null;
   prefill_target_tokens: number;
@@ -259,7 +259,7 @@ export function newPlanItem(
   };
 }
 
-function vanillaAdjacentSpeedProbes(
+function matchedVanillaBaselines(
   meta: PlanMeta,
   sweep: PlanItem["sweep"],
   level: string | null,
@@ -267,16 +267,16 @@ function vanillaAdjacentSpeedProbes(
   cacheType = "q8_0",
 ): PlanItem[] {
   return [
-    newPlanItem(meta, sweep, level, `--ctx-size ${ctx}`, `llama_cpp_ctx=${ctx}_default`, {}, "vanilla-adjacent"),
-    newPlanItem(meta, sweep, level, `--ctx-size ${ctx} --parallel 1`, `llama_cpp_ctx=${ctx}_parallel1`, {}, "vanilla-adjacent"),
+    newPlanItem(meta, sweep, level, `--ctx-size ${ctx}`, `llama_cpp_matched_ctx=${ctx}_default`, {}, "vanilla-matched"),
+    newPlanItem(meta, sweep, level, `--ctx-size ${ctx} --parallel 1`, `llama_cpp_matched_ctx=${ctx}_parallel1`, {}, "vanilla-matched"),
     newPlanItem(
       meta,
       sweep,
       level,
       `--ctx-size ${ctx} --parallel 1 --cache-type-k ${cacheType} --cache-type-v ${cacheType}`,
-      `llama_cpp_ctx=${ctx}_parallel1_kv=${cacheType}`,
+      `llama_cpp_matched_ctx=${ctx}_parallel1_kv=${cacheType}`,
       {},
-      "vanilla-adjacent",
+      "vanilla-matched",
     ),
   ];
 }
@@ -362,7 +362,7 @@ export function invokePlan(
       const anchor = validCandidates.at(-1);
       if (anchor) {
         const kv = contextCandidateKv(anchor);
-        for (const probe of vanillaAdjacentSpeedProbes(meta, sweep, level, anchor.ctx, kv.k)) {
+        for (const probe of matchedVanillaBaselines(meta, sweep, level, anchor.ctx, kv.k)) {
           plan.push(probe);
         }
         const args = `--ctx-size ${anchor.ctx} --gpu-layers 99 --cache-type-k ${kv.k} --cache-type-v ${kv.v}${suffix}`;

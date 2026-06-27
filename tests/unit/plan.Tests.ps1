@@ -184,6 +184,15 @@ Describe "Plan workload identity" {
         Assert-Equal "vanilla" $item.control_kind
         Assert-Equal "" $item.extra_args
     }
+
+    It "marks matched vanilla baselines as controls" {
+        $item = New-PlanItem -meta (_meta) -sweep "context" -level "middle" `
+            -extraArgs "--ctx-size 131072 --parallel 1" -label "llama_cpp_matched_ctx=131072_parallel1" `
+            -idx 1 -ControlKind "vanilla-matched"
+        Assert-Equal "vanilla-matched" $item.control_kind
+        Assert-Equal "--ctx-size 131072 --parallel 1" $item.extra_args
+    }
+
     It "links a conditional KV rescue to its same-context primary config" {
         $meta = @{
             path = "C:\models\x.gguf"; model = "X"; variant = "Q4_K_M"; series = "x"

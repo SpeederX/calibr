@@ -875,14 +875,15 @@ function fmt2(v)  { return (v == null) ? '-' : (+v).toFixed(2); }
 
 function vanillaClaim(w, configs) {
   const controls = configs
-    .filter(c => c.control_kind === 'vanilla')
+    .filter(c => isComparisonBaseline(c))
     .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
-  const control = controls.find(c =>
+  const sameSession = controls.filter(c =>
     c.bench_session_started_at && c.bench_session_started_at === w.bench_session_started_at
-  ) || controls[0];
+  );
+  const control = preferredComparisonBaseline(sameSession) || preferredComparisonBaseline(controls);
   if (!control) return '';
   if (!control.ok && w.ok) {
-    return '<span class="winner-stat level-low" title="The untuned llama.cpp control did not complete, while the selected calibr config did.">calibr made it usable</span>';
+    return '<span class="winner-stat level-low" title="The comparison baseline did not complete, while the selected calibr config did.">calibr made it usable</span>';
   }
   const base = +control.eval_tps || 0;
   const tuned = +w.eval_tps || 0;
@@ -890,7 +891,10 @@ function vanillaClaim(w, configs) {
   const delta = tuned - base;
   const pct = delta / base * 100;
   const sign = delta >= 0 ? '+' : '';
-  return '<span class="winner-stat" title="Selected config versus the untuned llama.cpp control from the same session.">' +
+  const title = isVanillaMatched(control)
+    ? 'Selected config versus the matched vanilla baseline from the same session when available.'
+    : 'Selected config versus the raw llama.cpp default control; no matched baseline was available.';
+  return '<span class="winner-stat" title="' + title + '">' +
     'calibr ' + sign + fmt1(pct) + '% (' + sign + fmt1(delta) + ' t/s)</span>';
 }
 
@@ -918,7 +922,7 @@ function winnerSummary(w, configs) {
 
 // ===========================================================================
 // Vanilla-vs-config comparison panel: a radar/star chart (left) that scales
-// every axis against the vanilla control, plus a prefill/KV-fill load curve
+// every axis against the matched vanilla baseline when available, plus a prefill/KV-fill load curve
 // (right) showing how throughput holds up as context fills. Both are
 // presentation over existing result fields — no metric is recomputed here.
 // ===========================================================================
@@ -928,7 +932,20 @@ function winnerSummary(w, configs) {
 function isRealConfig(c) {
   return !c.control_kind && (!c.workload_kind || c.workload_kind === 'baseline');
 }
-function isVanillaAdjacent(c) { return c.control_kind === 'vanilla-adjacent'; }
+function isVanillaMatched(c) {
+  return c.control_kind === 'vanilla-matched' || c.control_kind === 'vanilla-adjacent';
+}
+function isVanillaAdjacent(c) { return isVanillaMatched(c); }
+function isComparisonBaseline(c) {
+  return c.control_kind === 'vanilla' || isVanillaMatched(c);
+}
+function preferredComparisonBaseline(configs) {
+  if (!configs || !configs.length) return null;
+  return configs.find(c => isVanillaMatched(c) && /parallel1_kv/i.test(c.label || c.id || ''))
+    || configs.find(c => isVanillaMatched(c))
+    || configs.find(c => c.control_kind === 'vanilla')
+    || null;
+}
 function isWorkloadRow(c) {
   return c.workload_kind === 'prefill' || c.workload_kind === 'kv-fill';
 }
@@ -962,20 +979,23 @@ function kvCacheLabel(c) {
   return kvQuantLabel(c) || '–';
 }
 function configIdentity(c) {
-  return c.control_kind === 'vanilla' ? 'Baseline default llama.cpp configuration' : 'Calibrated';
+  if (c.control_kind === 'vanilla') return 'Raw llama.cpp default control';
+  if (isVanillaMatched(c)) return 'Matched vanilla baseline';
+  return 'Calibrated';
 }
 
-// Pick the vanilla control to reference, preferring the one from the same
-// bench session as `ref` (mirrors vanillaClaim's selection).
+// Pick the comparison baseline to reference, preferring the matched vanilla
+// row from the same bench session as `ref` (mirrors vanillaClaim's selection).
 function vanillaControlFor(configs, ref) {
   const controls = configs
-    .filter(c => c.control_kind === 'vanilla')
+    .filter(c => isComparisonBaseline(c))
     .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
   if (ref && ref.bench_session_started_at) {
-    const match = controls.find(c => c.bench_session_started_at === ref.bench_session_started_at);
+    const sameSession = controls.filter(c => c.bench_session_started_at === ref.bench_session_started_at);
+    const match = preferredComparisonBaseline(sameSession);
     if (match) return match;
   }
-  return controls[0] || null;
+  return preferredComparisonBaseline(controls);
 }
 
 // Radar axes. `dir:'up'` means higher is better (ratio = config/vanilla);
@@ -1146,14 +1166,14 @@ function radarCardInner(vanilla, selected) {
   const label = selected ? selected.label : 'config';
   const body = (vanilla && selected)
     ? renderRadar(vanilla, selected)
-    : '<div class="compare-empty">No vanilla control in this run — nothing to compare against.</div>';
+    : '<div class="compare-empty">No vanilla or matched baseline in this run — nothing to compare against.</div>';
   return '<h4>vanilla vs <span class="meta">' + escapeHtml(label) + '</span></h4>' + body;
 }
 
 // Single-row panel: configs (left) · radar (middle, vs vanilla) · load curve
 // (right, only when load-curve data exists). `configsCardHtml` is the lean
 // picker built by renderModelsList. The radar drops out when there is no
-// vanilla control to reference.
+// comparison baseline to reference.
 function comparisonPanel(model, configs, selected, configsCardHtml) {
   const vanilla = vanillaControlFor(configs, selected);
   const hasCurve = configs.some(isWorkloadRow);
@@ -1211,7 +1231,7 @@ function renderModelsList() {
         '<span></span>';
 
     // Split the dense config dump into a lean, pickable table (real configs +
-    // the vanilla control) and a collapsed diagnostics view (vanilla-adjacent
+    // the raw vanilla control) and a collapsed diagnostics view (matched vanilla
     // probes + prefill/KV-fill workload rows). The probes/workload rows are
     // what made the old single table "complete no sense"; the multi-metric
     // detail now lives in the comparison radar, the curves in the load chart.
@@ -1259,7 +1279,7 @@ function renderModelsList() {
       const wddm = confirmedSharedMib(c) > 0 ? '<span class="wddm">+' + confirmedSharedMib(c) + '</span>' : '-';
       diagRows += '<tr>' +
               '<td><code>' + escapeHtml(c.label) + '</code></td>' +
-              '<td title="' + escapeHtml(workloadTitle(c)) + '">' + (isVanillaAdjacent(c) ? 'vanilla-adjacent' : workloadLabel(c)) + '</td>' +
+              '<td title="' + escapeHtml(workloadTitle(c)) + '">' + (isVanillaMatched(c) ? 'matched vanilla' : workloadLabel(c)) + '</td>' +
               '<td title="' + escapeHtml(launchProfileTitle(c)) + '">' + launchProfileLabel(c) + '</td>' +
               '<td class="num">' + fmt1(c.prompt_tps) + '</td>' +
               '<td class="num">' + fmt1(c.eval_tps) + '</td>' +
@@ -1276,11 +1296,11 @@ function renderModelsList() {
         '</tr></thead><tbody>' + diagRows + '</tbody></table>'
       : '';
     // Per-config throughput & memory bars (folded in from the old global
-    // section), plus the vanilla-adjacent / load-curve audit rows.
+    // section), plus the matched-vanilla / load-curve audit rows.
     const diagBars = modelDiagnosticBars(model, tableConfigs);
     const diagHtml = (diagBars || auditTable)
       ? '<details class="diag-details"><summary>diagnostics · per-config throughput &amp; memory bars' +
-          (diagConfigs.length ? ' · ' + diagConfigs.length + ' vanilla-adjacent / load-curve row' + (diagConfigs.length === 1 ? '' : 's') + ' (excluded from winner selection)' : '') +
+          (diagConfigs.length ? ' · ' + diagConfigs.length + ' matched-vanilla / load-curve row' + (diagConfigs.length === 1 ? '' : 's') + ' (excluded from winner selection)' : '') +
           '</summary>' + diagBars + auditTable + '</details>'
       : '';
 
@@ -1959,6 +1979,7 @@ function layersLabel(d) {
 
 function workloadLabel(d) {
   if (d.control_kind === 'vanilla') return 'vanilla control';
+  if (isVanillaMatched(d)) return 'matched vanilla baseline';
   const kind = d.workload_kind || 'baseline';
   if (kind === 'prefill') return 'prefill ' + (d.workload_prompt_tokens ?? d.prefill_target_tokens ?? '?') + ' tok';
   if (kind === 'kv-fill') {
@@ -1970,6 +1991,7 @@ function workloadLabel(d) {
 
 function workloadTitle(d) {
   if (d.control_kind === 'vanilla') return 'Untuned llama.cpp control. Only model/support assets and benchmark harness networking are supplied.';
+  if (isVanillaMatched(d)) return 'Untuned llama.cpp baseline constrained to the calibrated comparison context/profile. It is excluded from winner selection and used as the fair comparison reference when available.';
   const kind = d.workload_kind || 'baseline';
   if (kind === 'baseline') return 'Standard measured request.';
   const parts = [
@@ -2008,6 +2030,8 @@ function launchProfileTitle(d) {
   ];
   if (d.control_kind === 'vanilla') {
     parts.push('vanilla uses llama.cpp defaults; compare throughput with calibrated configs only after checking this profile');
+  } else if (isVanillaMatched(d)) {
+    parts.push('matched vanilla constrains llama.cpp to the comparison context/profile; it is safer for throughput claims than the raw default control');
   }
   return parts.join(' Â· ');
 }

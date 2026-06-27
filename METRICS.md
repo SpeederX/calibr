@@ -22,22 +22,28 @@ timestamp must not be presented as token-generation time.
 Every model has one `control_kind = vanilla` run using llama.cpp defaults
 instead of calibr's launch tuning. It uses the same measured request and repeat
 policy as the optimized configs, but context and allocation may differ because
-that difference is part of the product comparison.
+llama.cpp is allowed to choose its own defaults. This raw control is diagnostic:
+it shows what llama.cpp did out of the box, not necessarily an apples-to-apples
+throughput baseline.
 
-Context-primary models may also have `control_kind = vanilla-adjacent` speed
-probes. They progressively add a requested context, `--parallel 1`, and the
-primary KV cache type while leaving the remaining runtime defaults alone. These
-probes are used to explain performance deltas; they are not used as the vanilla
-uplift baseline and never participate in winner selection.
+Context-primary models may also have `control_kind = vanilla-matched` baselines
+at the largest valid calibrated context. They progressively add a requested
+context, `--parallel 1`, and the primary KV cache type while leaving the
+remaining runtime defaults alone. These matched baselines are excluded from
+winner selection, but the most constrained matched baseline is preferred for
+the report uplift claim because it avoids comparing a 32K calibrated run
+against a 126K/262K raw llama.cpp default profile. Older result files may call
+the same rows `vanilla-adjacent`; treat that value as a legacy alias.
 
 When both runs complete:
 
-`uplift_tps = winner_eval_tps - vanilla_eval_tps`
+`uplift_tps = winner_eval_tps - baseline_eval_tps`
 
-`uplift_pct = uplift_tps / vanilla_eval_tps * 100`
+`uplift_pct = uplift_tps / baseline_eval_tps * 100`
 
-The report compares a winner with the vanilla control from the same benchmark
-session when possible. If vanilla fails to load or complete and an optimized
+The report compares a winner with the matched vanilla baseline from the same
+benchmark session when available, otherwise with the raw vanilla control. If
+the comparison baseline fails to load or complete and an optimized
 config succeeds, the outcome is reported as “calibr made it usable”; no
 percentage is calculated from a missing or zero baseline. Controls are
 excluded from winner selection and launcher generation.

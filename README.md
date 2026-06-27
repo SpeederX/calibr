@@ -177,28 +177,32 @@ There is not one universal winner. The report exposes profiles:
 - **Overall**: weighted view across speed, safety, and efficiency.
 
 Each expanded model row shows a compact comparison panel — the selected config
-versus the untuned llama.cpp control on a radar (eval/prompt/context/VRAM/power/
-temperature/RAM) plus a prefill/KV-fill load curve. The report also includes a
+versus the matched vanilla baseline when available, otherwise the raw llama.cpp
+default control, on a radar (eval/prompt/context/VRAM/power/temperature/RAM)
+plus a prefill/KV-fill load curve. The report also includes a
 collapsed **Complete session leaderboard** that ranks each model's winner head to
 head under the selected profile — a local, at-a-glance comparison (distinct from
 the future online leaderboard noted under Direction).
 
-Each model also gets one untuned llama.cpp control run. It supplies the model
-(and a required projector, when present) but none of calibr's context, KV,
-offload, MoE, batch, thread, or fit flags. The request workload and repetition
-policy stay identical. Controls never become winners or launchers; the report
-uses them to show the selected config's absolute and percentage throughput
-uplift. If the vanilla control cannot load or complete while a calibrated
-config does, the report records that calibr made the model usable instead of
-inventing a percentage from a zero baseline. The report also shows the launch
-profile for controls and calibrated configs: requested context/cache/offload
-flags plus effective slot context, parallelism, offloaded layers, buffer sizes,
-and Flash Attention state parsed from llama-server logs when available.
-Context-primary models also get a small set of vanilla-adjacent speed probes at
-the largest valid context: ctx-only, ctx+parallel=1, and ctx+parallel=1+KV cache
-type. They are diagnostic controls, not winner candidates. Their job is to
-explain whether a vanilla/calibr speed gap comes from context, auto-parallelism,
-KV-cache precision, or calibr's remaining base runtime flags.
+Each model also gets one raw llama.cpp default control run. It supplies the
+model (and a required projector, when present) but none of calibr's context,
+KV, offload, MoE, batch, thread, or fit flags. The request workload and
+repetition policy stay identical. Controls never become winners or launchers.
+Context-primary models also get a small set of matched vanilla baselines at the
+largest valid calibrated context: ctx-only, ctx+parallel=1, and
+ctx+parallel=1+KV cache type. Their job is to explain whether a vanilla/calibr
+speed gap comes from context, auto-parallelism, KV-cache precision, or calibr's
+remaining base runtime flags.
+
+The report uses the matched vanilla baseline for the selected config's absolute
+and percentage throughput uplift when it is available, falling back to the raw
+llama.cpp default control only when no matched baseline exists. If the
+comparison baseline cannot load or complete while a calibrated config does, the
+report records that calibr made the model usable instead of inventing a
+percentage from a zero baseline. The report also shows the launch profile for
+controls and calibrated configs: requested context/cache/offload flags plus
+effective slot context, parallelism, offloaded layers, buffer sizes, and Flash
+Attention state parsed from llama-server logs when available.
 
 "Safe" currently means no confirmed shared-memory spill. On Windows, that is a
 delta above `wddm_detection.shared_delta_confirm_mib` (default `500 MiB`) in
