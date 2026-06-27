@@ -54,6 +54,10 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - quality-first context/KV sweep for models expected to fit: every primary
      context target uses `q8_0/q8_0`; `q4_0/q4_0` is a conditional fallback at
      the same context after direct capacity evidence;
+   - when a preset caps the regular context sweep below the model's declared
+     maximum context, keep one max-context anchor if it is allowed by the
+     global config cap. This keeps the calibrated profile comparable with
+     llama.cpp defaults that may choose the model's full context;
    - for MoE models, estimate expert tensor placement from GGUF metadata and
      load-probe an initial `--n-cpu-moe` allocation anchor;
    - for dense models, estimate an initial GPU-layer position from GGUF tensor
