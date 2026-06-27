@@ -40,3 +40,52 @@ test("scope row opens the guided catalog scope selector", async () => {
     rmSync(dataDir, { recursive: true, force: true });
   }
 });
+
+test("scope row keeps quick left/right tier cycling", async () => {
+  const { lastFrame, stdin, unmount } = render(
+    React.createElement(GuidedRunView, {
+      onRun: () => { throw new Error("scope arrow navigation should not launch a run"); },
+      onCancel: () => {},
+    }),
+  );
+  try {
+    await tick();
+    stdin.write("\x1B[B"); // folder
+    await tick(15);
+    stdin.write("\x1B[B"); // source
+    await tick(15);
+    stdin.write("\x1B[B"); // scope
+    await tick(15);
+    stdin.write("\x1B[C"); // right: low -> middle
+    await tick(50);
+    assert.match(lastFrame(), /scope:\s+desktop-consumer-middle/);
+  } finally {
+    unmount();
+  }
+});
+
+test("scope arrow from a custom selection resets to all models", async () => {
+  const { lastFrame, stdin, unmount } = render(
+    React.createElement(GuidedRunView, {
+      session: { currentPreset: "all", customIds: "qwen3-0.6b-q4km" },
+      onRun: () => { throw new Error("scope arrow navigation should not launch a run"); },
+      onCancel: () => {},
+    }),
+  );
+  try {
+    await tick();
+    assert.match(lastFrame(), /custom selection/);
+    stdin.write("\x1B[B"); // folder
+    await tick(15);
+    stdin.write("\x1B[B"); // source
+    await tick(15);
+    stdin.write("\x1B[B"); // scope
+    await tick(15);
+    stdin.write("\x1B[C"); // right: custom -> all
+    await tick(50);
+    assert.match(lastFrame(), /scope:\s+all/);
+    assert.doesNotMatch(lastFrame(), /custom selection/);
+  } finally {
+    unmount();
+  }
+});

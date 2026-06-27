@@ -61,6 +61,11 @@ function next<T>(values: readonly T[], current: T): T {
   return values[(i + 1) % values.length];
 }
 
+function previous<T>(values: readonly T[], current: T): T {
+  const i = values.indexOf(current);
+  return values[(i <= 0 ? values.length : i) - 1]!;
+}
+
 function retentionLabel(policy: DownloadRetention): string {
   switch (policy) {
     case "keep-all": return "keep all (store downloaded models in the model folder)";
@@ -443,6 +448,10 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     const extras = Object.keys(presets).filter(n => !builtin.includes(n)).sort();
     return [...builtin, ...extras];
   }, [presets]);
+  const presetCycleNames = useMemo<string[]>(
+    () => presetNames.filter(name => name !== "custom"),
+    [presetNames],
+  );
   const [presetIdx, setPresetIdx] = useState<number>(() => {
     const rememberedIdx = session?.currentPreset ? presetNames.indexOf(session.currentPreset) : -1;
     if (rememberedIdx >= 0) return rememberedIdx;
@@ -651,6 +660,30 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
       model: nextModel,
     });
     setPhase({ kind: "form" });
+  };
+
+  const stepPresetScope = (direction: 1 | -1) => {
+    if (!fetchCatalog || presetCycleNames.length === 0) return;
+
+    const nextPreset = customIds
+      ? "all"
+      : direction > 0
+        ? next(presetCycleNames, currentPreset)
+        : previous(presetCycleNames, currentPreset);
+    const nextModels = catalogModelNamesForScope(catalog, presets, nextPreset);
+    const nextModel = model && nextModels.includes(model) ? model : null;
+
+    setCurrentPresetName(nextPreset);
+    setSelectedScopeNames([nextPreset]);
+    setCustomIds("");
+    setCustomCtxSizes(null);
+    setModel(nextModel);
+    onSessionChange?.({
+      currentPreset: nextPreset,
+      customIds: "",
+      customCtxSizes: null,
+      model: nextModel,
+    });
   };
 
   const startRun = () => {
@@ -1062,6 +1095,8 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     }
     if (key.upArrow || input === "k") setCursor(c => Math.max(0, c - 1));
     else if (key.downArrow || input === "j") setCursor(c => Math.min(rows.length - 1, c + 1));
+    else if (key.leftArrow && rows[cursor]?.kind === "preset") stepPresetScope(-1);
+    else if (key.rightArrow && rows[cursor]?.kind === "preset") stepPresetScope(1);
     else if (key.return || input === " ") activate(cursor);
     else if (key.escape || input === "q") onCancel();
   });
