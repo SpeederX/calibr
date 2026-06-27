@@ -43,7 +43,7 @@ const realFs: IntakeFs = {
 };
 
 function realIntakeDeps(calibrOwned: boolean, telemetry: boolean): IntakeDeps {
-  return {
+  const deps: IntakeDeps = {
     fs: realFs,
     async ensurePresent(path, entry) {
       process.stdout.write("[phase] downloading\n");
@@ -55,8 +55,12 @@ function realIntakeDeps(calibrOwned: boolean, telemetry: boolean): IntakeDeps {
       return { ok: result.ok, reason: result.reason };
     },
     readLocalHeader: (path) => readGgufHeaderMetadata(path),
-    async readRemoteHeader(entry) {
-      if (!telemetry) return null; // default: no network; signature is telemetry-only
+    onWarn: (message) => process.stdout.write(`[warn] ${message}\n`),
+  };
+  // Remote signature check is the telemetry-only path; otherwise it's omitted
+  // (not "failed") so a normal run does no network and emits no warning.
+  if (telemetry) {
+    deps.readRemoteHeader = async (entry) => {
       try {
         const info = await fileDownloadInfo({ repo: entry.hf_repo, path: entry.hf_file });
         if (!info) return null;
@@ -64,9 +68,9 @@ function realIntakeDeps(calibrOwned: boolean, telemetry: boolean): IntakeDeps {
       } catch {
         return null;
       }
-    },
-    onWarn: (message) => process.stdout.write(`[warn] ${message}\n`),
-  };
+    };
+  }
+  return deps;
 }
 
 async function main(): Promise<void> {

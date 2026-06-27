@@ -225,8 +225,13 @@ export interface IntakeDeps {
   /** Download the file when missing; resolves ok=false with a reason on failure. */
   ensurePresent(path: string, entry: CatalogEntryInput): Promise<{ ok: boolean; reason?: string }>;
   readLocalHeader(path: string): Promise<GgufHeaderMetadata>;
-  /** Remote header (range, no full download); null when unavailable (offline). */
-  readRemoteHeader(entry: CatalogEntryInput): Promise<GgufHeaderMetadata | null>;
+  /**
+   * Remote header (range, no full download) for the always-on signature check.
+   * Omitted entirely when signature verification is off (the default; it is the
+   * telemetry-only path) — absence means "not checked", not "check failed".
+   * Returns null when requested but unavailable (offline).
+   */
+  readRemoteHeader?: (entry: CatalogEntryInput) => Promise<GgufHeaderMetadata | null>;
   fs: IntakeFs;
   onWarn?: (message: string) => void;
 }
@@ -264,16 +269,18 @@ export async function intakeModel(payload: IntakePayload, deps: IntakeDeps): Pro
   }
 
   let signatureUnverified = false;
-  const remote = await deps.readRemoteHeader(entry);
-  if (remote) {
-    const cmp = compareGgufSignature(local, remote);
-    if (!cmp.match) {
-      const diffs = cmp.diffs.map((d) => `${String(d.field)}: local=${d.local} remote=${d.remote}`).join("; ");
-      return { ok: false, errorKind: "signature_mismatch", error: `GGUF signature mismatch for ${path} (${diffs})` };
+  if (deps.readRemoteHeader) {
+    const remote = await deps.readRemoteHeader(entry);
+    if (remote) {
+      const cmp = compareGgufSignature(local, remote);
+      if (!cmp.match) {
+        const diffs = cmp.diffs.map((d) => `${String(d.field)}: local=${d.local} remote=${d.remote}`).join("; ");
+        return { ok: false, errorKind: "signature_mismatch", error: `GGUF signature mismatch for ${path} (${diffs})` };
+      }
+    } else {
+      signatureUnverified = true;
+      deps.onWarn?.(`could not read remote header for ${entry.hf_repo}/${entry.hf_file}; signature left unverified`);
     }
-  } else {
-    signatureUnverified = true;
-    deps.onWarn?.(`could not read remote header for ${entry.hf_repo}/${entry.hf_file}; signature left unverified`);
   }
 
   return { ok: true, metadata: buildModelMetadata(path, local, entry, fs), downloaded, signatureUnverified };
