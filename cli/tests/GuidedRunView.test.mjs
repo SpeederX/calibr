@@ -88,6 +88,14 @@ test("context sizes pass through as -ContextSizes csv", () => {
   assert.equal(a[i + 1], "16384,32768");
 });
 
+test("remembered custom context sizes do not leak into normal guided runs", () => {
+  const presetArgs = buildAllArgs({ ...base, currentPreset: "low", customIds: "", contextSizes: [16384, 32768] }).args;
+  assert.equal(presetArgs.includes("-ContextSizes"), false);
+
+  const localArgs = buildAllArgs({ ...base, fetchCatalog: false, currentPreset: "all", customIds: "", contextSizes: [16384, 32768] }).args;
+  assert.equal(localArgs.includes("-ContextSizes"), false);
+});
+
 test("diagnostic workload sweep passes through explicitly", () => {
   assert.deepEqual(buildAllArgs({ ...base, workloadSweep: "all" }).args,
     ["all", "-FetchCatalog", "-Preset", "low", "-WorkloadSweep", "all"]);

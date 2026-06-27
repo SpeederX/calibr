@@ -1763,7 +1763,8 @@ function Write-BenchStatusLine {
             $detail = "($($result.error))"
         }
     }
-    Write-Host ("{0} {1,-55} {2}" -f $tag, $item.label, $detail) -ForegroundColor $tagColor
+    $labelPrefix = if ($item.control_kind) { "[CTRL] " } else { "" }
+    Write-Host ("{0} {1,-55} {2}" -f $tag, "$labelPrefix$($item.label)", $detail) -ForegroundColor $tagColor
 }
 
 function Get-RuntimeFailureFromResult {

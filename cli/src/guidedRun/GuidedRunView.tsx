@@ -300,8 +300,11 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
   } else if (o.fetchCatalog && o.currentPreset !== "all" && o.currentPreset !== "custom") {
     args.push("-Preset", o.currentPreset); parts.push(`-Preset ${o.currentPreset}`);
   }
-  if (o.contextSizes && o.contextSizes.length > 0) {
-    const csv = o.contextSizes.join(",");
+  const customContextSizes = o.fetchCatalog && o.customIds && o.contextSizes && o.contextSizes.length > 0
+    ? o.contextSizes
+    : null;
+  if (customContextSizes) {
+    const csv = customContextSizes.join(",");
     args.push("-ContextSizes", csv); parts.push(`-ContextSizes ${csv}`);
   }
   if (o.workloadSweep !== "baseline") {
@@ -517,8 +520,9 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
 
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
+  const contextSizesForRun = customIds && customCtxSizes && customCtxSizes.length > 0 ? customCtxSizes : null;
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes, workloadSweep: scopePolicy.workloadSweep, fullSpeedCurve: scopePolicy.fullSpeedCurve });
+    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: contextSizesForRun, workloadSweep: scopePolicy.workloadSweep, fullSpeedCurve: scopePolicy.fullSpeedCurve });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -547,7 +551,7 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
         preset: currentPreset,
         model,
         customIds,
-        contextSizes: customCtxSizes,
+        contextSizes: contextSizesForRun,
         benchmarkScope,
         workloadSweep: scopePolicy.workloadSweep,
         fullSpeedCurve: scopePolicy.fullSpeedCurve,
@@ -655,12 +659,12 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     setCurrentPresetName(nextPreset);
     setSelectedScopeNames(nextCustomIds ? nextScopes : [nextPreset]);
     setCustomIds(nextCustomIds);
-    setCustomCtxSizes(nextCustomIds ? customCtxSizes : null);
+    setCustomCtxSizes(null);
     setModel(nextModel);
     onSessionChange?.({
       currentPreset: nextPreset,
       customIds: nextCustomIds,
-      customCtxSizes: nextCustomIds ? customCtxSizes : null,
+      customCtxSizes: null,
       model: nextModel,
     });
     setPhase({ kind: "form" });
