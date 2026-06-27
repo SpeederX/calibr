@@ -291,6 +291,10 @@ function Invoke-CatalogEntry {
         Invoke-Discover
     }
 
+    # Plan the whole catalog.json (this one model in the lean path) - clear any
+    # leftover model filter from a previous entry, or Invoke-Plan filters it out
+    # (plan.ps1: `if ($Model -and $m.model -notmatch $Model)`) and yields 0 configs.
+    $script:Model = ""
     Invoke-Plan -PlanningPolicy $PlanningPolicy
     $script:Model = $Entry.model
     Invoke-Bench

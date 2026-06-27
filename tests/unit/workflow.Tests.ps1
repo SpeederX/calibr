@@ -107,14 +107,16 @@ Describe "Catalog entry intake (lean) vs fallback" {
         function Invoke-TsCatalogIntake { param($Entry, $DestRoot, $Script) return @{ ok = $true; downloaded = $false; metadata = @{ model = "M"; path = "/root/M/m.gguf"; size_bytes = 1; mmproj = $null } } }
         function Invoke-Discover { $script:discoverCalled = $true }
         function Invoke-FetchModels { $script:discoverCalled = $true }
-        function Invoke-Plan { $script:planCalled = $true }
+        function Invoke-Plan { $script:planCalled = $true; $script:planModelAtCall = $script:Model }
         function Invoke-Bench { $script:benchCalled = $true }
         function Add-MoeWorkloadDiagnostics { return 0 }
-        $script:CatalogId = ""; $script:Model = ""
+        $script:CatalogId = ""
+        $script:Model = "Qwen3.5-0.8B"   # stale filter from a previous entry
         try {
             Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript "x"
             Assert-Equal $false $script:discoverCalled    # no per-entry full discover
             Assert-Equal $true $script:planCalled
+            Assert-Equal "" $script:planModelAtCall       # plan not filtered by the previous model
             Assert-Equal $true $script:benchCalled
         } finally {
             $script:CALIBR_CATALOG = $origCatalog
