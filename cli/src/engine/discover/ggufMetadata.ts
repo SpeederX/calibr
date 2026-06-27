@@ -119,3 +119,44 @@ export async function readGgufHeaderMetadata(path: string): Promise<GgufHeaderMe
     return { ...EMPTY };
   }
 }
+
+// Reads a GGUF header straight from a remote URL (range requests, no full
+// download), then sizes tensors against the authoritative remote byte length.
+export async function readGgufHeaderMetadataRemote(
+  url: string,
+  remoteSize: number,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GgufHeaderMetadata> {
+  const parsed = await gguf(url, { fetch: fetchImpl });
+  return computeGgufHeaderMetadata(parsed as ParsedGguf, remoteSize);
+}
+
+export interface GgufSignatureDiff {
+  field: keyof GgufHeaderMetadata;
+  local: unknown;
+  remote: unknown;
+}
+
+// True when a local file IS the catalog's model: its GGUF fingerprint matches
+// the remote one. Used as an always-on anti-tampering check (e.g. a renamed
+// model can't masquerade as another). Per-block byte arrays are summarised by
+// their scalar aggregates, which already pin the architecture + quantisation.
+export function compareGgufSignature(
+  local: GgufHeaderMetadata,
+  remote: GgufHeaderMetadata,
+): { match: boolean; diffs: GgufSignatureDiff[] } {
+  const fields: Array<keyof GgufHeaderMetadata> = [
+    "architecture", "block_count", "context_length", "tensor_count",
+    "tensor_bytes", "global_tensor_bytes", "expert_tensor_bytes",
+  ];
+  const diffs: GgufSignatureDiff[] = [];
+  for (const field of fields) {
+    if (local[field] !== remote[field]) diffs.push({ field, local: local[field], remote: remote[field] });
+  }
+  return { match: diffs.length === 0, diffs };
+}
+
+// A GGUF whose header could not be read at all (e.g. truncated/not really GGUF).
+export function isUnreadableGguf(md: GgufHeaderMetadata): boolean {
+  return md.architecture === null && md.tensor_count === 0 && md.tensor_bytes === null;
+}

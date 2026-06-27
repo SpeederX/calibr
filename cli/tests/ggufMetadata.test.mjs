@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { computeGgufHeaderMetadata } from "../dist/engine/discover/ggufMetadata.js";
+import { computeGgufHeaderMetadata, compareGgufSignature, isUnreadableGguf } from "../dist/engine/discover/ggufMetadata.js";
 
 // Mirrors the offset-delta sizing of engine/discover.ps1 Get-GgufHeaderMetadata:
 // each tensor's bytes = gap to the next tensor's offset (last -> file end), split
@@ -51,4 +51,28 @@ test("context_length / block_count match by suffix regardless of architecture pr
   }, 64);
   assert.equal(md.context_length, 262144);
   assert.equal(md.block_count, 48);
+});
+
+const sig = (over = {}) => ({
+  architecture: "llama", block_count: 28, context_length: 4096, tensor_count: 310,
+  tensor_data_offset: 1000, tensor_bytes: 390753280, global_tensor_bytes: 127630336,
+  expert_tensor_bytes: 0, block_tensor_bytes: [], ...over,
+});
+
+test("compareGgufSignature: identical fingerprints match", () => {
+  const r = compareGgufSignature(sig(), sig());
+  assert.equal(r.match, true);
+  assert.deepEqual(r.diffs, []);
+});
+
+test("compareGgufSignature: a differing field is reported (e.g. tampered/wrong model)", () => {
+  const r = compareGgufSignature(sig(), sig({ tensor_bytes: 999, architecture: "qwen3" }));
+  assert.equal(r.match, false);
+  assert.deepEqual(r.diffs.map((d) => d.field).sort(), ["architecture", "tensor_bytes"]);
+});
+
+test("isUnreadableGguf flags a header that could not be parsed", () => {
+  // past-EOF data offset with no tensors yields the all-empty shape
+  assert.equal(isUnreadableGguf(computeGgufHeaderMetadata({ metadata: {}, tensorDataOffset: 500n, tensorInfos: [] }, 100)), true);
+  assert.equal(isUnreadableGguf(sig()), false);
 });
