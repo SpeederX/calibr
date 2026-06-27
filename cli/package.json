@@ -48,6 +48,7 @@
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
     "uat:stream-overhead": "npm run build && node dist/engine/uat/streamingOverheadUatCli.js",
+    "catalog:refresh": "node scripts/refresh-catalog-metadata.mjs",
     "test:components": "tsc && node scripts/run-component-tests.mjs",
     "test": "npm run build && npm run check-report-winner-policy && node scripts/all-options-keypress-smoke.mjs && node scripts/smoke-install.js && node scripts/run-component-tests.mjs"
   },

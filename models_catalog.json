@@ -6,12 +6,11 @@
     "target_dir is relative to scan_paths[0] in config.json. Files land at {scan_paths[0]}/{target_dir}/{hf_file}.",
     "hf_file matches an existing path inside the hf_repo. If a repo is taken down or renamed, edit this file and submit a PR.",
     "Some Gemma-series models require accepting a license on HuggingFace; download may fail with 401 until you do.",
-    "size_bytes is informational (used for skip-if-complete); it is not verified against the server.",
+    "size_bytes and sha256 are refreshed from Hugging Face by cli/scripts/refresh-catalog-metadata.mjs: size_bytes is the exact file size (runtime cache match), sha256 is the content hash (telemetry / anti-tamper). Gated repos (e.g. Gemma QAT) keep estimated sizes and no sha256 until a license/token is provided.",
     "max_context is the model's exact max_position_embeddings value (including nested text_config) from Hugging Face config.json. Invoke-Plan uses it both as a ceiling and as the final context-sweep point.",
     "reasoning_mode (Qwen3+ only): 'off' disables the model's thinking / chain-of-thought so prompt_tps and eval_tps reflect direct generation speed instead of internal-deliberation time. 'auto' (default for new Qwen3 entries) leaves it to the model. We use 'off' on Qwen3 entries in this catalog so benchmark numbers are comparable across families.",
     "template_note: free-text reminders about chat-template quirks (notably Gemma's special BOS/EOS handling) that may distort numbers if the wrong template is applied. Surfaced in the report but not yet wired into an automatic flag — TODO for a future version."
   ],
-
   "models": [
     {
       "id": "qwen3.5-0.8b-q8",
@@ -23,6 +22,7 @@
       "hf_file": "Qwen3.5-0.8B-Q8_0.gguf",
       "target_dir": "Qwen3.5-0.8B",
       "size_bytes": 811843840,
+      "sha256": "0ad885ffd4bb022fc4f0d33a3308fa108ef8613159d3b3a67e23abca056b7a6c",
       "max_context": 262144,
       "notes": "Smallest Qwen3.5 variant. 8-bit, near-lossless. Good warm-up model."
     },
@@ -36,6 +36,7 @@
       "hf_file": "Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
       "target_dir": "Qwen3.5-0.8B",
       "size_bytes": 558772480,
+      "sha256": "3177ebd67afe4438374da19e690bc1b98756f7e0fea9240e1be404336156a7b5",
       "max_context": 262144,
       "notes": "Unsloth Dynamic 4-bit. Fastest small model in benchmarks."
     },
@@ -50,6 +51,7 @@
       "target_dir": "Qwen3.5-2B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 1339752704,
+      "sha256": "0af96165ea615bea39a04118d63f0b6d35908aea850ee4a51aa6151d851b8b35",
       "max_context": 262144,
       "notes": "Multimodal (vision). Pair with mmproj-F16."
     },
@@ -64,6 +66,7 @@
       "target_dir": "Qwen3.5-2B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 3775709216,
+      "sha256": "dc11be2ca4519954a3e4b013ef59497b5522209987d67891851113eda89619f1",
       "max_context": 262144,
       "notes": "Full precision 2B. Quality reference for the model."
     },
@@ -77,6 +80,7 @@
       "hf_file": "Qwen3.5-4B-Q4_K_M.gguf",
       "target_dir": "Qwen3.5-4B",
       "size_bytes": 2740937888,
+      "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4",
       "max_context": 262144,
       "notes": "Mid-size dense. No mmproj in this release."
     },
@@ -90,7 +94,8 @@
       "hf_file": "Qwen3.5-9B-Q4_K_M.gguf",
       "target_dir": "Qwen3.5-9B",
       "mmproj_file": "mmproj-F16.gguf",
-      "size_bytes": 5627040640,
+      "size_bytes": 5680522464,
+      "sha256": "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8",
       "max_context": 262144,
       "notes": "The 8GB-VRAM sweet spot. Hybrid SSM+attention, 32 layers, only 8 with KV cache."
     },
@@ -105,6 +110,7 @@
       "target_dir": "Qwen3.5-27B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 15769159584,
+      "sha256": "223f8c0a94be9e94c36e3c4abf742067a0eea452f31b6b264824c030957508ee",
       "max_context": 262144,
       "notes": "Smallest 27B quant. Partial GPU offload required on <= 16GB VRAM."
     },
@@ -118,6 +124,7 @@
       "hf_file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "target_dir": "Qwen3.6-35B-A3B",
       "size_bytes": 22134528992,
+      "sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61",
       "max_context": 262144,
       "notes": "MoE with ~3B active params. Runs in 8GB VRAM with --n-cpu-moe 34."
     },
@@ -131,6 +138,7 @@
       "hf_file": "Qwen3-30B-A3B-Q4_K_M.gguf",
       "target_dir": "Qwen3-30B-A3B",
       "size_bytes": 18556685824,
+      "sha256": "0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5",
       "max_context": 40960,
       "reasoning_mode": "off",
       "notes": "Official Alibaba/Qwen GGUF. 30.5B total / 3.3B active MoE; native 32k context, YaRN can extend beyond that but is not part of the default bench."
@@ -145,6 +153,7 @@
       "hf_file": "Qwen3-30B-A3B-Instruct-2507-UD-Q4_K_XL.gguf",
       "target_dir": "Qwen3-30B-A3B-Instruct-2507",
       "size_bytes": 17690497440,
+      "sha256": "535f831bf3034a7fcfdcc8f0277a57cbad3a36c650c6068bf1d0894f25fb4383",
       "max_context": 262144,
       "notes": "Alibaba/Qwen 2507 non-thinking refresh, packaged as Unsloth Dynamic GGUF. Good consumer-facing Qwen3 MoE baseline with native 256k context."
     },
@@ -158,6 +167,7 @@
       "hf_file": "Qwen3-Coder-30B-A3B-Instruct-128x1.8B-Q4_K_M.gguf",
       "target_dir": "Qwen3-Coder-30B-A3B-Instruct-Intel-AutoRound",
       "size_bytes": 17310980096,
+      "sha256": "6e48e2dc2cd5a4d612ebd8554959d66af71dcba254ecb5b63632c834bf9fa17e",
       "max_context": 262144,
       "notes": "Alibaba/Qwen Coder 30B-A3B quantized by Intel AutoRound. Non-thinking coding model; useful for local coding-agent throughput."
     },
@@ -171,6 +181,7 @@
       "hf_file": "Qwen3-32B-Q4_K_M.gguf",
       "target_dir": "Qwen3-32B",
       "size_bytes": 19762149024,
+      "sha256": "efd971561896866f0e910cce52761ca77b1b138090c7f15fe284676d57d1f689",
       "max_context": 40960,
       "reasoning_mode": "off",
       "notes": "Official Alibaba/Qwen dense 32B GGUF. Native 32k context; useful dense counterpart to the 30B-A3B MoE entries."
@@ -185,10 +196,10 @@
       "hf_file": "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf",
       "target_dir": "DeepSeek-R1-Distill-Qwen-32B",
       "size_bytes": 19851335584,
+      "sha256": "ca171ca03554ee20cf67ad6b540610ae7eabb95af00c0abd36bb73542e140fb5",
       "max_context": 131072,
       "notes": "Official DeepSeek R1 distill on Qwen 32B, packaged by Unsloth. Included as a trustworthy distill baseline; avoid treating throughput as quality ranking."
     },
-
     {
       "id": "gemma-4-e2b",
       "model": "Gemma-4-E2B",
@@ -199,7 +210,8 @@
       "hf_file": "gemma-4-E2B-it-Q4_K_M.gguf",
       "target_dir": "Gemma-4-E2B",
       "mmproj_file": "mmproj-F16.gguf",
-      "size_bytes": 2500000000,
+      "size_bytes": 3106736256,
+      "sha256": "9378bc471710229ef165709b62e34bfb62231420ddaf6d729e727305b5b8672d",
       "max_context": 131072,
       "notes": "Smaller Gemma 4 Effective 2B. Multimodal (vision + audio). Lives in its own folder because its mmproj (n_embd=1536) is incompatible with the E4B sibling's mmproj (n_embd=2560) despite sharing the filename mmproj-F16.gguf."
     },
@@ -213,7 +225,8 @@
       "hf_file": "gemma-4-E4B-it-Q4_K_M.gguf",
       "target_dir": "Gemma-4-E4B",
       "mmproj_file": "mmproj-F16.gguf",
-      "size_bytes": 4977169088,
+      "size_bytes": 4977169568,
+      "sha256": "519b9793ed6ce0ff530f1b7c96e848e08e49e7af4d57bb97f76215963a54146d",
       "max_context": 131072,
       "notes": "Effective 4B. Vision + audio encoders; 43 layers fully on GPU in 8GB. Lives in its own folder because its mmproj (n_embd=2560) is incompatible with the E2B sibling's mmproj despite sharing the filename mmproj-F16.gguf."
     },
@@ -227,6 +240,7 @@
       "hf_file": "gemma-3n-E4B-it-Q4_K_M.gguf",
       "target_dir": "Gemma-3n-E4B",
       "size_bytes": 4539054208,
+      "sha256": "43b489bb77a81bda85180e7c490d40ad7f1d5c2ce654c9b05e15e104bd3c777e",
       "max_context": 32768,
       "template_note": "Gemma uses BOS/EOS conventions that may distort timing if the wrong template is applied. Investigate before adding more Gemma variants.",
       "notes": "Google Gemma 3n Effective 4B, packaged by Unsloth. Multimodal-oriented architecture; good middle-tier Google reference."
@@ -257,6 +271,7 @@
       "target_dir": "Gemma-4-12B",
       "mmproj_file": "mmproj-F16.gguf",
       "size_bytes": 7121860000,
+      "sha256": "43fec98c5102b1c446b4ddd0a9439f1db3a2e1f2e0b8cd143ce1ea619a9403d6",
       "max_context": 262144,
       "notes": "Google Gemma 4 12B, packaged by Unsloth. Long-context multimodal reference between 8GB middle models and 27B high models."
     },
@@ -269,7 +284,8 @@
       "hf_repo": "unsloth/gemma-4-26B-A4B-it-GGUF",
       "hf_file": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
       "target_dir": "Gemma 4-26B-A4B",
-      "size_bytes": 16000000000,
+      "size_bytes": 16947539744,
+      "sha256": "34c746b1d50ab813e29cd46c4796e3f43c741901a582f93a67b55b9fc9687b35",
       "max_context": 262144,
       "notes": "MoE ~4B active. Comparable to Qwen3.6-35B-A3B routing strategy."
     },
@@ -298,7 +314,8 @@
       "hf_file": "gemma-4-31B-it-Q4_K_M.gguf",
       "target_dir": "Gemma 4-31B",
       "mmproj_file": "mmproj-F16.gguf",
-      "size_bytes": 18500000000,
+      "size_bytes": 18323731456,
+      "sha256": "9fdf3dc8b0384830b4402d151388c140bd8eb2abf8d60588d8224231198254a1",
       "max_context": 262144,
       "notes": "Dense 31B. Requires partial offload on < 20GB VRAM."
     },
@@ -312,10 +329,10 @@
       "hf_file": "granite-4.1-30b-Q4_K_M.gguf",
       "target_dir": "Granite-4.1-30B",
       "size_bytes": 17490240736,
+      "sha256": "b33e4376e3581d11236ea53ced6b38399f6e91c0a391488486dc0827972f23f6",
       "max_context": 131072,
       "notes": "Official IBM Granite 4.1 30B GGUF. Dense long-context instruct model; good non-Qwen ultra-tier counterpoint."
     },
-
     {
       "id": "smollm2-135m-q4km",
       "model": "SmolLM2-135M-Instruct",
@@ -325,7 +342,8 @@
       "hf_repo": "bartowski/SmolLM2-135M-Instruct-GGUF",
       "hf_file": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
       "target_dir": "SmolLM2-135M",
-      "size_bytes": 95000000,
+      "size_bytes": 105454432,
+      "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
       "max_context": 8192,
       "notes": "Smallest entry in the catalog (~95 MB). Warmup model + sanity check for tiny-model throughput on the box."
     },
@@ -338,7 +356,8 @@
       "hf_repo": "bartowski/SmolLM2-360M-Instruct-GGUF",
       "hf_file": "SmolLM2-360M-Instruct-Q4_K_M.gguf",
       "target_dir": "SmolLM2-360M",
-      "size_bytes": 230000000,
+      "size_bytes": 270590880,
+      "sha256": "2fa3f013dcdd7b99f9b237717fa0b12d75bbb89984cc1274be1471a465bac9c2",
       "max_context": 8192,
       "notes": "Second-smallest. Lets us compare 135M vs 360M scaling on the same architecture."
     },
@@ -351,7 +370,8 @@
       "hf_repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
       "hf_file": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
       "target_dir": "Qwen2.5-0.5B",
-      "size_bytes": 400000000,
+      "size_bytes": 491400032,
+      "sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
       "max_context": 32768,
       "notes": "Pre-reasoning Qwen2.5 baseline at 0.5B. Direct numerical comparison to Qwen3-0.6B with reasoning_mode='off' isolates the family delta."
     },
@@ -364,7 +384,8 @@
       "hf_repo": "unsloth/Qwen3-0.6B-GGUF",
       "hf_file": "Qwen3-0.6B-Q4_K_M.gguf",
       "target_dir": "Qwen3-0.6B",
-      "size_bytes": 470000000,
+      "size_bytes": 396705472,
+      "sha256": "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a",
       "max_context": 40960,
       "reasoning_mode": "off",
       "notes": "Qwen3 has a thinking mode that runs an internal chain-of-thought before answering. Forcing 'off' so the bench measures direct token throughput, not internal-deliberation time. With 'on' the eval_tps drops 5-10x because the model 'thinks' before each visible token."
@@ -378,7 +399,8 @@
       "hf_repo": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
       "hf_file": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
       "target_dir": "TinyLlama-1.1B",
-      "size_bytes": 670000000,
+      "size_bytes": 668788096,
+      "sha256": "9fecc3b3cd76bba89d504f29b616eedf7da85b96540e490ca5824d3f7d2776a0",
       "max_context": 2048,
       "notes": "Pre-RoPE Llama architecture, native 2048 ctx. Useful upper-bound on what a tiny dense model can do per second."
     },
@@ -391,7 +413,8 @@
       "hf_repo": "unsloth/Llama-3.2-1B-Instruct-GGUF",
       "hf_file": "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
       "target_dir": "Llama-3.2-1B",
-      "size_bytes": 800000000,
+      "size_bytes": 807694368,
+      "sha256": "3f5a22426976ab26cfe84dba63c1d08391717abb1af893e10f1b2968d862dcc1",
       "max_context": 131072,
       "notes": "Llama 3 family at 1B. Different KV-head topology vs Gemma/Qwen — useful for cross-family scaling comparisons."
     },
@@ -404,7 +427,8 @@
       "hf_repo": "ggml-org/gemma-3-1b-it-GGUF",
       "hf_file": "gemma-3-1b-it-Q4_K_M.gguf",
       "target_dir": "Gemma-3-1B",
-      "size_bytes": 800000000,
+      "size_bytes": 806058240,
+      "sha256": "8ccc5cd1f1b3602548715ae25a66ed73fd5dc68a210412eea643eb20eb75a135",
       "max_context": 32768,
       "template_note": "Gemma uses BOS/EOS conventions that may distort timing if the wrong template is applied. Investigate before adding more Gemma variants.",
       "notes": "Gemma 3 family at 1B. Pre-Gemma-4 reference."
@@ -418,7 +442,8 @@
       "hf_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
       "hf_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
       "target_dir": "Qwen2.5-1.5B",
-      "size_bytes": 1000000000,
+      "size_bytes": 1117320736,
+      "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
       "max_context": 32768,
       "notes": "Mid-size Qwen2.5 dense. Compare to Qwen3-0.6B reasoning-off to see family/architecture scaling at constant compute."
     },
@@ -431,7 +456,8 @@
       "hf_repo": "second-state/stablelm-2-zephyr-1.6b-GGUF",
       "hf_file": "stablelm-2-zephyr-1_6b-Q4_K_M.gguf",
       "target_dir": "StableLM-2-1.6B",
-      "size_bytes": 1000000000,
+      "size_bytes": 1031442432,
+      "sha256": "4224a8a08417e34d5a224efb1291491c4f5762b46aa012021adaf0a0578848e2",
       "max_context": 4096,
       "notes": "Stability AI's small reference. 4k native ctx limits Tier A sweep to the first candidate."
     },
@@ -444,7 +470,8 @@
       "hf_repo": "HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
       "hf_file": "smollm2-1.7b-instruct-q4_k_m.gguf",
       "target_dir": "SmolLM2-1.7B",
-      "size_bytes": 1100000000,
+      "size_bytes": 1055609536,
+      "sha256": "decd2598bc2c8ed08c19adc3c8fdd461ee19ed5708679d1c54ef54a5a30d4f33",
       "max_context": 8192,
       "notes": "Largest SmolLM2. 135M -> 360M -> 1.7B sweep on the same architecture."
     },
@@ -457,7 +484,8 @@
       "hf_repo": "bartowski/granite-3.0-2b-instruct-GGUF",
       "hf_file": "granite-3.0-2b-instruct-Q4_K_M.gguf",
       "target_dir": "Granite-3.0-2B",
-      "size_bytes": 1500000000,
+      "size_bytes": 1601919680,
+      "sha256": "06e5f1fdb176a2d79a2f33febfbbd521935fc0c00573326e91439b7d21e89df0",
       "max_context": 4096,
       "notes": "IBM Granite 3.0 at 2B. Distinct architecture (GQA + sliding-window attention)."
     },
@@ -470,7 +498,8 @@
       "hf_repo": "bartowski/gemma-2-2b-it-GGUF",
       "hf_file": "gemma-2-2b-it-Q4_K_M.gguf",
       "target_dir": "Gemma-2-2B",
-      "size_bytes": 1700000000,
+      "size_bytes": 1708582752,
+      "sha256": "e0aee85060f168f0f2d8473d7ea41ce2f3230c1bc1374847505ea599288a7787",
       "max_context": 8192,
       "template_note": "Gemma uses BOS/EOS conventions that may distort timing if the wrong template is applied. Investigate before adding more Gemma variants.",
       "notes": "Gemma 2 generation at 2B. Bench differences vs Gemma 3 / 4 isolate the architecture iteration delta."
@@ -484,7 +513,8 @@
       "hf_repo": "TheBloke/phi-2-GGUF",
       "hf_file": "phi-2.Q4_K_M.gguf",
       "target_dir": "Phi-2",
-      "size_bytes": 1700000000,
+      "size_bytes": 1789239136,
+      "sha256": "324356668fa5ba9f4135de348447bb2bbe2467eaa1b8fcfb53719de62fbd2499",
       "max_context": 2048,
       "notes": "Microsoft Phi-2 at 2.7B. 2k native ctx caps Tier A sweep."
     },
@@ -497,7 +527,8 @@
       "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
       "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf",
       "target_dir": "Qwen2.5-3B",
-      "size_bytes": 1900000000,
+      "size_bytes": 2104932768,
+      "sha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
       "max_context": 32768,
       "notes": "Pre-reasoning Qwen2.5 dense at 3B. Comparable to Qwen3-0.6B per active parameter; useful for the 'is thinking worth the compute?' question."
     },
@@ -510,7 +541,8 @@
       "hf_repo": "unsloth/Llama-3.2-3B-Instruct-GGUF",
       "hf_file": "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
       "target_dir": "Llama-3.2-3B",
-      "size_bytes": 2000000000,
+      "size_bytes": 2019377600,
+      "sha256": "6c99cc00ae910f6a532a80022cb4bc1939094527a089c29294b841c0bd87f74d",
       "max_context": 131072,
       "notes": "Llama 3 family at 3B with 128k context. Cross-family scaling vs Qwen2.5-3B (same active params, different KV-head topology)."
     },
@@ -523,7 +555,8 @@
       "hf_repo": "unsloth/Ministral-3-3B-Instruct-2512-GGUF",
       "hf_file": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
       "target_dir": "Ministral-3-3B",
-      "size_bytes": 2000000000,
+      "size_bytes": 2146497824,
+      "sha256": "fd46fc371ff0509bfa8657ac956b7de8534d7d9baaa4947975c0648c3aa397f4",
       "max_context": 262144,
       "notes": "Mistral's small chat model. Big context (256k) for a 3B class."
     },
@@ -536,7 +569,8 @@
       "hf_repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
       "hf_file": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
       "target_dir": "Phi-3.5-mini",
-      "size_bytes": 2400000000,
+      "size_bytes": 2393232672,
+      "sha256": "e4165e3a71af97f1b4820da61079826d8752a2088e313af0c7d346796c38eff5",
       "max_context": 131072,
       "notes": "Microsoft Phi-3.5 mini at ~3.8B. 128k native ctx; bench against Gemma-3-4B at similar size."
     },
@@ -550,6 +584,7 @@
       "hf_file": "Phi-4-mini-reasoning-Q4_K_M.gguf",
       "target_dir": "Phi-4-mini-reasoning",
       "size_bytes": 2491874560,
+      "sha256": "8e923405207ebf1ae1d8bb8ce9452ba8a446321cee42028bf0ceab52b372ed41",
       "max_context": 131072,
       "notes": "Microsoft Phi-4 mini reasoning, quantized by bartowski and mirrored by lmstudio-community. Compact reasoning baseline for the middle preset."
     },
@@ -563,6 +598,7 @@
       "hf_file": "Phi-4-reasoning-plus-Q4_K_M.gguf",
       "target_dir": "Phi-4-reasoning-plus",
       "size_bytes": 9053117120,
+      "sha256": "faf720745e20df40f52ee218be14c72b33070f7aacc508b3fbc61d47f32b4ffe",
       "max_context": 32768,
       "notes": "Microsoft Phi-4 reasoning-plus, packaged by Unsloth. High-tier reasoning baseline; throughput should not be read as quality."
     },
@@ -576,6 +612,7 @@
       "hf_file": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
       "target_dir": "DeepSeek-Coder-V2-Lite-Instruct",
       "size_bytes": 10364416768,
+      "sha256": "603bd3f8a0281d16571da7c08bd661ee17ff0d1be6fcbd1b42242da257ef0bb8",
       "max_context": 163840,
       "notes": "DeepSeek coder MoE-lite baseline, quantized by bartowski. Included as a known upstream coding model, not as a generic community fine-tune."
     },
@@ -588,7 +625,8 @@
       "hf_repo": "ggml-org/gemma-3-4b-it-GGUF",
       "hf_file": "gemma-3-4b-it-Q4_K_M.gguf",
       "target_dir": "Gemma-3-4B",
-      "size_bytes": 2600000000,
+      "size_bytes": 2489757856,
+      "sha256": "882e8d2db44dc554fb0ea5077cb7e4bc49e7342a1f0da57901c0802ea21a0863",
       "max_context": 131072,
       "template_note": "Gemma uses BOS/EOS conventions that may distort timing if the wrong template is applied. Investigate before adding more Gemma variants.",
       "notes": "Gemma 3 family at 4B. Gemma-3 has 128k native ctx (vs Gemma-2's 8k)."
