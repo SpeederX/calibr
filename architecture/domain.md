@@ -90,11 +90,15 @@ not directly comparable to calibrated configs until the launch profile is shown.
 
 ### Control run
 
-A non-winner diagnostic run used for comparison. `vanilla` is the pure
-llama.cpp-default control. `vanilla-adjacent` controls add one launch constraint
+A non-winner diagnostic run used for comparison. `vanilla` is the raw
+llama.cpp-default control. `vanilla-matched` controls add one launch constraint
 at a time near the calibrated context target so calibr can attribute a speed gap
 to context, parallelism, KV-cache precision, or the remaining runtime flags.
-Controls are never launcher winners.
+Matched vanilla controls are preferred for throughput-uplift claims because
+they avoid comparing a small calibrated context against a much larger raw
+llama.cpp default context. Older result files may contain `vanilla-adjacent`;
+that is a legacy alias for matched vanilla. Controls are never launcher
+winners.
 
 ### Winner
 

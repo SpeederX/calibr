@@ -44,12 +44,13 @@ headless experiments, diagnostics, and resuming a specific artifact boundary.
    - derive lineage/series/model/variant metadata;
    - pair sibling multimodal projectors.
 4. **Expand run configs**
-   - add one untuned llama.cpp control per model, excluded from winner
+   - add one raw llama.cpp default control per model, excluded from winner
      selection;
-   - for context-primary models, add vanilla-adjacent diagnostic controls at
-     the largest valid context: ctx-only, ctx+parallel=1, and
+   - for context-primary models, add matched vanilla baselines at the largest
+     valid calibrated context: ctx-only, ctx+parallel=1, and
      ctx+parallel=1+KV cache type. These isolate why llama.cpp defaults may be
-     faster or slower than calibr's fully controlled profile;
+     faster or slower than calibr's fully controlled profile and provide the
+     preferred apples-to-apples uplift reference;
    - quality-first context/KV sweep for models expected to fit: every primary
      context target uses `q8_0/q8_0`; `q4_0/q4_0` is a conditional fallback at
      the same context after direct capacity evidence;
@@ -89,23 +90,25 @@ sets can spend substantial time here before token generation begins.
    - expose both the benchmark leaderboard and retained run logs under the
      CLI's `results` menu.
 
-The vanilla control receives only the model/support assets plus unavoidable
+The raw vanilla control receives only the model/support assets plus unavoidable
 benchmark harness arguments for localhost networking and temporary state. It
 does not receive calibr's base arguments, context size, cache types, GPU-layer
 count, MoE placement, batch/thread tuning, or `--fit off`. It uses the same
 prompt, generation length, request policy, warmup policy, and repeat count as
-the optimized configs. This is a product-value comparison against real
-llama.cpp defaults, not an isolated single-flag microbenchmark; the report
-therefore shows both configurations and labels the claim accordingly. Result
-rows also carry a launch profile: requested context/cache/offload flags plus
-effective slot context, parallelism, offloaded layers, buffer sizes, and Flash
-Attention state parsed from llama-server logs when available.
+the optimized configs. This is a product-value control against real llama.cpp
+defaults, not an isolated single-flag microbenchmark; the report therefore
+shows the launch profile before making claims.
 
-Vanilla-adjacent speed probes sit between pure vanilla and calibrated configs.
-They remain controls and never become launchers. Their sequence deliberately
-adds one constraint at a time so a report can explain gaps like "vanilla is
-faster because default KV/cache or auto-parallelism is better for this model",
-instead of presenting vanilla and calibr as if they were identical profiles.
+Matched vanilla baselines sit between pure vanilla and calibrated configs. They
+remain controls and never become launchers. Their sequence deliberately adds
+one constraint at a time so a report can explain gaps like "vanilla is faster
+because default KV/cache or auto-parallelism is better for this model", instead
+of presenting raw vanilla and calibr as if they were identical profiles. When a
+matched baseline is available, the report uses it before raw vanilla for the
+percentage uplift claim. Result rows also carry a launch profile: requested
+context/cache/offload flags plus effective slot context, parallelism, offloaded
+layers, buffer sizes, and Flash Attention state parsed from llama-server logs
+when available.
 
 Adaptive offload probes reuse the TypeScript llama-server lifecycle and
 hardware sampler. They force `--fit off`, disable warmup and prompt-cache

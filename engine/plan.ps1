@@ -211,7 +211,7 @@ function New-PlanItem {
         [string]$WorkloadKind = "baseline",
         [int]$PrefillTokens = 0,
         [int]$KvFillTokens = 0,
-        [ValidateSet("", "vanilla", "vanilla-adjacent")]
+        [ValidateSet("", "vanilla", "vanilla-matched", "vanilla-adjacent")]
         [string]$ControlKind = "",
         $Calibration = $null,
         [string]$CalibrationId = "",
@@ -523,21 +523,21 @@ function Invoke-Plan {
                     $plan += (New-PlanItem `
                         -meta $m -sweep $sweep -level $level `
                         -extraArgs "--ctx-size $anchorCtx" `
-                        -label "llama_cpp_ctx=${anchorCtx}_default" -idx $idx `
-                        -ControlKind "vanilla-adjacent")
+                        -label "llama_cpp_matched_ctx=${anchorCtx}_default" -idx $idx `
+                        -ControlKind "vanilla-matched")
                     $idx++
                     $plan += (New-PlanItem `
                         -meta $m -sweep $sweep -level $level `
                         -extraArgs "--ctx-size $anchorCtx --parallel 1" `
-                        -label "llama_cpp_ctx=${anchorCtx}_parallel1" -idx $idx `
-                        -ControlKind "vanilla-adjacent")
+                        -label "llama_cpp_matched_ctx=${anchorCtx}_parallel1" -idx $idx `
+                        -ControlKind "vanilla-matched")
                     $idx++
                     if ($supportsCacheK -and $supportsCacheV) {
                         $plan += (New-PlanItem `
                             -meta $m -sweep $sweep -level $level `
                             -extraArgs "--ctx-size $anchorCtx --parallel 1 --cache-type-k $($anchorKv.k) --cache-type-v $($anchorKv.k)" `
-                            -label "llama_cpp_ctx=${anchorCtx}_parallel1_kv=$($anchorKv.k)" -idx $idx `
-                            -ControlKind "vanilla-adjacent")
+                            -label "llama_cpp_matched_ctx=${anchorCtx}_parallel1_kv=$($anchorKv.k)" -idx $idx `
+                            -ControlKind "vanilla-matched")
                         $idx++
                     }
                     $fitArg = if ($calibration -and $calibration.calibrated -and $supportsFit) { " --fit off" } else { "" }

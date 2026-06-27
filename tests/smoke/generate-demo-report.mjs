@@ -104,7 +104,7 @@ for (const md of MODELS) {
   }
 }
 
-// Vanilla control, vanilla-adjacent probes, and prefill/KV-fill load curves
+// Vanilla control, matched vanilla baselines, and prefill/KV-fill load curves
 // for one context-primary model (anchor ctx = 65536), so the comparison radar
 // and the load-curve chart have something to render in the demo. These mirror
 // the planner's diagnostic rows and are excluded from winner selection.
@@ -120,15 +120,15 @@ DATA.push({ ...anchorBase, id:"V_gemma_vanilla", label:"vanilla_llama_cpp", cont
   shared_peak_mib:0, gpu_power_peak_w:138, gpu_temp_peak_c:67, ram_used_peak_mib:1180, gpu_util_avg_pct:90,
   requested_context_size:null, requested_cache_type_k:null, requested_cache_type_v:null, requested_gpu_layers:null,
   effective_context_size:4096, effective_parallel_slots:4, effective_n_parallel:4, flash_attention_state:"auto" });
-// vanilla-adjacent probes: ctx-only, +parallel1, +parallel1+KV.
+// matched vanilla probes: ctx-only, +parallel1, +parallel1+KV.
 const probes = [
   ["_default", "--ctx-size 65536", 52.1, 308],
   ["_parallel1", "--ctx-size 65536 --parallel 1", 49.8, 300],
   ["_parallel1_kv=q8_0", "--ctx-size 65536 --parallel 1 --cache-type-k q8_0 --cache-type-v q8_0", 47.0, 296],
 ];
 for (const [suffix, args, ev, pr] of probes) {
-  DATA.push({ ...anchorBase, id:`VA_gemma${suffix}`, label:`llama_cpp_ctx=${ANCHOR_CTX}${suffix}`,
-    control_kind:"vanilla-adjacent", extra_args:args, prompt_tps:pr, eval_tps:ev,
+  DATA.push({ ...anchorBase, id:`VA_gemma${suffix}`, label:`llama_cpp_matched_ctx=${ANCHOR_CTX}${suffix}`,
+    control_kind:"vanilla-matched", extra_args:args, prompt_tps:pr, eval_tps:ev,
     vram_peak_mib:anchorVram + 900, vram_total_peak_mib:anchorVram + 900, shared_peak_mib:0,
     gpu_power_peak_w:134, gpu_temp_peak_c:66, ram_used_peak_mib:1150,
     requested_context_size:ANCHOR_CTX, effective_context_size:ANCHOR_CTX,

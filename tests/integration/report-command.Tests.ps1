@@ -108,16 +108,16 @@ Describe "report.template.html structure (v1.2 redesign)" {
         Assert-True ($tpl -match "vanilla uses llama.cpp defaults") "vanilla launch-profile caveat missing"
         Assert-True ($tpl -match "!c\.control_kind") "controls must not expose launcher downloads"
     }
-    It "separates vanilla-adjacent probes and load-curve rows from the pickable config table" {
-        Assert-True ($tpl -match 'function isVanillaAdjacent')   "vanilla-adjacent partition helper missing"
+    It "separates matched-vanilla baselines and load-curve rows from the pickable config table" {
+        Assert-True ($tpl -match 'function isVanillaMatched')    "matched-vanilla partition helper missing"
         Assert-True ($tpl -match 'function isWorkloadRow')       "workload-row partition helper missing"
-        Assert-True ($tpl -match "control_kind === 'vanilla-adjacent'") "probe filter missing"
+        Assert-True ($tpl -match "control_kind === 'vanilla-matched'") "matched baseline filter missing"
         Assert-True ($tpl -match 'class="diag-details"')         "collapsed diagnostics container missing"
         Assert-True ($tpl -match 'excluded from winner selection') "diagnostics audit caption missing"
         # Diagnostics audit table must keep the launch-profile and workload context.
         Assert-True ($tpl -match 'Launch profile')               "launch profile retained in diagnostics view"
     }
-    It "renders a vanilla-vs-config comparison radar referenced to the vanilla control" {
+    It "renders a vanilla-vs-config comparison radar referenced to a comparison baseline" {
         Assert-True ($tpl -match 'function comparisonPanel')     "comparison panel helper missing"
         Assert-True ($tpl -match 'function renderRadar')         "radar renderer missing"
         Assert-True ($tpl -match 'function vanillaControlFor')   "vanilla reference selector missing"
@@ -133,7 +133,8 @@ Describe "report.template.html structure (v1.2 redesign)" {
     }
     It "reframes the lean config list with context + KV columns" {
         Assert-True ($tpl -match 'function configIdentity')       "config identity helper missing"
-        Assert-True ($tpl -match 'Baseline default llama.cpp configuration') "vanilla reframing missing"
+        Assert-True ($tpl -match 'Raw llama.cpp default control') "raw vanilla reframing missing"
+        Assert-True ($tpl -match 'Matched vanilla baseline') "matched vanilla reframing missing"
         Assert-True ($tpl -match 'function kvCacheLabel')         "KV cache label helper missing"
         Assert-True ($tpl -match "vanilla'\) return 'f16'")       "vanilla KV should be pinned to llama.cpp default f16"
         Assert-True ($tpl -match 'Context size</th>')             "context-size column missing"
