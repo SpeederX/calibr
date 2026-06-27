@@ -1276,11 +1276,10 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
           setSelectedScopeNames([]);
           setCurrentPresetName("all");
           onSessionChange?.({ currentPreset: "all", customIds: idList, customCtxSizes: ctxSizes && ctxSizes.length > 0 ? ctxSizes : null });
-          // After picking, go straight to the disk gate; the user already
-          // accepted the form's other choices when they hit '> start all'.
-          runGate(idList);
+          setPhase({ kind: "form" });
         }}
         onCancel={() => setPhase({ kind: "form" })}
+        onBackToTiers={openScopeSelector}
       />
     );
   }
