@@ -146,188 +146,77 @@ function Get-ModelMetadata {
     }
 }
 
-function Read-GgufValue {
-    param($Reader, [int]$Type)
-    switch ($Type) {
-        0  { return [uint64]$Reader.ReadByte() }
-        1  { return [int64]$Reader.ReadSByte() }
-        2  { return [uint64]$Reader.ReadUInt16() }
-        3  { return [int64]$Reader.ReadInt16() }
-        4  { return [uint64]$Reader.ReadUInt32() }
-        5  { return [int64]$Reader.ReadInt32() }
-        6  { return [double]$Reader.ReadSingle() }
-        7  { return [bool]$Reader.ReadByte() }
-        8  {
-            $len = [int]$Reader.ReadUInt64()
-            $bytes = $Reader.ReadBytes($len)
-            return [System.Text.Encoding]::UTF8.GetString($bytes)
-        }
-        9  {
-            $itemType = [int]$Reader.ReadUInt32()
-            $count = [int]$Reader.ReadUInt64()
-            for ($i = 0; $i -lt $count; $i++) { [void](Read-GgufValue -Reader $Reader -Type $itemType) }
-            return $null
-        }
-        10 { return $Reader.ReadUInt64() }
-        11 { return $Reader.ReadInt64() }
-        12 { return $Reader.ReadDouble() }
-        default { throw "unknown GGUF value type $Type" }
+function Resolve-TsGgufMetadataScript {
+    if ($env:CALIBR_TS_GGUF_METADATA -eq '0') { return "" }
+    if ($env:CALIBR_TS_GGUF_METADATA_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_GGUF_METADATA_SCRIPT)) {
+        return $env:CALIBR_TS_GGUF_METADATA_SCRIPT
     }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\discover\ggufMetadataCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\discover\ggufMetadataCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
 }
 
-function Skip-GgufValue {
-    param($Reader, [int]$Type)
-    if (-not ('CalibrGgufReader' -as [type])) {
-        Add-Type -TypeDefinition @"
-using System;
-using System.IO;
-
-public static class CalibrGgufReader {
-    public static void SkipValue(BinaryReader reader, uint type) {
-        switch (type) {
-            case 0: case 1: case 7: reader.BaseStream.Seek(1, SeekOrigin.Current); return;
-            case 2: case 3: reader.BaseStream.Seek(2, SeekOrigin.Current); return;
-            case 4: case 5: case 6: reader.BaseStream.Seek(4, SeekOrigin.Current); return;
-            case 8:
-                SkipBytes(reader, reader.ReadUInt64());
-                return;
-            case 9:
-                uint itemType = reader.ReadUInt32();
-                ulong count = reader.ReadUInt64();
-                int width = FixedWidth(itemType);
-                if (width > 0) {
-                    SkipBytes(reader, checked(count * (ulong) width));
-                } else {
-                    for (ulong i = 0; i < count; i++) SkipValue(reader, itemType);
-                }
-                return;
-            case 10: case 11: case 12: reader.BaseStream.Seek(8, SeekOrigin.Current); return;
-            default: throw new InvalidDataException("Unknown GGUF value type " + type);
-        }
-    }
-
-    private static int FixedWidth(uint type) {
-        switch (type) {
-            case 0: case 1: case 7: return 1;
-            case 2: case 3: return 2;
-            case 4: case 5: case 6: return 4;
-            case 10: case 11: case 12: return 8;
-            default: return 0;
-        }
-    }
-
-    private static void SkipBytes(BinaryReader reader, ulong count) {
-        if (count > long.MaxValue) throw new InvalidDataException("GGUF value is too large");
-        reader.BaseStream.Seek((long) count, SeekOrigin.Current);
-    }
-}
-"@
-    }
-    [CalibrGgufReader]::SkipValue($Reader, [uint32]$Type)
-}
-function Get-GgufHeaderMetadata {
+function Read-TsGgufHeader {
+    # Single-file GGUF header via the Node reader (@huggingface/gguf). Throws if
+    # the build is missing - no PowerShell fallback.
     param([string]$Path)
-    $out = @{
-        architecture = $null
-        context_length = $null
-        block_count = $null
-        tensor_count = 0
-        tensor_data_offset = $null
-        tensor_bytes = $null
-        global_tensor_bytes = $null
-        expert_tensor_bytes = $null
-        block_tensor_bytes = @()
+    $reader = Resolve-TsGgufMetadataScript
+    if (-not $reader) {
+        throw "Node GGUF reader build not found. Run 'npm run build' in cli/ (expected dist/engine/discover/ggufMetadataCli.js)."
     }
-    $fs = $null
-    $br = $null
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    $out = & $node $reader --path $Path 2>&1
+    $json = @($out | Where-Object { $_ -and $_.ToString().TrimStart().StartsWith('{') } | Select-Object -Last 1)
+    if ($json.Count -eq 0) { throw "Node GGUF reader produced no result for $Path" }
+    return ConvertTo-Hashtable -obj ($json[0] | ConvertFrom-Json)
+}
+
+function Set-GgufHeaderCacheFromPaths {
+    # Batch-read every header in one Node call and cache it by path so
+    # Get-GgufHeaderMetadata becomes a lookup (no per-file spawn) during discover.
+    param([string[]]$Paths)
+    if ($null -eq $script:GgufHeaderCache) { $script:GgufHeaderCache = @{} }
+    if (-not $Paths -or $Paths.Count -eq 0) { return }
+    $reader = Resolve-TsGgufMetadataScript
+    if (-not $reader) {
+        throw "Node GGUF reader build not found. Run 'npm run build' in cli/ (expected dist/engine/discover/ggufMetadataCli.js)."
+    }
+    $payloadPath = Join-Path $script:CALIBR_DATA_DIR ("gguf-paths-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
     try {
-        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        $br = [System.IO.BinaryReader]::new($fs)
-        $magic = [System.Text.Encoding]::ASCII.GetString($br.ReadBytes(4))
-        if ($magic -ne "GGUF") { return $out }
-        [void]$br.ReadUInt32() # version
-        $tensorCountRaw = $br.ReadUInt64()
-        if ($tensorCountRaw -gt [int]::MaxValue) { return $out }
-        $tensorCount = [int]$tensorCountRaw
-        $out.tensor_count = $tensorCount
-        $kvCount = [int]$br.ReadUInt64()
-        $alignment = 32
-        for ($i = 0; $i -lt $kvCount; $i++) {
-            $keyLen = [int]$br.ReadUInt64()
-            $key = [System.Text.Encoding]::UTF8.GetString($br.ReadBytes($keyLen))
-            $type = [int]$br.ReadUInt32()
-            $wanted = ($key -eq "general.architecture" -or $key -eq "general.alignment" -or
-                $key -match '\.context_length$' -or $key -match '\.block_count$')
-            if (-not $wanted) {
-                Skip-GgufValue -Reader $br -Type $type
-                continue
-            }
-            $value = Read-GgufValue -Reader $br -Type $type
-            if ($key -eq "general.architecture" -and $value) { $out.architecture = [string]$value }
-            if ($key -match '\.context_length$' -and $null -ne $value) { $out.context_length = [int64]$value }
-            if ($key -match '\.block_count$' -and $null -ne $value) { $out.block_count = [int]$value }
-            if ($key -eq "general.alignment" -and $null -ne $value -and [int]$value -gt 0) { $alignment = [int]$value }
-        }
-
-        # Offset deltas give the stored tensor span, including alignment, and
-        # avoid duplicating ggml's evolving quantization type table.
-        $tensors = @()
-        for ($i = 0; $i -lt $tensorCount; $i++) {
-            $nameLen = [int]$br.ReadUInt64()
-            $name = [System.Text.Encoding]::UTF8.GetString($br.ReadBytes($nameLen))
-            $nDims = [int]$br.ReadUInt32()
-            for ($d = 0; $d -lt $nDims; $d++) { [void]$br.ReadUInt64() }
-            [void]$br.ReadUInt32() # ggml_type
-            $tensors += @{ name = $name; offset = [uint64]$br.ReadUInt64() }
-        }
-
-        $directoryEnd = [int64]$fs.Position
-        $padding = ($alignment - ($directoryEnd % $alignment)) % $alignment
-        $dataStart = $directoryEnd + $padding
-        if ($dataStart -gt $fs.Length) { return $out }
-        $out.tensor_data_offset = $dataStart
-
-        $ordered = @($tensors | Sort-Object { [uint64]$_.offset })
-        $blockBytes = @{}
-        $blockExpertBytes = @{}
-        [int64]$globalBytes = 0
-        [int64]$expertBytes = 0
-        [int64]$tensorBytes = 0
-        for ($i = 0; $i -lt $ordered.Count; $i++) {
-            $current = $ordered[$i]
-            [int64]$start = $dataStart + [int64]$current.offset
-            [int64]$end = if ($i + 1 -lt $ordered.Count) { $dataStart + [int64]$ordered[$i + 1].offset } else { $fs.Length }
-            if ($start -lt $dataStart -or $end -lt $start -or $end -gt $fs.Length) { continue }
-            [int64]$bytes = $end - $start
-            $tensorBytes += $bytes
-
-            $blockIndex = $null
-            if ([string]$current.name -match '(?:^|\.)blk\.(\d+)(?:\.|$)') { $blockIndex = [int]$Matches[1] }
-            $isExpert = ([string]$current.name -match '(?:ffn.*_exps|experts?)')
-            if ($null -ne $blockIndex) {
-                if (-not $blockBytes.ContainsKey($blockIndex)) { $blockBytes[$blockIndex] = [int64]0 }
-                $blockBytes[$blockIndex] = [int64]$blockBytes[$blockIndex] + $bytes
-                if ($isExpert) {
-                    if (-not $blockExpertBytes.ContainsKey($blockIndex)) { $blockExpertBytes[$blockIndex] = [int64]0 }
-                    $blockExpertBytes[$blockIndex] = [int64]$blockExpertBytes[$blockIndex] + $bytes
-                }
-            } else { $globalBytes += $bytes }
-            if ($isExpert) { $expertBytes += $bytes }
-        }
-
-        $out.tensor_bytes = $tensorBytes
-        $out.global_tensor_bytes = $globalBytes
-        $out.expert_tensor_bytes = $expertBytes
-        $out.block_tensor_bytes = @($blockBytes.Keys | Sort-Object | ForEach-Object {
-            @{ block = [int]$_; bytes = [int64]$blockBytes[$_]; expert_bytes = if ($blockExpertBytes.ContainsKey($_)) { [int64]$blockExpertBytes[$_] } else { [int64]0 } }
-        })
-    } catch {
-        return $out
+        # Use an object wrapper instead of a bare array: Windows PowerShell 5.1
+        # serializes a single-element array as a scalar string, which would make
+        # the Node side iterate characters instead of paths. The CLI accepts both
+        # the wrapped shape and the historical bare array for compatibility.
+        [System.IO.File]::WriteAllText(
+            $payloadPath,
+            (ConvertTo-Json -InputObject @{ paths = @($Paths) } -Depth 3),
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        $out = & $node $reader --paths-file $payloadPath 2>&1
+        $json = @($out | Where-Object { $_ -and $_.ToString().TrimStart().StartsWith('{') } | Select-Object -Last 1)
+        if ($json.Count -eq 0) { throw "Node GGUF batch reader produced no result" }
+        $map = ConvertTo-Hashtable -obj ($json[0] | ConvertFrom-Json)
+        foreach ($key in @($map.Keys)) { $script:GgufHeaderCache[$key] = $map[$key] }
     } finally {
-        if ($br) { $br.Dispose() }
-        if ($fs) { $fs.Dispose() }
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
     }
-    return $out
+}
+
+function Get-GgufHeaderMetadata {
+    # GGUF header metadata via the Node reader. Invoke-Discover pre-populates
+    # $script:GgufHeaderCache with one batch call; this returns the cached entry,
+    # or reads the single file via Node on a cache miss.
+    param([string]$Path)
+    if ($script:GgufHeaderCache -and $script:GgufHeaderCache.ContainsKey($Path)) {
+        return $script:GgufHeaderCache[$Path]
+    }
+    return (Read-TsGgufHeader -Path $Path)
 }
 
 function Get-CuratedMetadataForFile {
@@ -364,6 +253,7 @@ function Invoke-DenseOverrideFilter {
 
 function Invoke-Discover {
     $cfg = Get-Config
+    $script:GgufHeaderCache = @{}
     Write-Host "=== discover ===" -ForegroundColor Cyan
     if (-not $cfg.scan_paths -or $cfg.scan_paths.Count -eq 0) {
         throw "scan_paths is empty. Run 'calibr init' or edit config.json."
@@ -379,6 +269,9 @@ function Invoke-Discover {
             Write-Host "  (relative path; resolves against the current working directory)" -ForegroundColor DarkYellow
         }
         $ggufs = @(Get-ChildItem -LiteralPath $base -Filter "*.gguf" -Recurse -File -ErrorAction SilentlyContinue)
+        # One batch Node call reads all headers up front; Get-GgufHeaderMetadata
+        # then resolves from the cache (no per-file spawn).
+        Set-GgufHeaderCacheFromPaths -Paths @($ggufs | ForEach-Object { $_.FullName })
         foreach ($f in $ggufs) {
             $skip = $false
             foreach ($ex in $cfg.exclude_patterns) {

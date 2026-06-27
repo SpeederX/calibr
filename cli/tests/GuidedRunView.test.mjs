@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, policyForBenchmarkScope, scanLocalModelNames } from "../dist/guidedRun/GuidedRunView.js";
+import { buildAllArgs, catalogModelNamesForScope, countGgufModels, isSelectableModelGguf, modelNameFromGgufFileName, policyForBenchmarkScope, reconcileGuidedModelSelection, scanLocalModelNames } from "../dist/guidedRun/GuidedRunView.js";
 
 const base = {
   decision: null, modelFolder: "", fetchCatalog: true, model: null, customIds: "",
@@ -51,6 +51,13 @@ test("catalog model choices can be narrowed by preset scope", () => {
   assert.deepEqual(catalogModelNamesForScope(catalog, presets, "all"), ["High B", "Low A"]);
   assert.deepEqual(catalogModelNamesForScope(catalog, presets, "low"), ["Low A"]);
   assert.deepEqual(catalogModelNamesForScope(catalog, presets, "high"), ["High B"]);
+});
+
+test("stale remembered model selection resets to all models", () => {
+  assert.equal(reconcileGuidedModelSelection(null, ["A"]), null);
+  assert.equal(reconcileGuidedModelSelection("A", ["A", "B"]), "A");
+  assert.equal(reconcileGuidedModelSelection("Deleted", ["A", "B"]), null);
+  assert.equal(reconcileGuidedModelSelection("Deleted", []), null);
 });
 
 test("custom ids used when no model is fixed", () => {

@@ -48,6 +48,7 @@
     "dev": "tsx src/index.tsx",
     "start": "node dist/index.js",
     "uat:stream-overhead": "npm run build && node dist/engine/uat/streamingOverheadUatCli.js",
+    "catalog:refresh": "node scripts/refresh-catalog-metadata.mjs",
     "test:components": "tsc && node scripts/run-component-tests.mjs",
     "test": "npm run build && npm run check-report-winner-policy && node scripts/all-options-keypress-smoke.mjs && node scripts/smoke-install.js && node scripts/run-component-tests.mjs"
   },
@@ -55,6 +56,8 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@huggingface/gguf": "^0.4.2",
+    "@huggingface/hub": "^2.13.2",
     "ink": "^5.0.1",
     "ink-select-input": "^6.0.0",
     "ink-spinner": "^5.0.0",

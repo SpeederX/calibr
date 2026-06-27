@@ -187,133 +187,190 @@ function Get-DownloadDestination {
     return (Join-Path $root $sample.target_dir)
 }
 
+function Resolve-TsModelDownloadScript {
+    if ($env:CALIBR_TS_MODEL_DOWNLOAD -eq '0') { return "" }
+    if ($env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT)) {
+        return $env:CALIBR_TS_MODEL_DOWNLOAD_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\catalog\modelDownloadCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\catalog\modelDownloadCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Invoke-TsModelDownload {
+    # Spawns the Node downloader (resume + integrity + atomic rename). The
+    # download/skip decision is made by file validity, NOT $Force - re-running
+    # benchmarks must never re-download an already-valid model. Returns the
+    # parsed result hashtable, or $null when Node could not run (caller then
+    # falls back to the PowerShell path).
+    param(
+        [Parameter(Mandatory)][string]$Repo,
+        [Parameter(Mandatory)][string]$File,
+        [Parameter(Mandatory)][string]$DestPath,
+        [Parameter(Mandatory)][string]$Script
+    )
+    $payload = @{
+        repo        = $Repo
+        file        = $File
+        destPath    = $DestPath
+        calibrOwned = [bool](Test-DownloadedByCalibr -Path $DestPath)
+    }
+    $payloadPath = Join-Path $script:CALIBR_DATA_DIR ("model-download-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    try {
+        [System.IO.File]::WriteAllText(
+            $payloadPath,
+            ($payload | ConvertTo-Json -Depth 5),
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        $lastJson = $null
+        & $node $Script --json-file $payloadPath 2>&1 | ForEach-Object {
+            $line = $_.ToString()
+            $trimmed = $line.TrimStart()
+            if ($trimmed.StartsWith('[')) {
+                Write-Host $line          # pass [phase]/[dlprog]/[dldone] through to the CLI
+            } elseif ($trimmed.StartsWith('{')) {
+                $lastJson = $line
+            }
+        }
+        if (-not $lastJson) { return $null }
+        $result = ConvertTo-Hashtable -obj ($lastJson | ConvertFrom-Json)
+        switch ([string]$result.action) {
+            'skip'                { Write-Host ("  [skip] already present: {0} ({1})" -f $DestPath, (Format-HumanSize ([long]$result.bytes))) -ForegroundColor DarkGray }
+            'user-owned-mismatch' { Write-Host ("  [keep] {0}" -f $result.reason) -ForegroundColor Yellow }
+            default {
+                if ($result.ok) { Write-Host ("  [done] {0} ({1})" -f $DestPath, (Format-HumanSize ([long]$result.bytes))) -ForegroundColor Green }
+                else            { Write-Host ("  [FAIL] {0}" -f $result.reason) -ForegroundColor Red }
+            }
+        }
+        return $result
+    } catch {
+        Write-Host ("  [download] Node downloader error: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Get-DownloadRoot {
+    param($cfg)
+    if ($Destination) { return $Destination }
+    if ($cfg.scan_paths -and $cfg.scan_paths.Count -gt 0) { return $cfg.scan_paths[0] }
+    return $CALIBR_DOWNLOADED_MODELS_DIR
+}
+
+function Resolve-TsModelIntakeScript {
+    if ($env:CALIBR_TS_MODEL_INTAKE -eq '0') { return "" }
+    if ($env:CALIBR_TS_MODEL_INTAKE_SCRIPT -and (Test-Path -LiteralPath $env:CALIBR_TS_MODEL_INTAKE_SCRIPT)) {
+        return $env:CALIBR_TS_MODEL_INTAKE_SCRIPT
+    }
+    $candidates = @(
+        (Join-Path $script:CALIBR_ROOT "cli\dist\engine\catalog\modelIntakeCli.js"),
+        (Join-Path (Split-Path $script:CALIBR_ROOT -Parent) "dist\engine\catalog\modelIntakeCli.js")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) { return $candidate }
+    }
+    return ""
+}
+
+function Invoke-TsCatalogPlan {
+    # Upfront pre-pass over the scope: returns @{ items; total; toDownload;
+    # transferBytes } or $null when the Node intake could not run.
+    param([object[]]$Entries, [string]$DestRoot, [string]$Script)
+    $payload = @{
+        entries = @($Entries | ForEach-Object {
+            @{ id = $_.id; hf_repo = $_.hf_repo; hf_file = $_.hf_file; target_dir = $_.target_dir; size_bytes = $_.size_bytes }
+        })
+        destRoot = $DestRoot
+    }
+    $payloadPath = Join-Path $script:CALIBR_DATA_DIR ("catalog-plan-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+        $out = & $node $Script --mode plan --json-file $payloadPath 2>&1
+        $json = @($out | Where-Object { $_ -and $_.ToString().TrimStart().StartsWith('{') } | Select-Object -Last 1)
+        if ($json.Count -eq 0) { return $null }
+        return ConvertTo-Hashtable -obj ($json[0] | ConvertFrom-Json)
+    } catch {
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-TsCatalogIntake {
+    # Per-model intake (download-if-missing + read header + signature) for one
+    # catalog entry. Passes through [phase]/[dlprog]/[dldone]/[warn] markers and
+    # returns @{ ok; metadata; downloaded; errorKind; error } or $null when the
+    # Node intake could not run (caller falls back to the PowerShell path).
+    param([object]$Entry, [string]$DestRoot, [string]$Script)
+    $modelPath = Join-Path (Join-Path $DestRoot $Entry.target_dir) $Entry.hf_file
+    $payload = @{
+        entry = @{
+            id = $Entry.id
+            hf_repo = $Entry.hf_repo
+            hf_file = $Entry.hf_file
+            target_dir = $Entry.target_dir
+            size_bytes = $Entry.size_bytes
+            sha256 = $Entry.sha256
+            reasoning_mode = $Entry.reasoning_mode
+            template_note = $Entry.template_note
+        }
+        destRoot = $DestRoot
+        calibrOwned = [bool](Test-DownloadedByCalibr -Path $modelPath)
+        telemetry = $false
+    }
+    $payloadPath = Join-Path $script:CALIBR_DATA_DIR ("model-intake-{0}.json" -f [guid]::NewGuid().ToString('N'))
+    $node = if ($env:CALIBR_NODE) { $env:CALIBR_NODE } else { 'node' }
+    try {
+        [System.IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+        $lastJson = $null
+        & $node $Script --mode intake --json-file $payloadPath 2>&1 | ForEach-Object {
+            $line = $_.ToString(); $trimmed = $line.TrimStart()
+            if ($trimmed.StartsWith('[')) { Write-Host $line }
+            elseif ($trimmed.StartsWith('{')) { $lastJson = $line }
+        }
+        if (-not $lastJson) { return $null }
+        return ConvertTo-Hashtable -obj ($lastJson | ConvertFrom-Json)
+    } catch {
+        Write-Host ("  [intake] Node error: {0}" -f $_.Exception.Message) -ForegroundColor Red
+        return $null
+    } finally {
+        Remove-Item -LiteralPath $payloadPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-HFDownload {
-    # Downloads a single file from HuggingFace using HttpWebRequest with a
-    # manual byte-counting loop, so we can emit `[dlprog]` progress markers
-    # the CLI parses for the live download bar. Invoke-WebRequest is fully
-    # synchronous in PS 5.1 with no usable per-byte progress signal (the
-    # built-in progress UI is unusably slow), hence the lower-level path.
-    # Returns $true on success/skip, $false on failure.
+    # Download one file from Hugging Face via the Node downloader (resume +
+    # integrity + atomic rename; it creates the destination dir and emits the
+    # [dlprog]/[dldone] markers). Returns $true on success/skip, $false on a
+    # download failure; throws if the Node build is missing. $ExpectedBytes is
+    # kept for signature compatibility - the Node side gets the authoritative
+    # size from Hugging Face.
     param(
         [string]$Repo,
         [string]$File,
         [string]$DestPath,
         [long]$ExpectedBytes = 0
     )
-    $url = "https://huggingface.co/$Repo/resolve/main/$File"
-    $destDir = Split-Path $DestPath -Parent
-    if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
 
-    if ((Test-Path $DestPath) -and (-not $Force)) {
-        $actual = (Get-Item $DestPath).Length
-        if ($ExpectedBytes -gt 0 -and $actual -eq $ExpectedBytes) {
-            Write-Host ("  [skip] already present: $DestPath ({0})" -f (Format-HumanSize $actual)) -ForegroundColor DarkGray
-            Write-TraceEvent -Action "start > download model" -Status "skipped" `
-                -Message "start > download model skipped: file already present" `
-                -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $actual }
-            return $true
-        }
-        if ($ExpectedBytes -eq 0) {
-            Write-Host ("  [skip] already present: $DestPath ({0})" -f (Format-HumanSize $actual)) -ForegroundColor DarkGray
-            Write-TraceEvent -Action "start > download model" -Status "skipped" `
-                -Message "start > download model skipped: file already present" `
-                -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $actual }
-            return $true
-        }
-        Write-Host ("  [resume] partial file at $DestPath ({0}/{1}); -Force to restart" -f (Format-HumanSize $actual), (Format-HumanSize $ExpectedBytes)) -ForegroundColor Yellow
+    # Node-only download: real HTTP Range resume, size+sha integrity, atomic
+    # .part -> final rename, and a skip decision by file validity (not $Force).
+    # No PowerShell fallback by design - if the Node build is missing or the
+    # download fails, surface it (throw) instead of masking the problem.
+    $tsScript = Resolve-TsModelDownloadScript
+    if (-not $tsScript) {
+        throw "Node downloader build not found. Run 'npm run build' in cli/ (expected dist/engine/catalog/modelDownloadCli.js)."
     }
-
-    Write-Host "  [download] $url" -ForegroundColor Cyan
-    Write-Host "             -> $DestPath"
-    # Phase marker so the CLI switches the per-config flow widget to the
-    # download bar. Match in RunView.tsx PHASE_RE.
-    Write-Host "[phase] downloading"
-    Write-TraceEvent -Action "start > download model" -Status "started" `
-        -Message "start > download model started" `
-        -Details @{ repo = $Repo; file = $File; url = $url; path = $DestPath; expectedBytes = $ExpectedBytes }
-
-    $req = $null
-    $resp = $null
-    $rspStream = $null
-    $fileStream = $null
-    try {
-        # HF requires TLS 1.2+. PS 5.1's default SecurityProtocol is Ssl3+Tls.
-        # Without this the HttpWebRequest throws on the TLS handshake.
-        [System.Net.ServicePointManager]::SecurityProtocol = `
-            [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12
-
-        $req = [System.Net.HttpWebRequest]::Create($url)
-        $req.UserAgent = "calibr/0.1 (+https://github.com/SpeederX/calibr)"
-        $req.AllowAutoRedirect = $true   # HF redirects to the CDN
-        $req.Timeout = 30000             # 30 s for connection / TLS handshake
-        $req.ReadWriteTimeout = 60000    # 60 s for any single read
-
-        $resp = $req.GetResponse()
-        $total = [long]$resp.ContentLength
-        if ($total -le 0 -and $ExpectedBytes -gt 0) { $total = $ExpectedBytes }
-
-        $rspStream = $resp.GetResponseStream()
-        $fileStream = [System.IO.File]::Create($DestPath)
-
-        $bufferSize = 65536
-        $buffer = New-Object byte[] $bufferSize
-        $totalBytes = 0L
-        $start = [System.Diagnostics.Stopwatch]::StartNew()
-        $lastEmitMs = 0L
-        $lastEmitBytes = 0L
-        $inv = [System.Globalization.CultureInfo]::InvariantCulture
-
-        while (($read = $rspStream.Read($buffer, 0, $bufferSize)) -gt 0) {
-            $fileStream.Write($buffer, 0, $read)
-            $totalBytes += $read
-
-            $nowMs = $start.ElapsedMilliseconds
-            if (($nowMs - $lastEmitMs) -ge 200) {
-                $deltaMs = $nowMs - $lastEmitMs
-                $deltaBytes = $totalBytes - $lastEmitBytes
-                # Instant MiB/s. InvariantCulture so '.' is the decimal point
-                # even on Italian Windows (Number("23,4") in JS is NaN).
-                $speed = if ($deltaMs -gt 0) { ($deltaBytes / 1048576.0) * 1000.0 / $deltaMs } else { 0.0 }
-                $speedStr = $speed.ToString("F2", $inv)
-                Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $total, $speedStr, $nowMs)
-                $lastEmitMs = $nowMs
-                $lastEmitBytes = $totalBytes
-            }
-        }
-        $fileStream.Close(); $fileStream = $null
-        $rspStream.Close(); $rspStream = $null
-        $resp.Close(); $resp = $null
-
-        # Final emit so the CLI lands on exactly 100% rather than the last
-        # interior tick. elapsed_ms is meaningful for the "avg speed" line.
-        $avgSpeed = if ($start.ElapsedMilliseconds -gt 0) {
-            ($totalBytes / 1048576.0) * 1000.0 / $start.ElapsedMilliseconds
-        } else { 0.0 }
-        $avgStr = $avgSpeed.ToString("F2", $inv)
-        Write-Host ("[dlprog] bytes={0} total={1} speed_mibps={2} elapsed_ms={3}" -f $totalBytes, $totalBytes, $avgStr, $start.ElapsedMilliseconds)
-        Write-Host ("[dldone] bytes={0} elapsed_ms={1} avg_mibps={2}" -f $totalBytes, $start.ElapsedMilliseconds, $avgStr)
-
-        Write-Host ("  [done]  {0} in {1}s ({2} MiB/s avg)" -f (Format-HumanSize $totalBytes), [math]::Round($start.ElapsedMilliseconds / 1000.0, 1), $avgStr) -ForegroundColor Green
-        Write-TraceEvent -Action "start > download model" -Status "completed" `
-            -Message "start > download model completed" `
-            -Details @{ repo = $Repo; file = $File; path = $DestPath; bytes = $totalBytes; elapsedMs = $start.ElapsedMilliseconds; avgMibps = $avgStr }
-        return $true
-    } catch {
-        Write-Host ("  [FAIL]  {0}" -f $_.Exception.Message) -ForegroundColor Red
-        Write-TraceEvent -Action "start > download model" -Status "failed" `
-            -Message "start > download model failed" `
-            -Details @{ repo = $Repo; file = $File; url = $url; path = $DestPath; error = $_.Exception.Message }
-        # Best-effort cleanup of a partial file that the caller can't recover.
-        if ($fileStream) { try { $fileStream.Close() } catch {} }
-        if ((Test-Path $DestPath) -and (Get-Item $DestPath).Length -eq 0) {
-            Remove-Item $DestPath -Force -ErrorAction SilentlyContinue
-        }
-        return $false
-    } finally {
-        if ($fileStream) { try { $fileStream.Dispose() } catch {} }
-        if ($rspStream)  { try { $rspStream.Dispose() }  catch {} }
-        if ($resp)       { try { $resp.Close() }         catch {} }
-    }
+    $tsResult = Invoke-TsModelDownload -Repo $Repo -File $File -DestPath $DestPath -Script $tsScript
+    if ($null -eq $tsResult) { throw "Node downloader produced no result for $Repo/$File" }
+    return [bool]$tsResult.ok
 }
 
 function Invoke-FetchModels {

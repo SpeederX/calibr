@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { resolve } from "node:path";
@@ -162,6 +162,11 @@ export function catalogModelNamesForScope(
     .map(e => e.model)
     .filter(Boolean))]
     .sort();
+}
+
+export function reconcileGuidedModelSelection(current: string | null, choices: string[]): string | null {
+  if (current === null) return null;
+  return choices.includes(current) ? current : null;
 }
 
 function compactPath(path: string, max = 58): string {
@@ -408,6 +413,13 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     return scopedCatalogModels;
   }, [currentPreset, fetchCatalog, localModels, scopedCatalogModels]);
   const modelChoices = useMemo<(string | null)[]>(() => [null, ...models], [models]);
+  useEffect(() => {
+    const nextModel = reconcileGuidedModelSelection(model, models);
+    if (nextModel !== model) {
+      setModel(nextModel);
+      onSessionChange?.({ model: nextModel });
+    }
+  }, [model, models, onSessionChange]);
   const presetCount = (() => {
     if (currentPreset === "custom") return null;
     const p = presets[currentPreset];

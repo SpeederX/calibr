@@ -73,8 +73,75 @@ Describe "Workflow benchmark scope by source" {
     }
 }
 
+Describe "Workflow empty local-folder handling" {
+    It "bench cycle exits cleanly before plan/bench/report when discover finds no models" {
+        $origCatalog = $script:CALIBR_CATALOG
+        $origPlan = $script:CALIBR_PLAN
+        $tmpCatalog = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-empty-catalog-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $tmpPlan = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-empty-plan-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $script:CALIBR_CATALOG = $tmpCatalog
+        $script:CALIBR_PLAN = $tmpPlan
+        $script:planCalled = $false
+        $script:benchCalled = $false
+        function Invoke-Discover { "[]" | Out-File -Encoding utf8 $script:CALIBR_CATALOG }
+        function Invoke-Plan { $script:planCalled = $true }
+        function Invoke-Bench { $script:benchCalled = $true }
+        try {
+            $ran = Invoke-WorkflowBenchCycle -PlanningPolicy (New-PlanningPolicy)
+            Assert-Equal $false $ran
+            Assert-Equal $false $script:planCalled
+            Assert-Equal $false $script:benchCalled
+        } finally {
+            $script:CALIBR_CATALOG = $origCatalog
+            $script:CALIBR_PLAN = $origPlan
+            Remove-Item -LiteralPath $tmpCatalog,$tmpPlan -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "bench cycle exits cleanly before bench/report when planning yields no configs" {
+        $origCatalog = $script:CALIBR_CATALOG
+        $origPlan = $script:CALIBR_PLAN
+        $tmpCatalog = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-one-catalog-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $tmpPlan = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-empty-plan-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $script:CALIBR_CATALOG = $tmpCatalog
+        $script:CALIBR_PLAN = $tmpPlan
+        $script:benchCalled = $false
+        function Invoke-Discover { '[{"model":"M"}]' | Out-File -Encoding utf8 $script:CALIBR_CATALOG }
+        function Invoke-Plan { "[]" | Out-File -Encoding utf8 $script:CALIBR_PLAN }
+        function Invoke-Bench { $script:benchCalled = $true }
+        try {
+            $ran = Invoke-WorkflowBenchCycle -PlanningPolicy (New-PlanningPolicy)
+            Assert-Equal $false $ran
+            Assert-Equal $false $script:benchCalled
+        } finally {
+            $script:CALIBR_CATALOG = $origCatalog
+            $script:CALIBR_PLAN = $origPlan
+            Remove-Item -LiteralPath $tmpCatalog,$tmpPlan -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "local all skips report when the bench cycle has nothing to run" {
+        $script:reportCalled = $false
+        function Ensure-WorkflowEngine {}
+        function Invoke-WorkflowBenchCycle { return $false }
+        function Invoke-Report { $script:reportCalled = $true }
+        $script:FetchCatalog = $false
+        $script:ContextSizes = ""
+        $script:WorkloadSweep = "baseline"
+
+        Invoke-All
+
+        Assert-Equal $false $script:reportCalled
+    }
+}
+
 Describe "Workflow state cleanup" {
     It "restores outer catalog filters when a catalog entry fails" {
+        # Make the workflow proceed to the loop without spawning node for the pre-pass.
+        function Resolve-TsModelIntakeScript { return "x" }
+        function Get-Config { return @{} }
+        function Get-DownloadRoot { param($cfg) return "/root" }
+        function Invoke-TsCatalogPlan { param($Entries, $DestRoot, $Script) return $null }
         function Invoke-CatalogEntry {
             $script:CatalogId = "temporary-id"
             $script:Model = "temporary-model"
@@ -92,6 +159,81 @@ Describe "Workflow state cleanup" {
 
         Assert-Equal "outer-id" $script:CatalogId
         Assert-Equal "outer-model" $script:Model
+    }
+}
+
+Describe "Catalog entry intake (lean, no fallback)" {
+    It "Invoke-CatalogWorkflow throws when no Node intake build is present" {
+        function Resolve-TsModelIntakeScript { return "" }
+        Assert-Throws {
+            Invoke-CatalogWorkflow `
+                -CatalogEntries @([pscustomobject]@{ id = "e"; model = "M" }) `
+                -PlanningPolicy (New-PlanningPolicy)
+        } "Node intake build not found"
+    }
+
+    It "uses Node intake and skips the per-entry discover when an intake script is present" {
+        $origCatalog = $script:CALIBR_CATALOG
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-intake-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $script:CALIBR_CATALOG = $tmp
+        $script:discoverCalled = $false; $script:planCalled = $false; $script:benchCalled = $false
+        function Get-Config { return @{} }
+        function Get-DownloadRoot { param($cfg) return "/root" }
+        function Invoke-TsCatalogIntake { param($Entry, $DestRoot, $Script) return @{ ok = $true; downloaded = $false; metadata = @{ model = "M"; path = "/root/M/m.gguf"; size_bytes = 1; mmproj = $null } } }
+        function Invoke-Discover { $script:discoverCalled = $true }
+        function Invoke-FetchModels { $script:discoverCalled = $true }
+        function Invoke-Plan { $script:planCalled = $true; $script:planModelAtCall = $script:Model }
+        function Invoke-Bench { $script:benchCalled = $true }
+        function Add-MoeWorkloadDiagnostics { return 0 }
+        $script:CatalogId = ""
+        $script:Model = "Qwen3.5-0.8B"   # stale filter from a previous entry
+        try {
+            Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript "x"
+            Assert-Equal $false $script:discoverCalled    # no per-entry full discover
+            Assert-Equal $true $script:planCalled
+            Assert-Equal "" $script:planModelAtCall       # plan not filtered by the previous model
+            Assert-Equal $true $script:benchCalled
+        } finally {
+            $script:CALIBR_CATALOG = $origCatalog
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It "throws (no PowerShell fallback) when intake produces no result" {
+        function Get-Config { return @{} }
+        function Get-DownloadRoot { param($cfg) return "/root" }
+        function Invoke-TsCatalogIntake { param($Entry, $DestRoot, $Script) return $null }
+        function Invoke-Plan {}
+        function Invoke-Bench {}
+        function Add-MoeWorkloadDiagnostics { return 0 }
+        $script:CatalogId = ""; $script:Model = ""
+        Assert-Throws {
+            Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript "x"
+        } "intake produced no result"
+    }
+
+    It "skips the model (no plan/bench) when intake reports an error" {
+        $origCatalog = $script:CALIBR_CATALOG
+        $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("calibr-intake-{0}.json" -f [guid]::NewGuid().ToString('N'))
+        $script:CALIBR_CATALOG = $tmp
+        $script:planCalled = $false; $script:benchCalled = $false
+        function Get-Config { return @{} }
+        function Get-DownloadRoot { param($cfg) return "/root" }
+        function Invoke-TsCatalogIntake { param($Entry, $DestRoot, $Script) return @{ ok = $false; error = "GGUF signature mismatch" } }
+        function Invoke-Discover {}
+        function Invoke-FetchModels {}
+        function Invoke-Plan { $script:planCalled = $true }
+        function Invoke-Bench { $script:benchCalled = $true }
+        function Add-MoeWorkloadDiagnostics { return 0 }
+        $script:CatalogId = ""; $script:Model = ""
+        try {
+            Invoke-CatalogEntry -Entry ([pscustomobject]@{ id = "e"; model = "M" }) -Number 1 -Total 1 -PlanningPolicy (New-PlanningPolicy) -IntakeScript "x"
+            Assert-Equal $false $script:planCalled
+            Assert-Equal $false $script:benchCalled
+        } finally {
+            $script:CALIBR_CATALOG = $origCatalog
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
