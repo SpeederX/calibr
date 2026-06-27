@@ -403,6 +403,29 @@ Remaining open items:
   the vanilla control; a model with many context candidates is still a tall list
   inside the collapsed diagnostics.
 
+### Intake & guided-run UX follow-ups (2026-06, after the Node intake migration)
+
+The lean per-model intake (catalog mode: download/light-match/signature in Node,
+no per-entry rescan) shipped. Next:
+
+- **Custom scope + single-model selector in guided run.** Scope only exposes the
+  4 tiers + `all`; wire the existing `CustomScopeView` (searchable model + ctx
+  checkboxes) so a user can pick exact models. Also a **multi-tier** selector (pick
+  several tiers at once), not just one. The maintainer flagged this as unlocking a
+  lot. See [[custom-scope-feature]].
+- **Leaderboard 2-model radar compare.** In the Complete session leaderboard, a
+  checkbox to mark **max 2** models and compare them on the star/radar chart;
+  first marked = baseline, with a double-arrow to swap the POV.
+- **Bad-signature interactive prompt (Case C).** A present local file that does not
+  match the catalog (size/signature) is currently flagged with a `[warn]` in the
+  pre-pass and re-downloaded. The maintainer prefers an **immediate blocking action
+  request** ("file X has a bad signature — re-download? skip?") before the run.
+  Needs an Ink-side gate (run the pre-pass in the CLI, prompt, pass the decision to
+  the engine). Alternative: accumulate all bad files and ask once at the start.
+- **Local-folder batch reader.** `discover.ps1` (local-folder mode) still uses the
+  PowerShell GGUF parser; wire the Node batch reader (one call over the folder) and
+  retire `Get-GgufHeaderMetadata` once trusted. Perf nicety, not a fix.
+
 ### CPU + RAM as first-class metrics
 
 GPU metrics are strong; CPU and system RAM still need to become first-class
