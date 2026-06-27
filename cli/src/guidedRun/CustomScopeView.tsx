@@ -11,18 +11,20 @@ interface Props {
   // contributes the model selection and, in v2, the context-size set.
   onSubmit: (catalogIdList: string, contextSizes?: number[]) => void;
   onCancel: () => void;
+  onBackToTiers?: () => void;
 }
 
 // The default context sweep (mirrors config.context_candidates). The user
 // cross-products the checked ctx sizes with the checked models.
 const CTX_OPTIONS = [16384, 32768, 65536, 131072, 262144];
+const MODEL_PAGE_SIZE = 12;
 const ctxLabel = (n: number) => `${Math.round(n / 1024)}k`;
 
 type Mode = "nav" | "search" | "savePrompt";
 
 // CustomScopeView v2: typed search filter + model checkboxes + context-size
 // checkboxes (cross-product = bench scope) + save-as-user-preset.
-export function CustomScopeView({ onSubmit, onCancel }: Props) {
+export function CustomScopeView({ onSubmit, onCancel, onBackToTiers }: Props) {
   const catalog = useMemo<CatalogEntry[]>(readModelCatalog, []);
   const [checkedModels, setCheckedModels] = useState<Set<string>>(() => new Set());
   const [checkedCtx, setCheckedCtx] = useState<Set<number>>(() => new Set(CTX_OPTIONS)); // all on = full sweep
@@ -41,11 +43,19 @@ export function CustomScopeView({ onSubmit, onCancel }: Props) {
     );
   }, [catalog, query]);
 
-  // Flat navigable list: [filtered models] [ctx options] [submit].
+  // Flat navigable list: [filtered models] [ctx options] [apply] [back to tiers].
   const ctxStart = filtered.length;
   const submitIdx = filtered.length + CTX_OPTIONS.length;
-  const total = submitIdx + 1;
+  const backToTiersIdx = submitIdx + 1;
+  const total = backToTiersIdx + 1;
   const clampedCursor = Math.min(cursor, total - 1);
+  const modelWindowStart = (() => {
+    if (filtered.length <= MODEL_PAGE_SIZE) return 0;
+    if (clampedCursor >= ctxStart) return 0;
+    const centered = clampedCursor - Math.floor(MODEL_PAGE_SIZE / 2);
+    return Math.max(0, Math.min(filtered.length - MODEL_PAGE_SIZE, centered));
+  })();
+  const visibleModels = filtered.slice(modelWindowStart, modelWindowStart + MODEL_PAGE_SIZE);
 
   const selectedIds = catalog.filter(e => checkedModels.has(e.id)).map(e => e.id);
   const ctxAllOn = checkedCtx.size === CTX_OPTIONS.length;
@@ -102,7 +112,8 @@ export function CustomScopeView({ onSubmit, onCancel }: Props) {
       const c = clampedCursor;
       if (c < ctxStart) { const e = filtered[c]; if (e) toggleModel(e.id); }
       else if (c < submitIdx) { toggleCtx(CTX_OPTIONS[c - ctxStart]); }
-      else { submit(); }
+      else if (c === submitIdx) { submit(); }
+      else { (onBackToTiers ?? onCancel)(); }
     }
   });
 
@@ -122,7 +133,11 @@ export function CustomScopeView({ onSubmit, onCancel }: Props) {
 
       <Box marginTop={1} flexDirection="column">
         {filtered.length === 0 && <Text dimColor>  (no models match the filter)</Text>}
-        {filtered.map((e, i) => {
+        {filtered.length > MODEL_PAGE_SIZE && modelWindowStart > 0 && (
+          <Text dimColor>  ... {modelWindowStart} model{modelWindowStart === 1 ? "" : "s"} above</Text>
+        )}
+        {visibleModels.map((e, localIdx) => {
+          const i = modelWindowStart + localIdx;
           const selected = clampedCursor === i;
           const mark = checkedModels.has(e.id) ? "[x]" : "[ ]";
           const tag = e.sweep_hint ? `[${e.sweep_hint}]` : "";
@@ -133,6 +148,11 @@ export function CustomScopeView({ onSubmit, onCancel }: Props) {
             </Text>
           );
         })}
+        {filtered.length > MODEL_PAGE_SIZE && modelWindowStart + MODEL_PAGE_SIZE < filtered.length && (
+          <Text dimColor>
+            {"  "}... {filtered.length - (modelWindowStart + MODEL_PAGE_SIZE)} model{filtered.length - (modelWindowStart + MODEL_PAGE_SIZE) === 1 ? "" : "s"} below
+          </Text>
+        )}
       </Box>
 
       <Box marginTop={1} flexDirection="column">
@@ -151,7 +171,13 @@ export function CustomScopeView({ onSubmit, onCancel }: Props) {
 
       <Box marginTop={1}>
         <Text color={clampedCursor === submitIdx ? "cyan" : (selectedIds.length > 0 ? "green" : "gray")} inverse={clampedCursor === submitIdx}>
-          {clampedCursor === submitIdx ? "> " : "  "}{">"} bench selected ({selectedIds.length} model{selectedIds.length === 1 ? "" : "s"} × {checkedCtx.size} ctx, ~{totalGB.toFixed(1)} GB)
+          {clampedCursor === submitIdx ? "> " : "  "}{">"} apply selected ({selectedIds.length} model{selectedIds.length === 1 ? "" : "s"} × {checkedCtx.size} ctx, ~{totalGB.toFixed(1)} GB)
+        </Text>
+      </Box>
+
+      <Box>
+        <Text color={clampedCursor === backToTiersIdx ? "cyan" : undefined} inverse={clampedCursor === backToTiersIdx}>
+          {clampedCursor === backToTiersIdx ? "> " : "  "}{">"} back to tiers
         </Text>
       </Box>
 
@@ -161,7 +187,7 @@ export function CustomScopeView({ onSubmit, onCancel }: Props) {
       )}
 
       <Box marginTop={1} flexDirection="column">
-        <Text dimColor>↑/↓ move · space/enter toggle · / search · a all · x none · s save preset · enter on submit · q/esc back</Text>
+        <Text dimColor>↑/↓ move/scroll · space/enter toggle/apply · / search · a all matches · x none · s save preset · q/esc guided run</Text>
       </Box>
     </Box>
   );

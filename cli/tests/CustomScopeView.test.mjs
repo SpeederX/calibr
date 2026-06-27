@@ -17,7 +17,9 @@ test("renders models, the context-size set and the submit row", async () => {
   assert.match(f, /context sizes/);
   assert.match(f, /16k/);
   assert.match(f, /256k/);
-  assert.match(f, /bench selected/);
+  assert.match(f, /apply selected/);
+  assert.match(f, /back to tiers/);
+  assert.match(f, /models below/);
   unmount();
 });
 
@@ -33,5 +35,28 @@ test("'/' enters search mode and live-narrows the catalog", async () => {
   const f = lastFrame();
   assert.match(f, /search: qwen/);
   assert.match(f, /match/);     // shows "<n>/<total> match"
+  unmount();
+});
+
+test("back to tiers is an explicit action distinct from guided-run cancel", async () => {
+  let back = false;
+  let cancel = false;
+  const { stdin, unmount } = render(
+    React.createElement(CustomScopeView, {
+      onSubmit: () => {},
+      onCancel: () => { cancel = true; },
+      onBackToTiers: () => { back = true; },
+    })
+  );
+  await tick();
+  // Move through models, context options, apply, then onto "back to tiers".
+  for (let i = 0; i < 80; i++) {
+    stdin.write("\x1B[B");
+    await tick(5);
+  }
+  stdin.write("\r");
+  await tick(40);
+  assert.equal(back, true);
+  assert.equal(cancel, false);
   unmount();
 });
