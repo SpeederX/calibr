@@ -685,7 +685,7 @@ export function ReportBenchView({ args, label, trace, onExit }: Props) {
         <Box marginTop={1}>
           {compact ? (
             <Text color="cyan">
-              live · GPU {live.gpu_mem} MiB / {live.gpu_util}% · CPU {live.cpu_util}% · RAM Δ {live.ram_used} MiB
+              live · GPU {live.gpu_mem} MiB / {live.gpu_pow.toFixed(0)} W / {live.gpu_temp}°C / {live.gpu_util}% · CPU {live.cpu_util}% · RAM Δ {live.ram_used} MiB
             </Text>
           ) : (
             <Text color="cyan">

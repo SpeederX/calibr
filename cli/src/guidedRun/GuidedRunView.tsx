@@ -6,7 +6,7 @@ import {
   CALIBR_CATALOG,
   readModelCatalog,
   filterCatalog,
-  downloadFootprintBytes,
+  catalogDownloadPlanBytes,
   freeBytesOn,
   downloadDestination,
   formatBytes,
@@ -300,8 +300,11 @@ export function buildAllArgs(o: AllArgsOpts): { args: string[]; label: string } 
   } else if (o.fetchCatalog && o.currentPreset !== "all" && o.currentPreset !== "custom") {
     args.push("-Preset", o.currentPreset); parts.push(`-Preset ${o.currentPreset}`);
   }
-  if (o.contextSizes && o.contextSizes.length > 0) {
-    const csv = o.contextSizes.join(",");
+  const customContextSizes = o.fetchCatalog && o.customIds && o.contextSizes && o.contextSizes.length > 0
+    ? o.contextSizes
+    : null;
+  if (customContextSizes) {
+    const csv = customContextSizes.join(",");
     args.push("-ContextSizes", csv); parts.push(`-ContextSizes ${csv}`);
   }
   if (o.workloadSweep !== "baseline") {
@@ -345,6 +348,8 @@ type Phase =
       kind: "gate";
       required: number;
       totalDownload: number;
+      cachedCount: number;
+      toDownload: number;
       available: number;
       entryCount: number;
       sufficient: boolean;
@@ -515,8 +520,9 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
 
   // Build args. rerunAll toggles -Force; chosen after the cache prompt
   // (or unconditionally false if the cache is empty and the prompt is skipped).
+  const contextSizesForRun = customIds && customCtxSizes && customCtxSizes.length > 0 ? customCtxSizes : null;
   const buildArgs = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision) =>
-    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: customCtxSizes, workloadSweep: scopePolicy.workloadSweep, fullSpeedCurve: scopePolicy.fullSpeedCurve });
+    buildAllArgs({ decision, modelFolder: destination, fetchCatalog, model, customIds, currentPreset, runs, downloadRetention, preferSpeed, minimalPolling, vramUsageWarningPct, rerunAll, contextSizes: contextSizesForRun, workloadSweep: scopePolicy.workloadSweep, fullSpeedCurve: scopePolicy.fullSpeedCurve });
 
   const traceForRun = (rerunAll: boolean, decision: LlamaDecision | null = llamaDecision): TraceContext => {
     const setup = llamaConfigured
@@ -545,7 +551,7 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
         preset: currentPreset,
         model,
         customIds,
-        contextSizes: customCtxSizes,
+        contextSizes: contextSizesForRun,
         benchmarkScope,
         workloadSweep: scopePolicy.workloadSweep,
         fullSpeedCurve: scopePolicy.fullSpeedCurve,
@@ -589,13 +595,15 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
 
   const runGate = (pickedIds?: string) => {
     const filtered = catalogScopeForGate(pickedIds);
-    const { totalBytes, maxFileBytes } = downloadFootprintBytes(filtered);
+    const { totalBytes, maxFileBytes, cachedCount, toDownload } = catalogDownloadPlanBytes(filtered, destination);
     const available = freeBytesOn(destination);
     const required = maxFileBytes;
     setPhase({
       kind: "gate",
       required,
       totalDownload: totalBytes,
+      cachedCount,
+      toDownload,
       available,
       entryCount: filtered.length,
       sufficient: available < 0 ? false : available >= required,
@@ -651,12 +659,12 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
     setCurrentPresetName(nextPreset);
     setSelectedScopeNames(nextCustomIds ? nextScopes : [nextPreset]);
     setCustomIds(nextCustomIds);
-    setCustomCtxSizes(nextCustomIds ? customCtxSizes : null);
+    setCustomCtxSizes(null);
     setModel(nextModel);
     onSessionChange?.({
       currentPreset: nextPreset,
       customIds: nextCustomIds,
-      customCtxSizes: nextCustomIds ? customCtxSizes : null,
+      customCtxSizes: null,
       model: nextModel,
     });
     setPhase({ kind: "form" });
@@ -1232,6 +1240,8 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
         <Box marginTop={1} flexDirection="column">
           <Text>destination: <Text color="cyan">{destination}</Text></Text>
           <Text>catalog entries in scope: <Text color="cyan">{phase.entryCount}</Text></Text>
+          <Text>already available locally: <Text color="green">{phase.cachedCount}</Text></Text>
+          <Text>files to download: <Text color={phase.toDownload > 0 ? "yellow" : "green"}>{phase.toDownload}</Text></Text>
           <Text>total download transfer: <Text color="cyan">{formatBytes(phase.totalDownload)}</Text></Text>
           <Text>peak disk working-set (largest single file): <Text color="cyan">{formatBytes(phase.required)}</Text></Text>
           <Text>free on destination: <Text color={sufficient ? "green" : "red"}>{formatBytes(phase.available)}</Text></Text>
@@ -1239,7 +1249,8 @@ export function GuidedRunView({ onRun, onCancel, session, onSessionChange }: Pro
         <Box marginTop={1}>
           {sufficient ? (
             <Text color="yellow">
-              The campaign will transfer {formatBytes(phase.totalDownload)} in total.
+              The campaign will transfer {formatBytes(phase.totalDownload)} in total
+              {phase.cachedCount > 0 ? ` (${phase.cachedCount} already cached).` : "."}
               Rotation will hold up to {formatBytes(phase.required)} on disk at peak
               (one model at a time). Proceed?
             </Text>

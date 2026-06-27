@@ -47,15 +47,18 @@ export interface PlanConfig {
     } | null;
   };
   bench?: { n_predict?: number | null };
-  context_candidates?: Array<{
-    ctx: number;
-    kv?: string;
-    kv_k?: string;
-    kv_v?: string;
-    rescue?: boolean;
-  }> | null;
+  context_candidates?: ContextCandidate[] | null;
   max_context_cap?: number | null;
   base_args?: string | null;
+}
+
+interface ContextCandidate {
+  ctx: number;
+  kv?: string;
+  kv_k?: string;
+  kv_v?: string;
+  rescue?: boolean;
+  fromModelMax?: boolean;
 }
 
 export interface CatalogEntry {
@@ -288,7 +291,8 @@ export function invokePlan(
   presets: Record<string, Preset>,
   opts: PlanOptions = {},
 ): PlanItem[] {
-  let globalCtxCap = asInt(cfg.max_context_cap);
+  const absoluteCtxCap = asInt(cfg.max_context_cap);
+  let globalCtxCap = absoluteCtxCap;
   if (opts.presetMaxCtx && opts.presetMaxCtx > 0 && (globalCtxCap === 0 || opts.presetMaxCtx < globalCtxCap)) {
     globalCtxCap = opts.presetMaxCtx;
   }
@@ -324,9 +328,13 @@ export function invokePlan(
     const perModelCap = name && contextMap[name] ? contextMap[name] : asInt(meta.gguf_context_length);
     plan.push(newPlanItem(meta, sweep, level, "", "vanilla_llama_cpp", {}, "vanilla"));
     if (sweep === "context") {
-      let modelCandidates = ctxCandidates;
-      if (!ctxOverride && perModelCap > 0 && (globalCtxCap === 0 || perModelCap <= globalCtxCap)
-        && !ctxCandidates.some((candidate) => candidate.ctx === perModelCap)) {
+      let modelCandidates = !ctxOverride && perModelCap > 0
+        ? ctxCandidates.map((candidate) => candidate.ctx === perModelCap
+          ? { ...candidate, fromModelMax: true }
+          : candidate)
+        : ctxCandidates;
+      if (!ctxOverride && perModelCap > 0 && testCtxAllowedForModel(perModelCap, absoluteCtxCap, perModelCap)
+        && !modelCandidates.some((candidate) => candidate.ctx === perModelCap)) {
         const next = ctxCandidates.find((candidate) => candidate.ctx > perModelCap);
         const fallback = ctxCandidates.at(-1);
         const inherited = contextCandidateKv(next ?? fallback ?? { kv: "q8_0" });
@@ -334,10 +342,11 @@ export function invokePlan(
           ctx: perModelCap,
           kv_k: inherited.k,
           kv_v: inherited.v,
+          fromModelMax: true,
         }].sort((a, b) => a.ctx - b.ctx);
       }
       const validCandidates = modelCandidates.filter((candidate) =>
-        testCtxAllowedForModel(candidate.ctx, globalCtxCap, perModelCap));
+        testCtxAllowedForModel(candidate.ctx, candidate.fromModelMax ? absoluteCtxCap : globalCtxCap, perModelCap));
       for (const candidate of validCandidates) {
         const kv = contextCandidateKv(candidate);
         const label = `ctx=${candidate.ctx}_${kv.label}`;

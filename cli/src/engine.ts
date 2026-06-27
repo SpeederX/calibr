@@ -3,6 +3,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSyn
 import { basename, delimiter, dirname, join, resolve, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { groupWinners, isSafe as winnerIsSafe, type WinnerWithMeta } from "./engine/results/winnerPolicy.js";
+import { planCatalogIntake } from "./engine/catalog/modelIntake.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1181,6 +1182,27 @@ export function downloadFootprintBytes(entries: CatalogEntry[]): { totalBytes: n
     if (b > max) max = b;
   }
   return { totalBytes: total, maxFileBytes: max };
+}
+
+export function catalogDownloadPlanBytes(entries: CatalogEntry[], destRoot: string): {
+  totalBytes: number;
+  maxFileBytes: number;
+  cachedCount: number;
+  toDownload: number;
+} {
+  const summary = planCatalogIntake(entries, destRoot, {
+    exists: existsSync,
+    sizeBytes: (path) => {
+      try { return statSync(path).size; } catch { return 0; }
+    },
+    join,
+  });
+  return {
+    totalBytes: summary.transferBytes,
+    maxFileBytes: summary.items.reduce((max, item) => Math.max(max, item.transferBytes), 0),
+    cachedCount: summary.total - summary.toDownload,
+    toDownload: summary.toDownload,
+  };
 }
 
 // ---------------------------------------------------------------------------

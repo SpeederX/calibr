@@ -194,6 +194,11 @@ ctx+parallel=1+KV cache type. Their job is to explain whether a vanilla/calibr
 speed gap comes from context, auto-parallelism, KV-cache precision, or calibr's
 remaining base runtime flags.
 
+Preset context caps limit the regular sweep, but calibr keeps one model
+max-context anchor when the model/catalog declares it and the global config cap
+allows it. This avoids comparing a low-tier 32K calibrated run with a raw
+llama.cpp default profile that may have loaded the same model at 126K/262K.
+
 The report uses the matched vanilla baseline for the selected config's absolute
 and percentage throughput uplift when it is available, falling back to the raw
 llama.cpp default control only when no matched baseline exists. If the

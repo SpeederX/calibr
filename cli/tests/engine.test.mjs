@@ -24,6 +24,28 @@ test("download footprint separates total transfer from peak disk working-set", (
   });
 });
 
+test("catalog download plan counts only missing or mismatched files as transfer", () => {
+  const root = mkdtempSync(join(tmpdir(), "calibr-download-plan-"));
+  try {
+    mkdirSync(join(root, "cached"), { recursive: true });
+    mkdirSync(join(root, "wrong"), { recursive: true });
+    writeFileSync(join(root, "cached", "ok.gguf"), Buffer.alloc(10));
+    writeFileSync(join(root, "wrong", "bad.gguf"), Buffer.alloc(3));
+    assert.deepEqual(engine.catalogDownloadPlanBytes([
+      { id: "cached", target_dir: "cached", hf_file: "ok.gguf", size_bytes: 10 },
+      { id: "wrong", target_dir: "wrong", hf_file: "bad.gguf", size_bytes: 20 },
+      { id: "missing", target_dir: "missing", hf_file: "new.gguf", size_bytes: 30 },
+    ], root), {
+      totalBytes: 50,
+      maxFileBytes: 30,
+      cachedCount: 1,
+      toDownload: 2,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("list/delete cached llama.cpp builds under CALIBR_DATA_DIR", () => {
   const binName = process.platform === "win32" ? "llama-server.exe" : "llama-server";
   const flavorDir = join(dataDir, "llama-bin", "b9360", "vulkan");

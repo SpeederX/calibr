@@ -344,7 +344,8 @@ function Invoke-Plan {
     }
     $base = $cfg.base_args + $threadsArg
 
-    $globalCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
+    $absoluteCtxCap = if ($null -ne $cfg.max_context_cap) { [int]$cfg.max_context_cap } else { 0 }
+    $globalCtxCap = $absoluteCtxCap
     if ($null -eq $PlanningPolicy) {
         $PlanningPolicy = New-PlanningPolicy `
             -ContextSizes (ConvertTo-ContextSizeList -Value $ContextSizes) `
@@ -467,19 +468,41 @@ function Invoke-Plan {
             "context" {
                 $skipped = 0
                 $modelCandidates = @($ctxCandidates)
+                if (-not $ctxOverride -and $perModelCap -gt 0) {
+                    $modelCandidates = @($modelCandidates | ForEach-Object {
+                        $candidate = $_
+                        if ([int]$candidate.ctx -eq $perModelCap) {
+                            $clone = [ordered]@{}
+                            if ($candidate -is [System.Collections.IDictionary]) {
+                                foreach ($key in $candidate.Keys) {
+                                    $clone[$key] = $candidate[$key]
+                                }
+                            } else {
+                                foreach ($property in $candidate.PSObject.Properties) {
+                                    $clone[$property.Name] = $property.Value
+                                }
+                            }
+                            $clone.from_model_max = $true
+                            [pscustomobject]$clone
+                        } else {
+                            $candidate
+                        }
+                    })
+                }
                 if (-not $ctxOverride -and $perModelCap -gt 0 -and
-                    ($globalCtxCap -eq 0 -or $perModelCap -le $globalCtxCap) -and
-                    @($ctxCandidates | Where-Object { [int]$_.ctx -eq $perModelCap }).Count -eq 0) {
+                    (Test-CtxAllowedForModel -Ctx $perModelCap -GlobalCap $absoluteCtxCap -PerModelCap $perModelCap) -and
+                    @($modelCandidates | Where-Object { [int]$_.ctx -eq $perModelCap }).Count -eq 0) {
                     $next = @($ctxCandidates | Where-Object { [int]$_.ctx -gt $perModelCap } | Sort-Object { [int]$_.ctx } | Select-Object -First 1)
                     $fallback = @($ctxCandidates | Sort-Object { [int]$_.ctx } | Select-Object -Last 1)
                     $source = if ($next.Count -gt 0) { $next[0] } elseif ($fallback.Count -gt 0) { $fallback[0] } else { @{ kv = 'q8_0' } }
                     $kv = Get-CompatibleContextCandidateKv -Candidate $source -Capabilities $llamaCapabilities
-                    $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv_k = $kv.k; kv_v = $kv.v })
+                    $modelCandidates = @($ctxCandidates) + @(@{ ctx = $perModelCap; kv_k = $kv.k; kv_v = $kv.v; from_model_max = $true })
                     $modelCandidates = @($modelCandidates | Sort-Object { [int]$_.ctx })
                 }
                 $validCandidates = @()
                 foreach ($c in $modelCandidates) {
-                    if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $globalCtxCap -PerModelCap $perModelCap)) {
+                    $candidateGlobalCap = if ($c.from_model_max) { $absoluteCtxCap } else { $globalCtxCap }
+                    if (-not (Test-CtxAllowedForModel -Ctx ([int]$c.ctx) -GlobalCap $candidateGlobalCap -PerModelCap $perModelCap)) {
                         $skipped++
                         continue
                     }
@@ -561,7 +584,12 @@ function Invoke-Plan {
                     }
                 }
                 if ($skipped -gt 0 -and $perModelCap -gt 0) {
-                    Write-Host ("  skipped {0} context candidates above {1}'s max_context ({2})" -f $skipped, $m.model, $perModelCap) -ForegroundColor DarkGray
+                    $skipReason = if ($globalCtxCap -gt 0 -and $globalCtxCap -lt $perModelCap) {
+                        "above active context cap ($globalCtxCap); kept max-context anchor $perModelCap"
+                    } else {
+                        "above $($m.model)'s max_context ($perModelCap)"
+                    }
+                    Write-Host ("  skipped {0} regular context candidates {1}" -f $skipped, $skipReason) -ForegroundColor DarkGray
                 }
             }
             "moe-cpu" {
