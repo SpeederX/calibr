@@ -174,6 +174,31 @@ test("invokePlan keeps the model max-context anchor for vanilla comparison", () 
     && p.label.includes("llama_cpp_matched_ctx=131072_parallel1_kv=q8_0")));
 });
 
+test("invokePlan keeps the model max-context anchor when it is already a default candidate", () => {
+  const maxCandidateCfg = {
+    ...cfg,
+    context_candidates: [
+      { ctx: 16384, kv: "q8_0" },
+      { ctx: 32768, kv: "q8_0" },
+      { ctx: 65536, kv: "q8_0" },
+      { ctx: 131072, kv: "q8_0" },
+      { ctx: 262144, kv: "q8_0" },
+    ],
+  };
+  const plan = invokePlan(
+    [{ ...catalog[0], gguf_context_length: 262144 }],
+    maxCandidateCfg,
+    [],
+    presets,
+    { presetMaxCtx: 32768 },
+  );
+  const labels = plan.filter((p) => !p.control_kind).map((p) => p.label);
+  assert.ok(labels.includes("Qwen3.5-4B Q4_K_M @ ctx=32768_kv=q8_0"));
+  assert.ok(labels.includes("Qwen3.5-4B Q4_K_M @ ctx=262144_kv=q8_0"));
+  assert.ok(plan.some((p) => p.control_kind === "vanilla-matched"
+    && p.label.includes("llama_cpp_matched_ctx=262144_parallel1_kv=q8_0")));
+});
+
 test("long-context candidates keep q8 primary and generate same-context q4 rescue", () => {
   assert.deepEqual(contextCandidateKv({ kv: "q8_0" }), {
     k: "q8_0", v: "q8_0", label: "kv=q8_0",
