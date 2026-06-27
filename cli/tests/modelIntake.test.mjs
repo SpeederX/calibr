@@ -145,3 +145,33 @@ test("intakeModel: offline remote leaves signature unverified but proceeds", asy
   assert.equal(res.ok, true);
   assert.equal(res.signatureUnverified, true);
 });
+
+test("intakeModel: present file matching the catalog size skips download", async () => {
+  const res = await intakeModel(
+    { entry: { ...entry, size_bytes: 18800000000 }, destRoot: "/models" },
+    {
+      ensurePresent: async () => { throw new Error("must not download a size-matching file"); },
+      readLocalHeader: async () => READABLE,
+      readRemoteHeader: async () => null,
+      fs: makeFs(true), // sizeBytes() === 18800000000
+    },
+  );
+  assert.equal(res.ok, true);
+  assert.equal(res.downloaded, false);
+});
+
+test("intakeModel: present file with the wrong size re-downloads (size-based)", async () => {
+  let downloaded = false;
+  const res = await intakeModel(
+    { entry: { ...entry, size_bytes: 18800000000 }, destRoot: "/models" },
+    {
+      ensurePresent: async () => { downloaded = true; return { ok: true }; },
+      readLocalHeader: async () => READABLE,
+      readRemoteHeader: async () => null,
+      fs: { ...makeFs(true), sizeBytes: () => 999 }, // present but wrong size
+    },
+  );
+  assert.equal(downloaded, true);
+  assert.equal(res.ok, true);
+  assert.equal(res.downloaded, true);
+});

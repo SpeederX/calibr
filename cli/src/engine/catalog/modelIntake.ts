@@ -215,6 +215,8 @@ export interface IntakeResult {
   metadata?: ModelMetadata;
   errorKind?: IntakeErrorKind;
   error?: string;
+  /** Whether the file was actually fetched now (so the caller can tag the manifest). */
+  downloaded?: boolean;
   /** Set when the remote header could not be read (offline): signature unverified. */
   signatureUnverified?: boolean;
 }
@@ -240,9 +242,20 @@ export async function intakeModel(payload: IntakePayload, deps: IntakeDeps): Pro
   const { fs } = deps;
   const path = fs.join(destRoot, entry.target_dir, entry.hf_file);
 
-  if (!fs.exists(path)) {
+  // Light, no-network cache decision: download only if the file is missing or its
+  // size doesn't match the exact catalog size. A valid cached file is never
+  // re-fetched (and never hits the network).
+  const exists = fs.exists(path);
+  const cache = lightCacheMatch({
+    exists,
+    localSize: exists ? fs.sizeBytes(path) : 0,
+    catalogSize: entry.size_bytes ?? null,
+  });
+  let downloaded = false;
+  if (!cache.cached) {
     const dl = await deps.ensurePresent(path, entry);
     if (!dl.ok) return { ok: false, errorKind: "download_failed", error: dl.reason ?? "download failed" };
+    downloaded = true;
   }
 
   const local = await deps.readLocalHeader(path);
@@ -263,5 +276,5 @@ export async function intakeModel(payload: IntakePayload, deps: IntakeDeps): Pro
     deps.onWarn?.(`could not read remote header for ${entry.hf_repo}/${entry.hf_file}; signature left unverified`);
   }
 
-  return { ok: true, metadata: buildModelMetadata(path, local, entry, fs), signatureUnverified };
+  return { ok: true, metadata: buildModelMetadata(path, local, entry, fs), downloaded, signatureUnverified };
 }
