@@ -1825,11 +1825,18 @@ function Get-FailureReason {
 
 function Resolve-RetryExhaustedChoice {
     param($item, $failure)
-    if ($NonInteractive -or -not $failure.retry_exhausted) { return 'skip' }
+    if ($NonInteractive -or -not $failure -or -not $failure.retry_exhausted) { return 'skip' }
     Write-Host ""
     Write-Host ("Retries exhausted for {0}: {1}" -f $item.label, $failure.evidence) -ForegroundColor Yellow
     while ($true) {
-        $choice = (Read-Host "[s] skip and continue  [r] retry three more times  [a] abort benchmark").Trim().ToLowerInvariant()
+        $rawChoice = $null
+        try {
+            $rawChoice = Read-Host "[s] skip and continue  [r] retry three more times  [a] abort benchmark"
+        } catch {
+            return 'skip'
+        }
+        if ($null -eq $rawChoice) { return 'skip' }
+        $choice = ([string]$rawChoice).Trim().ToLowerInvariant()
         if (-not $choice -or $choice -eq 's' -or $choice -eq 'skip') { return 'skip' }
         if ($choice -eq 'r' -or $choice -eq 'retry') { return 'retry' }
         if ($choice -eq 'a' -or $choice -eq 'abort') { return 'abort' }

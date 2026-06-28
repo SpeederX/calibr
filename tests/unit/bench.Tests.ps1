@@ -563,6 +563,31 @@ Describe "Get-FailureReason" {
     }
 }
 
+Describe "Resolve-RetryExhaustedChoice" {
+    It "skips safely when there is no failure object" {
+        $orig = $script:NonInteractive
+        try {
+            $script:NonInteractive = $false
+            $choice = Resolve-RetryExhaustedChoice -item @{ label = "x" } -failure $null
+            Assert-Equal "skip" $choice
+        } finally {
+            $script:NonInteractive = $orig
+        }
+    }
+
+    It "skips exhausted failures in non-interactive mode" {
+        $orig = $script:NonInteractive
+        try {
+            $script:NonInteractive = $true
+            $failure = [pscustomobject]@{ retry_exhausted = $true; evidence = "timeout" }
+            $choice = Resolve-RetryExhaustedChoice -item @{ label = "x" } -failure $failure
+            Assert-Equal "skip" $choice
+        } finally {
+            $script:NonInteractive = $orig
+        }
+    }
+}
+
 Describe "Select-PlanForBench" {
     It "returns empty when the plan is empty" {
         $r = @(Select-PlanForBench -plan @())
