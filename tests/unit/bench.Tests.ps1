@@ -103,6 +103,25 @@ Describe "Dynamic vanilla-anchored bench planning" {
         Assert-True ($item.extra_args -match "--parallel 1")
         Assert-Equal "test" $item.dynamic_plan_reason
     }
+
+    It "increments dynamic model status for hashtables and objects" {
+        $filtered = [System.Collections.ArrayList]::new()
+        $known = @{}
+        $item = [pscustomobject]@{
+            id = "dyn"
+            model_path = "x.gguf"
+        }
+
+        $hashStatus = @{ "x.gguf" = @{ needed = 1 } }
+        Assert-True (Add-DynamicPlanItem -Filtered $filtered -ModelStatus $hashStatus -KnownIds $known -Item $item)
+        Assert-Equal 2 $hashStatus["x.gguf"]["needed"]
+
+        $filtered = [System.Collections.ArrayList]::new()
+        $known = @{}
+        $objectStatus = @{ "x.gguf" = [pscustomobject]@{ needed = 1 } }
+        Assert-True (Add-DynamicPlanItem -Filtered $filtered -ModelStatus $objectStatus -KnownIds $known -Item $item)
+        Assert-Equal 2 $objectStatus["x.gguf"].needed
+    }
 }
 
 Describe "Resolve-TsBenchRunnerScript" {

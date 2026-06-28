@@ -2168,9 +2168,24 @@ function Add-DynamicPlanItem {
     $KnownIds[$id] = $true
     $mp = [string]$Item.model_path
     if ($ModelStatus.ContainsKey($mp)) {
-        $ModelStatus[$mp].needed++
+        Increment-ModelStatusNeeded -Status $ModelStatus[$mp]
     }
     return $true
+}
+
+function Increment-ModelStatusNeeded {
+    param($Status)
+    if ($null -eq $Status) { return }
+    if ($Status -is [System.Collections.IDictionary]) {
+        $Status['needed'] = [int]$Status['needed'] + 1
+        return
+    }
+    $prop = $Status.PSObject.Properties['needed']
+    if ($prop) {
+        $prop.Value = [int]$prop.Value + 1
+        return
+    }
+    $Status | Add-Member -NotePropertyName needed -NotePropertyValue 1 -Force
 }
 
 function Test-PlanContainsContextKv {
@@ -2324,7 +2339,7 @@ function Invoke-Bench {
                 rotated     = $false
             }
         }
-        $modelStatus[$mp].needed++
+        Increment-ModelStatusNeeded -Status $modelStatus[$mp]
     }
     $rotatedCount = 0
     $keptCount    = 0
