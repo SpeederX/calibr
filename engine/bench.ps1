@@ -1849,12 +1849,12 @@ function Select-PlanForBench {
         [string]$LevelFilter = "",
         [string]$IdFilter = ""
     )
-    return ,@($plan | Where-Object {
+    $plan | Where-Object {
         $_ -and
         (-not $ModelFilter -or $_.model -match $ModelFilter) -and
         (-not $LevelFilter -or $_.level -eq $LevelFilter) -and
         (-not $IdFilter    -or $_.id    -like $IdFilter)
-    })
+    }
 }
 
 function Get-DownloadRetentionPolicy {
@@ -2390,7 +2390,7 @@ function Invoke-Bench {
                 rotated     = $false
             }
         }
-        Increment-ModelStatusNeeded -Status $modelStatus[$mp]
+        Increment-ModelStatusNeeded -Status $modelStatus[$mp] | Out-Null
     }
     $rotatedCount = 0
     $keptCount    = 0

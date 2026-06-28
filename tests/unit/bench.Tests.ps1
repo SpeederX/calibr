@@ -565,12 +565,12 @@ Describe "Get-FailureReason" {
 
 Describe "Select-PlanForBench" {
     It "returns empty when the plan is empty" {
-        $r = Select-PlanForBench -plan @()
+        $r = @(Select-PlanForBench -plan @())
         Assert-Equal 0 $r.Count
     }
     It "returns the single matching entry when no filters are set" {
         $plan = @(@{ model = "Qwen3.5-9B"; level = "high"; id = "T001" })
-        $r = Select-PlanForBench -plan $plan
+        $r = @(Select-PlanForBench -plan $plan)
         Assert-Equal 1 $r.Count
         Assert-Equal "Qwen3.5-9B" $r[0].model
     }
@@ -579,7 +579,7 @@ Describe "Select-PlanForBench" {
             @{ model = "Qwen3.5-9B"; level = "high" }
             @{ model = "Gemma-4-E2B"; level = "low" }
         )
-        $r = Select-PlanForBench -plan $plan -ModelFilter "Qwen"
+        $r = @(Select-PlanForBench -plan $plan -ModelFilter "Qwen")
         Assert-Equal 1 $r.Count
         Assert-Equal "Qwen3.5-9B" $r[0].model
     }
@@ -588,9 +588,19 @@ Describe "Select-PlanForBench" {
             @{ model = "Qwen3.5-9B"; level = "high" }
             @{ model = "Gemma-4-E2B"; level = "low" }
         )
-        $r = Select-PlanForBench -plan $plan -LevelFilter "low"
+        $r = @(Select-PlanForBench -plan $plan -LevelFilter "low")
         Assert-Equal 1 $r.Count
         Assert-Equal "Gemma-4-E2B" $r[0].model
+    }
+    It "does not return a nested array when the caller wraps the output" {
+        $plan = @(
+            @{ model = "Qwen3.5-9B"; level = "high"; label = "a" }
+            @{ model = "Qwen3.5-4B"; level = "middle"; label = "b" }
+        )
+        $r = @(Select-PlanForBench -plan $plan -ModelFilter "Qwen3\.5")
+        Assert-Equal 2 $r.Count
+        Assert-Equal "a" $r[0].label
+        Assert-Equal "b" $r[1].label
     }
     It "drops phantom \$null entries from the input (regression: empty-plan ContainsKey crash)" {
         # When $plan is empty in PowerShell, `$plan | Where-Object` actually
@@ -598,7 +608,7 @@ Describe "Select-PlanForBench" {
         # array, which downstream then crashed Invoke-Bench's rotation
         # context build with `ContainsKey($null)`. The leading `$_ -and`
         # in Select-PlanForBench filters those nulls back out.
-        $r = Select-PlanForBench -plan @($null)
+        $r = @(Select-PlanForBench -plan @($null))
         Assert-Equal 0 $r.Count
     }
 }
