@@ -122,6 +122,11 @@ Describe "Dynamic vanilla-anchored bench planning" {
         Assert-True (Add-DynamicPlanItem -Filtered $filtered -ModelStatus $objectStatus -KnownIds $known -Item $item)
         Assert-Equal 2 $objectStatus["x.gguf"].needed
     }
+
+    It "does not throw when dynamic model status is null-like" {
+        Assert-False (Increment-ModelStatusNeeded -Status $null)
+        Assert-False (Increment-ModelStatusNeeded -Status @($null))
+    }
 }
 
 Describe "Resolve-TsBenchRunnerScript" {
