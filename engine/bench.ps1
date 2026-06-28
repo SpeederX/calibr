@@ -1950,7 +1950,7 @@ function Remove-DownloadedArtifacts {
             if ($other.model_path -eq $ModelPath) { continue }
             if ($other.mmproj_path -ieq $MmprojPath) {
                 $otherSt = $modelStatus[$other.model_path]
-                if ($otherSt -and -not $otherSt.rotated) {
+                if ($otherSt -and -not (Get-ModelStatusField -Status $otherSt -Name 'rotated' -Default $false)) {
                     $stillNeeded = $true
                     break
                 }
@@ -2045,9 +2045,9 @@ function Invoke-RotationCheck {
     $mp = $item.model_path
     $st = $modelStatus[$mp]
     if (-not $st) { return }
-    if ($st.done -ne $st.needed) { return }
-    if ($st.rotated) { return }
-    $st.rotated = $true
+    if ((Get-ModelStatusField -Status $st -Name 'done' -Default 0) -ne (Get-ModelStatusField -Status $st -Name 'needed' -Default 0)) { return }
+    if (Get-ModelStatusField -Status $st -Name 'rotated' -Default $false) { return }
+    Set-ModelStatusField -Status $st -Name 'rotated' -Value $true | Out-Null
 
     if (-not (Test-DownloadedByCalibr -Path $mp)) {
         # Silent for user-owned files; printing for every model would spam.
@@ -2173,23 +2173,70 @@ function Add-DynamicPlanItem {
     return $true
 }
 
+function Normalize-ModelStatus {
+    param($Status)
+    if ($null -eq $Status) { return $null }
+    if ($Status -is [array]) {
+        if ($Status.Count -eq 0) { return $null }
+        return $Status[0]
+    }
+    return $Status
+}
+
+function Get-ModelStatusField {
+    param(
+        $Status,
+        [string]$Name,
+        $Default = $null
+    )
+    $Status = Normalize-ModelStatus -Status $Status
+    if ($null -eq $Status) { return $Default }
+    if ($Status -is [System.Collections.IDictionary]) {
+        if ($Status.ContainsKey($Name)) { return $Status[$Name] }
+        return $Default
+    }
+    $prop = $Status.PSObject.Properties[$Name]
+    if ($prop) { return $prop.Value }
+    return $Default
+}
+
+function Set-ModelStatusField {
+    param(
+        $Status,
+        [string]$Name,
+        $Value
+    )
+    $Status = Normalize-ModelStatus -Status $Status
+    if ($null -eq $Status) { return $false }
+    if ($Status -is [System.Collections.IDictionary]) {
+        $Status[$Name] = $Value
+        return $true
+    }
+    $prop = $Status.PSObject.Properties[$Name]
+    if ($prop) {
+        $prop.Value = $Value
+        return $true
+    }
+    try {
+        $Status | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Increment-ModelStatusNeeded {
     param($Status)
-    if ($null -eq $Status) { return $false }
-    if ($Status -is [array]) {
-        if ($Status.Count -eq 0 -or $null -eq $Status[0]) { return $false }
-        $Status = $Status[0]
-    }
-    if ($Status -is [System.Collections.IDictionary]) {
-        $Status['needed'] = [int]$Status['needed'] + 1
-        return $true
-    }
-    $prop = $Status.PSObject.Properties['needed']
-    if ($prop) {
-        $prop.Value = [int]$prop.Value + 1
-        return $true
-    }
-    return $false
+    return (Increment-ModelStatusField -Status $Status -Name 'needed')
+}
+
+function Increment-ModelStatusField {
+    param(
+        $Status,
+        [string]$Name
+    )
+    $current = [int](Get-ModelStatusField -Status $Status -Name $Name -Default 0)
+    return (Set-ModelStatusField -Status $Status -Name $Name -Value ($current + 1))
 }
 
 function Test-PlanContainsContextKv {
@@ -2383,14 +2430,14 @@ function Invoke-Bench {
         $profileAbandonmentKey = & $getProfileKey $item
         $workloadAbandonmentKey = & $getWorkloadKey $item
 
-        if ($item.conditional_kind -eq 'kv_rescue') {
+        if (-not $item.control_kind -and [string]$item.conditional_kind -eq 'kv_rescue') {
             $sourceId = [string]$item.conditional_source_id
             $eligible = $sourceId -and $conditionalEligibility.ContainsKey($sourceId) -and $conditionalEligibility[$sourceId]
             if (-not $eligible) {
                 Write-Host ("[SKIP] {0,-55} (same-context KV rescue not needed)" -f $item.label) -ForegroundColor DarkGray
                 $skipCount++
-                $modelStatus[$mp].skip++
-                $modelStatus[$mp].done++
+                Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'skip' | Out-Null
+                Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'done' | Out-Null
                 Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
                 continue
             }
@@ -2401,8 +2448,8 @@ function Invoke-Bench {
             $reason = $dynamicSkipIds[[string]$item.id]
             Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkGray
             $skipCount++
-            $modelStatus[$mp].skip++
-            $modelStatus[$mp].done++
+            Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'skip' | Out-Null
+            Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'done' | Out-Null
             Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
             continue
         }
@@ -2420,8 +2467,8 @@ function Invoke-Bench {
             $reason = $abandoned[$activeAbandonmentKey]
             Write-Host ("[SKIP] {0,-55} ({1})" -f $item.label, $reason) -ForegroundColor DarkYellow
             $skipCount++
-            $modelStatus[$mp].skip++
-            $modelStatus[$mp].done++
+            Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'skip' | Out-Null
+            Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'done' | Out-Null
             Invoke-RotationCheck -item $item -modelStatus $modelStatus -filtered $filtered -rotatedRef ([ref]$rotatedCount) -keptRef ([ref]$keptCount)
             continue
         }
@@ -2466,7 +2513,7 @@ function Invoke-Bench {
         } while ($true)
         if ($r.ok) {
             $okCount++
-            $modelStatus[$mp].ok++
+            Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'ok' | Out-Null
             if ($item.control_kind -eq 'vanilla' -and $item.sweep -eq 'context') {
                 $modelMaxCtx = if ($r.gguf_context_length) { [int]$r.gguf_context_length } elseif ($item.gguf_context_length) { [int]$item.gguf_context_length } else { 0 }
                 $vanillaCtx = if ($r.effective_context_size) { [int]$r.effective_context_size } else { 0 }
@@ -2551,7 +2598,7 @@ function Invoke-Bench {
             }
         } else {
             $failCount++
-            $modelStatus[$mp].fail++
+            Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'fail' | Out-Null
             $failure = Get-RuntimeFailureFromResult -result $r
             if ($item.control_kind -eq 'vanilla' -and $item.sweep -eq 'context' -and $supportsQ40Kv -and (Test-KvRescueEligibility -Result $r)) {
                 $modelMaxCtx = if ($r.gguf_context_length) { [int]$r.gguf_context_length } elseif ($item.gguf_context_length) { [int]$item.gguf_context_length } else { 0 }
@@ -2589,7 +2636,7 @@ function Invoke-Bench {
                 })
             }
         }
-        $modelStatus[$mp].done++
+        Increment-ModelStatusField -Status $modelStatus[$mp] -Name 'done' | Out-Null
 
         if (-not $item.conditional_kind -and $item.sweep -eq 'context' -and
             (-not $item.workload_kind -or $item.workload_kind -eq 'baseline')) {

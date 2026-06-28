@@ -127,6 +127,26 @@ Describe "Dynamic vanilla-anchored bench planning" {
         Assert-False (Increment-ModelStatusNeeded -Status $null)
         Assert-False (Increment-ModelStatusNeeded -Status @($null))
     }
+
+    It "updates all mutable model-status fields through safe helpers" {
+        $hash = @{ skip = 0; done = 0; ok = 0; fail = 0; rotated = $false }
+        Assert-True (Increment-ModelStatusField -Status $hash -Name "skip")
+        Assert-True (Increment-ModelStatusField -Status $hash -Name "done")
+        Assert-True (Increment-ModelStatusField -Status $hash -Name "ok")
+        Assert-True (Increment-ModelStatusField -Status $hash -Name "fail")
+        Assert-True (Set-ModelStatusField -Status $hash -Name "rotated" -Value $true)
+        Assert-Equal 1 $hash.skip
+        Assert-Equal 1 $hash.done
+        Assert-Equal 1 $hash.ok
+        Assert-Equal 1 $hash.fail
+        Assert-True $hash.rotated
+
+        $object = [pscustomobject]@{ skip = 0; done = 0; ok = 0; fail = 0; rotated = $false }
+        Assert-True (Increment-ModelStatusField -Status $object -Name "skip")
+        Assert-True (Set-ModelStatusField -Status $object -Name "rotated" -Value $true)
+        Assert-Equal 1 $object.skip
+        Assert-True $object.rotated
+    }
 }
 
 Describe "Resolve-TsBenchRunnerScript" {
